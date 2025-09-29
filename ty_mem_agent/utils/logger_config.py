@@ -36,8 +36,9 @@ class LoggerConfig:
             retention: 日志保留时间
             format_string: 自定义格式字符串
         """
+        # 允许重复配置：每次调用都重置处理器，应用新的级别/格式/文件
         if cls._initialized:
-            return
+            logger.remove()
             
         # 移除默认处理器
         logger.remove()
@@ -99,8 +100,8 @@ class LoggerConfig:
             配置好的logger实例
         """
         if not cls._initialized:
-            # 如果未初始化，使用默认配置
-            cls.setup_logger()
+            # 如果未初始化，使用环境变量驱动的默认配置
+            init_default_logging()
         
         if name is None:
             return logger
@@ -153,8 +154,7 @@ def get_logger(name: str = None) -> "logger":
     return LoggerConfig.get_logger(name)
 
 
-# 模块级logger实例
-module_logger = get_logger("TYMemoryAgent")
+# 模块级logger实例将在底部初始化，避免初始化顺序问题
 
 
 # 为不同模块提供专用logger
@@ -262,8 +262,15 @@ class LogContext:
 # 初始化默认配置
 def init_default_logging():
     """初始化默认日志配置"""
-    log_level = os.getenv('LOG_LEVEL', 'INFO')
-    log_file = os.getenv('LOG_FILE', 'logs/ty_mem_agent.log')
+    # 使用 settings 中的统一配置来源（pydantic 会从 .env 加载）
+    try:
+        from ty_mem_agent.config.settings import settings
+        log_level = settings.LOG_LEVEL or 'INFO'
+        log_file = settings.LOG_FILE or 'logs/ty_mem_agent.log'
+    except Exception:
+        # 兜底：环境变量或默认
+        log_level = os.getenv('LOG_LEVEL', 'INFO')
+        log_file = os.getenv('LOG_FILE', 'logs/ty_mem_agent.log')
     
     setup_logger(
         name="TYMemoryAgent",
@@ -298,3 +305,6 @@ if __name__ == "__main__":
     
     result = test_function()
     test_logger.info(f"函数返回: {result}")
+
+# 在模块导入完成后再初始化模块级 logger，避免引用未定义函数
+module_logger = get_logger("TYMemoryAgent")
