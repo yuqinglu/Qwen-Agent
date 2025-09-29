@@ -1,0 +1,143 @@
+[tool.poetry]
+name = "qwen-agent"
+version = "0.0.30"
+description = "Qwen-Agent: Enhancing LLMs with Agent Workflows, RAG, Function Calling, and Code Interpreter."
+authors = ["Qwen Team <tujianhong.tjh@alibaba-inc.com>"]
+readme = "README.md"
+license = "Apache-2.0"
+homepage = "https://github.com/QwenLM/Qwen-Agent"
+repository = "https://github.com/QwenLM/Qwen-Agent"
+keywords = ["LLM", "Agent", "Function Calling", "RAG", "Code Interpreter"]
+packages = [{include = "qwen_agent"}]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+# Minimal dependencies for Function Calling
+dashscope = ">=1.11.0"
+eval_type_backport = "*"
+json5 = "*"
+jsonlines = "*"
+jsonschema = "*"
+openai = "*"
+pydantic = ">=2.3.0"
+requests = "*"
+tiktoken = "*"
+
+# RAG extras
+charset-normalizer = {version = "*", optional = true}
+rank_bm25 = {version = "*", optional = true}
+jieba = {version = "*", optional = true}
+snowballstemmer = {version = "*", optional = true}
+beautifulsoup4 = {version = "*", optional = true}
+pdfminer-six = {version = "*", optional = true}
+pdfplumber = {version = "*", optional = true}
+python-docx = {version = "*", optional = true}
+python-pptx = {version = "*", optional = true}
+pandas = {version = "*", optional = true}
+tabulate = {version = "*", optional = true}
+
+# MCP extras  
+mcp = {version = "*", optional = true}
+
+# Code Interpreter extras
+anyio = {version = ">=3.7.1", optional = true}
+fastapi = {version = ">=0.103.1", optional = true}
+jupyter = {version = ">=1.0.0", optional = true}
+matplotlib = {version = "*", optional = true}
+numpy = {version = "*", optional = true}
+scipy = {version = "*", optional = true}
+seaborn = {version = "*", optional = true}
+sympy = {version = "*", optional = true}
+uvicorn = {version = ">=0.23.2", optional = true}
+pillow = {version = "*", optional = true}
+
+# GUI extras  
+gradio = {version = "5.23.1", optional = true}
+gradio-client = {version = "1.8.0", optional = true}
+modelscope_studio = {version = "1.1.7", optional = true}
+pydantic-core = {version = "2.23.4", optional = true}
+
+# Python Executor extras
+pebble = {version = "*", optional = true}
+multiprocess = {version = "*", optional = true}
+timeout_decorator = {version = "*", optional = true}
+python-dateutil = {version = "*", optional = true}
+openpyxl = "^3.1.5"
+jwt = "^1.4.0"
+pyjwt = "^2.10.1"
+
+[tool.poetry.extras]
+rag = [
+    "charset-normalizer",
+    "rank_bm25", 
+    "jieba",
+    "snowballstemmer",
+    "beautifulsoup4",
+    "pdfminer-six",
+    "pdfplumber",
+    "python-docx", 
+    "python-pptx",
+    "pandas",
+    "tabulate"
+]
+mcp = ["mcp"]
+python_executor = [
+    "pebble",
+    "multiprocess", 
+    "timeout_decorator",
+    "python-dateutil",
+    "sympy",
+    "numpy",
+    "scipy"
+]
+code_interpreter = [
+    "anyio",
+    "fastapi",
+    "jupyter",
+    "matplotlib",
+    "numpy", 
+    "pandas",
+    "pillow",
+    "seaborn",
+    "sympy",
+    "uvicorn"
+]
+gui = [
+    "pydantic-core", 
+    "gradio",
+    "gradio-client",
+    "modelscope_studio"
+]
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.0.0"
+black = "^23.0.0"
+isort = "^5.12.0"
+flake8 = "^6.0.0"
+
+[tool.poetry.group.ty-mem-agent]
+optional = true
+
+[tool.poetry.group.ty-mem-agent.dependencies]
+# Memory management system
+loguru = "*"
+httpx = "*" 
+aiohttp = "*"
+redis = "*"
+
+# Authentication and security
+python-jose = {extras = ["cryptography"], version = "^3.5.0"}
+passlib = {extras = ["bcrypt"], version = "^1.7.4"}
+
+# Configuration and utilities
+python-dotenv = "*"
+pyyaml = "*"
+pydantic-settings = "*"
+
+# Web framework dependencies (already in extras but listed for clarity)
+# fastapi = "*"  # Already in code_interpreter extras
+# uvicorn = "*"  # Already in code_interpreter extras
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

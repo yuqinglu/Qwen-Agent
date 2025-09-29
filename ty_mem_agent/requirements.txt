@@ -1,0 +1,58 @@
+# ===================================================================
+# TY Memory Agent 依赖配置
+# ===================================================================
+# 
+# 注意：本项目已集成到主 qwen-agent 的 Poetry 配置中
+# 使用以下命令安装完整依赖：
+#   poetry install --with ty-mem-agent
+#
+# 或者单独安装TY Memory Agent依赖组：
+#   poetry install --only=ty-mem-agent
+# ===================================================================
+
+# 核心框架 (已在主项目中)
+qwen-agent[gui,rag,code_interpreter,mcp]
+
+# ===================================================================
+# TY Memory Agent 专用依赖 (在 poetry 的 ty-mem-agent 组中管理)
+# ===================================================================
+
+# 日志系统
+loguru
+
+# HTTP客户端和异步支持
+httpx
+aiohttp
+
+# 数据库和缓存
+redis
+
+# 用户认证和安全
+python-jose[cryptography]
+passlib[bcrypt]
+
+# 配置管理
+python-dotenv
+pyyaml
+pydantic-settings
+
+# ===================================================================
+# 已包含在 qwen-agent extras 中的依赖
+# ===================================================================
+# fastapi          (在 code_interpreter extra 中)
+# uvicorn          (在 code_interpreter extra 中) 
+# pydantic         (在主依赖中)
+# requests         (在主依赖中)
+# mcp              (在 mcp extra 中)
+
+# ===================================================================
+# 安装说明
+# ===================================================================
+# 1. 完整安装 (推荐):
+#    poetry install --with ty-mem-agent
+#
+# 2. 只安装TY Memory Agent依赖:
+#    poetry install --only=ty-mem-agent  
+#
+# 3. 传统pip安装 (不推荐):
+#    pip install -r requirements.txt
