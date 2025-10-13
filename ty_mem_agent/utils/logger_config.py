@@ -99,8 +99,9 @@ class LoggerConfig:
         Returns:
             配置好的logger实例
         """
-        if not cls._initialized:
-            # 如果未初始化，使用环境变量驱动的默认配置
+        # 检查loguru是否已经有处理器
+        if not cls._initialized and not (hasattr(logger, '_core') and logger._core.handlers):
+            # 如果未初始化且没有处理器，使用环境变量驱动的默认配置
             init_default_logging()
         
         if name is None:

@@ -19,9 +19,15 @@ benchmark/eval_data/
 Qwen-Agent
 
 docqa/*
+# 日志文件
 log/*
 log.jsonl
-
+*.log
+*.log.*
+logs/
+**/logs/
+**/*.log
+**/*.log.*
 ai_agent/debug.json
 ai_agent/local_prompts/*
 **/debug.json
@@ -42,4 +48,13 @@ examples/docqa_multihp_agents.py
 test/*
 tests/env.sh
 examples/data/*
+
+# 数据库文件
+*.db
+*.sqlite
+*.sqlite3
+**/*.db
+**/*.sqlite
+**/*.sqlite3
 test.db
+ty_mem_agent/data/

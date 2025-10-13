@@ -23,7 +23,7 @@ from .server.user_manager import UserManager
 from .config.settings import settings
 from .memory.memos_client import memory_manager
 from .memory.user_memory import integrated_memory
-from .mcp.enhanced_mcp_router import get_enhanced_router
+from .mcp_integrations.enhanced_mcp_router import get_enhanced_router
 from .utils.logger_config import setup_logger, get_logger
 
 __all__ = [

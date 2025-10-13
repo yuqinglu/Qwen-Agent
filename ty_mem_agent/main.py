@@ -13,9 +13,12 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
 from config.settings import settings, validate_configuration
-from server.chat_server import ChatServer
-from memory.memos_client import cleanup_memory_manager
 from utils.logger_config import setup_logger, get_logger
+
+# 延迟导入，避免 MCPManager 在 main 初始化前被创建
+# from server.chat_server import ChatServer
+# from memory.memos_client import cleanup_memory_manager
+# from mcp import get_amap_mcp_manager, shutdown_amap_mcp
 
 
 class TYMemoryAgentApp:
@@ -30,7 +33,6 @@ class TYMemoryAgentApp:
     
     def _setup_logging(self):
         """配置日志系统"""
-        # 使用统一的日志配置
         setup_logger(
             name="TYMemoryAgent",
             level=settings.LOG_LEVEL,
@@ -55,6 +57,12 @@ class TYMemoryAgentApp:
             # 显示配置信息
             self._display_config()
             
+            # 预初始化 MCP 服务
+            await self._initialize_mcp_services()
+            
+            # 延迟导入 ChatServer
+            from server.chat_server import ChatServer
+            
             # 初始化聊天服务器
             self.chat_server = ChatServer()
             self.logger.info("✅ 聊天服务器初始化完成")
@@ -69,8 +77,129 @@ class TYMemoryAgentApp:
             self.logger.error(f"❌ 初始化失败: {e}")
             return False
     
+    async def _initialize_mcp_services(self):
+        """预初始化 MCP 服务"""
+        self.logger.info("")
+        self.logger.info("=" * 50)
+        self.logger.info("🔧 初始化 MCP 服务...")
+        self.logger.info("=" * 50)
+        
+        # 初始化高德地图 MCP
+        await self._initialize_amap_mcp()
+        
+        # 初始化时间查询 MCP
+        await self._initialize_time_mcp()
+        
+        # 未来可以在这里添加其他 MCP 服务的初始化
+        # await self._initialize_other_mcp()
+        
+        self.logger.info("=" * 50)
+    
+    async def _initialize_amap_mcp(self):
+        """初始化高德地图 MCP Server"""
+        try:
+            # 延迟导入项目 MCP 集成模块
+            from ty_mem_agent.mcp_integrations import get_amap_mcp_manager
+            
+            self.logger.info("📍 正在连接高德地图 MCP Server...")
+            
+            # 检查 API Key
+            amap_token = settings.AMAP_TOKEN if hasattr(settings, 'AMAP_TOKEN') else None
+            if not amap_token:
+                self.logger.warning("⚠️  未配置 AMAP_TOKEN，跳过高德 MCP 初始化")
+                self.logger.warning("   如需使用高德地图功能，请在 .env 中设置 AMAP_TOKEN")
+                return
+            
+            # 获取 MCP Manager 单例
+            manager = get_amap_mcp_manager()
+            
+            # 初始化连接
+            manager.initialize(api_key=amap_token, mode="sse")
+            
+            # 获取工具列表
+            tools = manager.get_tools()
+            
+            if tools:
+                self.logger.info(f"✅ 高德 MCP Server 连接成功")
+                self.logger.info(f"✅ 已注册 {len(tools)} 个工具（已启用调用日志）")
+                
+                # 打印工具列表
+                self.logger.info("📋 可用工具列表:")
+                for i, tool in enumerate(tools, 1):
+                    tool_name = getattr(tool, 'name', 'unknown')
+                    # 获取原始工具的描述
+                    if hasattr(tool, 'original_tool'):
+                        desc = getattr(tool.original_tool, 'description', '')
+                    else:
+                        desc = getattr(tool, 'description', '')
+                    
+                    # 简化描述
+                    if desc and len(desc) > 50:
+                        desc = desc[:50] + "..."
+                    
+                    self.logger.info(f"   {i:2d}. {tool_name}")
+                    if desc:
+                        self.logger.debug(f"       {desc}")
+            else:
+                self.logger.warning("⚠️  高德 MCP Server 连接成功，但未获取到工具")
+                
+        except ImportError as e:
+            self.logger.error(f"❌ 无法导入 MCP 模块: {e}")
+            self.logger.error("   请运行: pip install -U mcp")
+        except Exception as e:
+            self.logger.error(f"❌ 高德 MCP Server 连接失败: {e}")
+            self.logger.error("   请检查:")
+            self.logger.error("   1. AMAP_TOKEN 是否正确")
+            self.logger.error("   2. 网络连接是否正常")
+            self.logger.error("   3. MCP 版本是否符合要求 (pip install -U mcp)")
+    
+    async def _initialize_time_mcp(self):
+        """初始化时间查询 MCP Server"""
+        try:
+            # 延迟导入项目 MCP 集成模块
+            from ty_mem_agent.mcp_integrations import get_time_mcp_manager
+            
+            self.logger.info("🕐 正在连接时间查询 MCP Server...")
+            
+            # 获取时间 MCP Manager 单例
+            manager = get_time_mcp_manager()
+            
+            # 初始化连接
+            manager.initialize(mode="stdio")  # 尝试使用标准 MCP Server
+            
+            # 获取工具列表
+            tools = manager.get_tools()
+            
+            if tools:
+                self.logger.info(f"✅ 时间查询 MCP Server 连接成功")
+                self.logger.info(f"✅ 已注册 {len(tools)} 个时间工具")
+                
+                # 打印工具列表
+                self.logger.info("📋 可用时间工具列表:")
+                for i, tool in enumerate(tools, 1):
+                    tool_name = getattr(tool, 'name', 'unknown')
+                    desc = getattr(tool, 'description', '')
+                    
+                    # 简化描述
+                    if desc and len(desc) > 50:
+                        desc = desc[:50] + "..."
+                    
+                    self.logger.info(f"   {i:2d}. {tool_name}")
+                    if desc:
+                        self.logger.debug(f"       {desc}")
+            else:
+                self.logger.warning("⚠️ 时间查询 MCP Server 连接成功，但未获取到工具")
+                
+        except ImportError as e:
+            self.logger.error(f"❌ 无法导入时间 MCP 模块: {e}")
+            self.logger.error("   请运行: pip install -U mcp")
+        except Exception as e:
+            self.logger.error(f"❌ 时间查询 MCP Server 连接失败: {e}")
+            self.logger.error("   将使用自定义时间查询工具作为备选方案")
+    
     def _display_config(self):
         """显示配置信息"""
+        self.logger.debug("测试debug日志")
         self.logger.info("=" * 50)
         self.logger.info("📋 TY Memory Agent 配置信息")
         self.logger.info("=" * 50)
@@ -127,8 +256,21 @@ class TYMemoryAgentApp:
                 self.logger.info("✅ 聊天服务器已关闭")
             
             # 清理记忆管理器
-            await cleanup_memory_manager()
-            self.logger.info("✅ 记忆系统已清理")
+            try:
+                from memory.memos_client import cleanup_memory_manager
+                await cleanup_memory_manager()
+                self.logger.info("✅ 记忆系统已清理")
+            except Exception as e:
+                self.logger.warning(f"⚠️ 记忆系统清理失败: {e}")
+            
+            # 关闭 MCP 连接
+            try:
+                from ty_mem_agent.mcp_integrations import shutdown_amap_mcp, shutdown_time_mcp
+                shutdown_amap_mcp()
+                shutdown_time_mcp()
+                self.logger.info("✅ MCP 连接已关闭")
+            except Exception as mcp_e:
+                self.logger.warning(f"⚠️ 关闭 MCP 连接时出错: {mcp_e}")
             
             self.logger.info("👋 TY Memory Agent 已安全关闭")
             

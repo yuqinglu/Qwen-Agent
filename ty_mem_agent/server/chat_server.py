@@ -6,19 +6,20 @@
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
 from loguru import logger
 
 # 使用简洁的绝对导入
 from ty_mem_agent.config.settings import settings
 from ty_mem_agent.agents.ty_memory_agent import TYMemoryAgent
-from ty_mem_agent.memory.user_memory import integrated_memory
+from ty_mem_agent.memory.user_memory import get_integrated_memory
 from ty_mem_agent.server.user_manager import user_manager, init_default_users
 from qwen_agent.llm.schema import Message, USER, ASSISTANT
 
@@ -218,7 +219,13 @@ class ChatServer:
         @self.app.get("/chat/demo")
         async def chat_demo():
             """聊天演示页面"""
-            return HTMLResponse(self._get_demo_html())
+            # 从外部文件读取HTML
+            html_path = Path(__file__).parent / "templates" / "chat_demo.html"
+            if html_path.exists():
+                with open(html_path, 'r', encoding='utf-8') as f:
+                    return HTMLResponse(f.read())
+            else:
+                return HTMLResponse(self._get_fallback_html())
     
     async def _handle_websocket_connection(self, websocket: WebSocket, user):
         """处理WebSocket连接"""
@@ -303,10 +310,12 @@ class ChatServer:
                 return
             
             # 发送正在处理消息
+            thinking_message_id = f"thinking_{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
             await websocket.send_text(json.dumps({
                 "type": "status",
                 "content": "正在思考...",
-                "timestamp": datetime.now().isoformat()
+                "timestamp": datetime.now().isoformat(),
+                "message_id": thinking_message_id
             }))
             
             # 获取用户的Agent
@@ -325,26 +334,114 @@ class ChatServer:
             # 处理消息并流式返回
             response_content = ""
             message_id = f"msg_{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+            first_response = True  # 标记是否是第一次响应
+            has_tool_call = False  # 标记是否有工具调用
             
-            async for response in agent._run([user_message], user_id=user_id, session_id=agent.current_session_id):
+            # 使用run_with_memory进行带记忆的对话
+            async for response in agent.run_with_memory(
+                messages=[user_message], 
+                user_id=user_id, 
+                session_id=agent.current_session_id
+            ):
                 if response and response[-1]:
                     assistant_message = response[-1]
                     new_content = assistant_message.content
                     
+                    # 检查是否有工具调用（这通常表示中间步骤）
+                    if hasattr(assistant_message, 'function_call') and assistant_message.function_call:
+                        has_tool_call = True
+                        func_call = assistant_message.function_call
+                        
+                        # 完整打印工具调用信息
+                        logger.info("=" * 80)
+                        logger.info(f"🔧 工具调用检测")
+                        logger.info("-" * 80)
+                        
+                        # 打印完整的 function_call 对象
+                        logger.info(f"function_call 类型: {type(func_call)}")
+                        logger.info(f"function_call 完整内容: {func_call}")
+                        
+                        # 尝试不同的方式获取工具名称和参数
+                        tool_name = 'unknown'
+                        tool_args = 'N/A'
+                        
+                        if isinstance(func_call, dict):
+                            tool_name = func_call.get('name', 'unknown')
+                            tool_args = func_call.get('arguments', 'N/A')
+                        elif hasattr(func_call, 'name'):
+                            tool_name = func_call.name
+                            tool_args = getattr(func_call, 'arguments', 'N/A')
+                        
+                        logger.info(f"工具名称: {tool_name}")
+                        
+                        # 完整显示参数（不截断）
+                        if tool_args and tool_args != 'N/A':
+                            args_str = str(tool_args)
+                            logger.info(f"调用参数 (长度 {len(args_str)}): {args_str}")
+                        else:
+                            logger.warning(f"⚠️ 调用参数为空或 N/A: {tool_args}")
+                        
+                        logger.info("-" * 80)
+                        
+                        # 注意：有 function_call 的 Message，其 content 通常为空
+                        # 这是正常的，因为这是工具调用请求，不是工具返回
+                        # 工具的实际返回值会在下一条 Message 中
+                        if new_content:
+                            content_str = str(new_content)
+                            logger.info(f"Message content (长度 {len(content_str)}): {content_str[:200]}...")
+                        else:
+                            logger.debug("Message content 为空（这是正常的，工具调用请求阶段）")
+                        logger.info("=" * 80)
+                        
+                        continue  # 跳过工具调用的中间结果，只显示最终回答
+                    
+                    # 如果是第一次响应，先隐藏"正在思考..."消息
+                    if first_response and new_content.strip():
+                        # 发送隐藏"正在思考..."的消息
+                        await websocket.send_text(json.dumps({
+                            "type": "hide_thinking",
+                            "message_id": thinking_message_id,
+                            "timestamp": datetime.now().isoformat()
+                        }))
+                        first_response = False
+                    
                     # 发送增量内容
                     if new_content != response_content:
-                        response_content = new_content
-                        
-                        await websocket.send_text(json.dumps({
-                            "type": "message",
-                            "content": response_content,
-                            "timestamp": datetime.now().isoformat(),
-                            "message_id": message_id,
-                            "metadata": {
-                                "type": "assistant_response",
-                                "extra": getattr(assistant_message, 'extra', {})
-                            }
-                        }))
+                        # 计算增量内容
+                        if new_content.startswith(response_content):
+                            # 新内容是旧内容的扩展，发送增量部分
+                            incremental_content = new_content[len(response_content):]
+                            response_content = new_content
+                            
+                            await websocket.send_text(json.dumps({
+                                "type": "message_chunk",
+                                "content": incremental_content,
+                                "full_content": response_content,
+                                "timestamp": datetime.now().isoformat(),
+                                "message_id": message_id,
+                                "metadata": {
+                                    "type": "assistant_response_chunk",
+                                    "extra": getattr(assistant_message, 'extra', {})
+                                }
+                            }))
+                        else:
+                            # 内容完全不同（可能是工具调用后重新生成）
+                            # 如果有工具调用，这可能是最终回答，替换之前的内容
+                            logger.debug(f"🔄 内容变化: '{response_content[:50]}...' -> '{new_content[:50]}...'")
+                            response_content = new_content
+                            
+                            await websocket.send_text(json.dumps({
+                                "type": "message_chunk",
+                                "content": new_content,  # 发送完整内容作为增量
+                                "full_content": new_content,
+                                "timestamp": datetime.now().isoformat(),
+                                "message_id": message_id,
+                                "metadata": {
+                                    "type": "assistant_response_chunk",
+                                    "replace": True,  # 标记这是替换而不是追加
+                                    "extra": getattr(assistant_message, 'extra', {})
+                                }
+                            }))
             
             # 发送完成状态
             await websocket.send_text(json.dumps({
@@ -370,6 +467,7 @@ class ChatServer:
                 return await agent.get_user_summary(user_id)
             else:
                 # 直接从集成记忆系统获取
+                integrated_memory = get_integrated_memory()
                 context = await integrated_memory.get_user_context(user_id, "summary")
                 return {
                     "user_profile": context.get("user_profile", {}),
@@ -398,8 +496,8 @@ class ChatServer:
         except Exception as e:
             logger.error(f"❌ 断开用户连接失败: {e}")
     
-    def _get_demo_html(self) -> str:
-        """获取演示页面HTML"""
+    def _get_fallback_html(self) -> str:
+        """获取备用演示页面HTML（当外部文件不存在时使用）"""
         return """
 <!DOCTYPE html>
 <html>
@@ -422,6 +520,10 @@ class ChatServer:
         button:hover { background: #0056b3; }
         .status { color: #666; font-style: italic; }
         .error { color: #dc3545; }
+        .message-content { word-wrap: break-word; white-space: pre-wrap; }
+        .message-time { color: #999; font-size: 0.8em; }
+        .assistant-message { border-left: 3px solid #007bff; }
+        .user-message { border-left: 3px solid #28a745; }
     </style>
 </head>
 <body>
@@ -493,22 +595,88 @@ class ChatServer:
             };
         }
 
+        // 存储当前正在流式输出的消息
+        let currentStreamingMessage = null;
+        
         function displayMessage(data) {
             const chatContainer = document.getElementById('chatContainer');
-            const messageDiv = document.createElement('div');
-            messageDiv.className = 'message ' + (data.type === 'message' ? 'assistant-message' : 'status');
             
-            if (data.type === 'error') {
+            if (data.type === 'hide_thinking') {
+                // 隐藏"正在思考..."消息
+                const thinkingElement = document.getElementById('status-' + data.message_id);
+                if (thinkingElement) {
+                    thinkingElement.style.display = 'none';
+                }
+                
+            } else if (data.type === 'message_chunk') {
+                // 处理流式消息块
+                if (!currentStreamingMessage) {
+                    // 创建新的流式消息容器
+                    currentStreamingMessage = document.createElement('div');
+                    currentStreamingMessage.className = 'message assistant-message';
+                    currentStreamingMessage.id = 'streaming-' + data.message_id;
+                    currentStreamingMessage.innerHTML = `
+                        <div class="message-content"></div>
+                        <small class="message-time">${new Date(data.timestamp).toLocaleTimeString()}</small>
+                    `;
+                    chatContainer.appendChild(currentStreamingMessage);
+                }
+                
+                // 追加增量内容
+                const contentDiv = currentStreamingMessage.querySelector('.message-content');
+                contentDiv.textContent = data.full_content;
+                
+                // 滚动到底部
+                chatContainer.scrollTop = chatContainer.scrollHeight;
+                
+            } else if (data.type === 'message') {
+                // 处理完整消息
+                if (currentStreamingMessage) {
+                    // 完成当前流式消息
+                    currentStreamingMessage = null;
+                }
+                
+                const messageDiv = document.createElement('div');
+                messageDiv.className = 'message assistant-message';
+                messageDiv.innerHTML = `
+                    <div class="message-content">${data.content}</div>
+                    <small class="message-time">${new Date(data.timestamp).toLocaleTimeString()}</small>
+                `;
+                
+                chatContainer.appendChild(messageDiv);
+                chatContainer.scrollTop = chatContainer.scrollHeight;
+                
+            } else if (data.type === 'status') {
+                // 处理状态消息
+                if (data.content === '完成' && currentStreamingMessage) {
+                    // 流式消息完成，清理引用
+                    currentStreamingMessage = null;
+                } else {
+                    // 显示状态消息
+                    const messageDiv = document.createElement('div');
+                    messageDiv.className = 'message status';
+                    messageDiv.id = 'status-' + (data.message_id || 'default');
+                    messageDiv.innerHTML = `
+                        <div class="message-content">${data.content}</div>
+                        <small class="message-time">${new Date(data.timestamp).toLocaleTimeString()}</small>
+                    `;
+                    
+                    chatContainer.appendChild(messageDiv);
+                    chatContainer.scrollTop = chatContainer.scrollHeight;
+                }
+                
+            } else if (data.type === 'error') {
+                // 处理错误消息
+                const messageDiv = document.createElement('div');
                 messageDiv.className = 'message error';
+                messageDiv.innerHTML = `
+                    <div class="message-content">${data.content}</div>
+                    <small class="message-time">${new Date(data.timestamp).toLocaleTimeString()}</small>
+                `;
+                
+                chatContainer.appendChild(messageDiv);
+                chatContainer.scrollTop = chatContainer.scrollHeight;
             }
-            
-            messageDiv.innerHTML = `
-                <div>${data.content}</div>
-                <small>${new Date(data.timestamp).toLocaleTimeString()}</small>
-            `;
-            
-            chatContainer.appendChild(messageDiv);
-            chatContainer.scrollTop = chatContainer.scrollHeight;
         }
 
         function sendMessage() {

@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>TY Memory Agent Chat Demo</title>
+    <meta charset="UTF-8">
+    <style>
+        body { 
+            font-family: Arial, sans-serif; 
+            margin: 0; 
+            padding: 20px; 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        .container { 
+            max-width: 800px; 
+            margin: 0 auto; 
+            background: white; 
+            border-radius: 10px; 
+            overflow: hidden; 
+            box-shadow: 0 4px 20px rgba(0,0,0,0.2); 
+        }
+        .header { 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white; 
+            padding: 20px; 
+            text-align: center; 
+        }
+        .header h1 { margin: 0; font-size: 2em; }
+        .header p { margin: 10px 0 0 0; opacity: 0.9; }
+        
+        .auth-form { 
+            padding: 30px; 
+            border-bottom: 1px solid #eee; 
+        }
+        .auth-form h3 { 
+            margin-top: 0; 
+            color: #333; 
+            text-align: center;
+        }
+        .form-group { 
+            margin-bottom: 15px; 
+        }
+        .form-group label { 
+            display: block; 
+            margin-bottom: 5px; 
+            color: #555; 
+            font-weight: 500;
+        }
+        .form-group input { 
+            width: 100%; 
+            padding: 12px; 
+            border: 1px solid #ddd; 
+            border-radius: 5px; 
+            font-size: 14px;
+            box-sizing: border-box;
+        }
+        .form-group input:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+        
+        .btn-group { 
+            display: flex; 
+            gap: 10px; 
+            margin-top: 20px;
+        }
+        button { 
+            flex: 1;
+            padding: 12px 20px; 
+            border: none; 
+            border-radius: 5px; 
+            cursor: pointer; 
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.3s;
+        }
+        .btn-primary { 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white; 
+        }
+        .btn-primary:hover { 
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+        .btn-secondary { 
+            background: #6c757d; 
+            color: white; 
+        }
+        .btn-secondary:hover { 
+            background: #5a6268; 
+        }
+        .btn-link {
+            background: none;
+            color: #667eea;
+            padding: 5px;
+            text-decoration: underline;
+            font-size: 13px;
+        }
+        .btn-link:hover {
+            color: #764ba2;
+        }
+        
+        .chat-container { 
+            height: 400px; 
+            overflow-y: auto; 
+            padding: 20px; 
+            border-bottom: 1px solid #eee;
+            background: #f8f9fa;
+        }
+        .message { 
+            margin-bottom: 15px; 
+            padding: 12px; 
+            border-radius: 8px; 
+            animation: fadeIn 0.3s;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .user-message { 
+            background: #e3f2fd; 
+            margin-left: 50px;
+            border-left: 3px solid #2196F3;
+        }
+        .assistant-message { 
+            background: #f3e5f5; 
+            margin-right: 50px;
+            border-left: 3px solid #9C27B0;
+        }
+        .input-container { 
+            padding: 20px; 
+            display: flex; 
+            gap: 10px; 
+            background: #f8f9fa;
+        }
+        input[type="text"] { 
+            flex: 1; 
+            min-width: 0; /* 确保输入框可以收缩 */
+        }
+        .send-button {
+            width: 60px !important; /* 更窄的固定宽度，使用!important确保优先级 */
+            flex: none !important; /* 覆盖通用button的flex: 1 */
+            flex-shrink: 0; /* 防止收缩 */
+            font-size: 13px; /* 稍微小一点的字体 */
+            padding: 10px 8px; /* 调整内边距 */
+        }
+        .status { 
+            color: #666; 
+            font-style: italic; 
+            text-align: center;
+            padding: 10px;
+        }
+        .error { 
+            color: #dc3545; 
+            background: #f8d7da;
+            border-left: 3px solid #dc3545;
+        }
+        .success {
+            color: #28a745;
+            background: #d4edda;
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 15px;
+            text-align: center;
+        }
+        .message-content { 
+            word-wrap: break-word; 
+            white-space: pre-wrap; 
+            line-height: 1.5;
+        }
+        .message-time { 
+            color: #999; 
+            font-size: 0.8em; 
+            margin-top: 5px;
+            display: block;
+        }
+        .form-footer {
+            text-align: center;
+            margin-top: 15px;
+            color: #666;
+            font-size: 13px;
+        }
+        .default-users {
+            background: #e7f3ff;
+            padding: 10px;
+            border-radius: 5px;
+            margin-top: 10px;
+            font-size: 13px;
+            color: #0066cc;
+        }
+        .error-message {
+            color: #dc3545;
+            font-size: 13px;
+            margin-top: 5px;
+            display: none;
+        }
+        .error-message.show {
+            display: block;
+        }
+        
+        /* 用户信息区域 */
+        .user-info {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: rgba(255, 255, 255, 0.9);
+            padding: 8px 15px;
+            border-radius: 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            backdrop-filter: blur(10px);
+        }
+        .user-avatar {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: bold;
+            font-size: 14px;
+        }
+        .user-name {
+            font-size: 14px;
+            color: #333;
+            font-weight: 500;
+        }
+        .logout-btn {
+            background: #dc3545;
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 15px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .logout-btn:hover {
+            background: #c82333;
+            transform: translateY(-1px);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- 用户信息区域（登录后显示） -->
+        <div class="user-info" id="userInfo" style="display: none;">
+            <div class="user-avatar" id="userAvatar">U</div>
+            <div class="user-name" id="userName">用户</div>
+            <button class="logout-btn" onclick="logout()">登出</button>
+        </div>
+        
+        <div class="header">
+            <h1>🤖 TY Memory Agent</h1>
+            <p>智能记忆助手演示</p>
+        </div>
+        
+        <!-- 登录表单 -->
+        <div class="auth-form" id="loginForm">
+            <h3>登录到您的账户</h3>
+            <div class="form-group">
+                <label for="loginUsername">用户名</label>
+                <input type="text" id="loginUsername" placeholder="请输入用户名" value="admin">
+            </div>
+            <div class="form-group">
+                <label for="loginPassword">密码</label>
+                <input type="password" id="loginPassword" placeholder="请输入密码" value="admin123">
+            </div>
+            <div id="loginError" class="error-message"></div>
+            <div class="btn-group">
+                <button class="btn-primary" onclick="login()">登录</button>
+            </div>
+            <div class="form-footer">
+                还没有账户？<button class="btn-link" onclick="showRegisterForm()">立即注册</button>
+            </div>
+            <div class="default-users">
+                💡 默认测试账户: test/test123 或 admin/admin123
+            </div>
+        </div>
+        
+        <!-- 注册表单 -->
+        <div class="auth-form" id="registerForm" style="display: none;">
+            <h3>创建新账户</h3>
+            <div class="form-group">
+                <label for="registerUsername">用户名</label>
+                <input type="text" id="registerUsername" placeholder="请输入用户名（3-20个字符）">
+            </div>
+            <div class="form-group">
+                <label for="registerPassword">密码</label>
+                <input type="password" id="registerPassword" placeholder="请输入密码（至少6个字符）">
+            </div>
+            <div class="form-group">
+                <label for="registerPasswordConfirm">确认密码</label>
+                <input type="password" id="registerPasswordConfirm" placeholder="请再次输入密码">
+            </div>
+            <div id="registerError" class="error-message"></div>
+            <div id="registerSuccess" class="success" style="display: none;"></div>
+            <div class="btn-group">
+                <button class="btn-secondary" onclick="showLoginForm()">返回登录</button>
+                <button class="btn-primary" onclick="register()">注册</button>
+            </div>
+        </div>
+        
+        <!-- 聊天容器 -->
+        <div class="chat-container" id="chatContainer" style="display: none;"></div>
+        
+        <!-- 输入容器 -->
+        <div class="input-container" id="inputContainer" style="display: none;">
+            <input type="text" id="messageInput" placeholder="输入消息..." onkeypress="handleKeyPress(event)">
+            <button class="btn-primary send-button" onclick="sendMessage()">发送</button>
+        </div>
+    </div>
+
+    <script>
+        let ws = null;
+        let token = null;
+
+        // 显示登录表单
+        function showLoginForm() {
+            document.getElementById('loginForm').style.display = 'block';
+            document.getElementById('registerForm').style.display = 'none';
+            clearErrors();
+        }
+
+        // 显示注册表单
+        function showRegisterForm() {
+            document.getElementById('loginForm').style.display = 'none';
+            document.getElementById('registerForm').style.display = 'block';
+            clearErrors();
+        }
+
+        // 清除错误消息
+        function clearErrors() {
+            document.getElementById('loginError').classList.remove('show');
+            document.getElementById('registerError').classList.remove('show');
+            document.getElementById('registerSuccess').style.display = 'none';
+        }
+
+        // 验证用户名
+        function validateUsername(username) {
+            if (!username || username.length < 3 || username.length > 20) {
+                return '用户名长度必须在3-20个字符之间';
+            }
+            if (!/^[a-zA-Z0-9_]+$/.test(username)) {
+                return '用户名只能包含字母、数字和下划线';
+            }
+            return null;
+        }
+
+        // 验证密码
+        function validatePassword(password) {
+            if (!password || password.length < 6) {
+                return '密码长度至少6个字符';
+            }
+            return null;
+        }
+
+        // 用户注册
+        async function register() {
+            const username = document.getElementById('registerUsername').value.trim();
+            const password = document.getElementById('registerPassword').value;
+            const passwordConfirm = document.getElementById('registerPasswordConfirm').value;
+            const errorDiv = document.getElementById('registerError');
+            const successDiv = document.getElementById('registerSuccess');
+            
+            clearErrors();
+            
+            // 验证用户名
+            const usernameError = validateUsername(username);
+            if (usernameError) {
+                errorDiv.textContent = usernameError;
+                errorDiv.classList.add('show');
+                return;
+            }
+            
+            // 验证密码
+            const passwordError = validatePassword(password);
+            if (passwordError) {
+                errorDiv.textContent = passwordError;
+                errorDiv.classList.add('show');
+                return;
+            }
+            
+            // 验证密码确认
+            if (password !== passwordConfirm) {
+                errorDiv.textContent = '两次输入的密码不一致';
+                errorDiv.classList.add('show');
+                return;
+            }
+            
+            try {
+                const response = await fetch('/auth/register', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    successDiv.textContent = '✅ 注册成功！即将跳转到登录页面...';
+                    successDiv.style.display = 'block';
+                    
+                    // 清空表单
+                    document.getElementById('registerUsername').value = '';
+                    document.getElementById('registerPassword').value = '';
+                    document.getElementById('registerPasswordConfirm').value = '';
+                    
+                    // 2秒后跳转到登录页面
+                    setTimeout(() => {
+                        showLoginForm();
+                        // 自动填充用户名
+                        document.getElementById('loginUsername').value = username;
+                    }, 2000);
+                } else {
+                    errorDiv.textContent = data.detail || '注册失败，请稍后重试';
+                    errorDiv.classList.add('show');
+                }
+            } catch (error) {
+                errorDiv.textContent = '网络错误: ' + error.message;
+                errorDiv.classList.add('show');
+            }
+        }
+
+        // 用户登录
+        async function login() {
+            const username = document.getElementById('loginUsername').value.trim();
+            const password = document.getElementById('loginPassword').value;
+            const errorDiv = document.getElementById('loginError');
+            
+            clearErrors();
+            
+            if (!username || !password) {
+                errorDiv.textContent = '请输入用户名和密码';
+                errorDiv.classList.add('show');
+                return;
+            }
+            
+            try {
+                const response = await fetch('/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    token = data.access_token;
+                    connectWebSocket();
+                    
+                    // 显示用户信息区域
+                    showUserInfo(username);
+                    
+                    document.getElementById('loginForm').style.display = 'none';
+                    document.getElementById('chatContainer').style.display = 'block';
+                    document.getElementById('inputContainer').style.display = 'flex';
+                } else {
+                    const data = await response.json();
+                    errorDiv.textContent = data.detail || '登录失败';
+                    errorDiv.classList.add('show');
+                }
+            } catch (error) {
+                errorDiv.textContent = '网络错误: ' + error.message;
+                errorDiv.classList.add('show');
+            }
+        }
+
+        // 连接WebSocket
+        function connectWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${protocol}//${window.location.host}/ws/${token}`);
+            
+            ws.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                displayMessage(data);
+            };
+            
+            ws.onclose = function() {
+                console.log('WebSocket连接关闭');
+            };
+            
+            ws.onerror = function(error) {
+                console.error('WebSocket错误:', error);
+            };
+        }
+
+        // 存储当前正在流式输出的消息
+        let currentStreamingMessage = null;
+        
+        // 显示消息
+        function displayMessage(data) {
+            const chatContainer = document.getElementById('chatContainer');
+            
+            if (data.type === 'hide_thinking') {
+                // 隐藏"正在思考..."消息
+                const thinkingElement = document.getElementById('status-' + data.message_id);
+                if (thinkingElement) {
+                    thinkingElement.style.display = 'none';
+                }
+                
+            } else if (data.type === 'message_chunk') {
+                // 处理流式消息块
+                if (!currentStreamingMessage) {
+                    // 创建新的流式消息容器
+                    currentStreamingMessage = document.createElement('div');
+                    currentStreamingMessage.className = 'message assistant-message';
+                    currentStreamingMessage.id = 'streaming-' + data.message_id;
+                    currentStreamingMessage.innerHTML = `
+                        <div class="message-content"></div>
+                        <small class="message-time">${new Date(data.timestamp).toLocaleTimeString()}</small>
+                    `;
+                    chatContainer.appendChild(currentStreamingMessage);
+                }
+                
+                // 更新内容
+                const contentDiv = currentStreamingMessage.querySelector('.message-content');
+                
+                // 检查是否需要替换内容（工具调用后重新生成）
+                if (data.metadata && data.metadata.replace) {
+                    // 完全替换内容，不追加
+                    contentDiv.textContent = data.full_content;
+                } else {
+                    // 追加或更新内容
+                    contentDiv.textContent = data.full_content;
+                }
+                
+                // 滚动到底部
+                chatContainer.scrollTop = chatContainer.scrollHeight;
+                
+            } else if (data.type === 'message') {
+                // 处理完整消息
+                if (currentStreamingMessage) {
+                    currentStreamingMessage = null;
+                }
+                
+                const messageDiv = document.createElement('div');
+                messageDiv.className = 'message assistant-message';
+                messageDiv.innerHTML = `
+                    <div class="message-content">${data.content}</div>
+                    <small class="message-time">${new Date(data.timestamp).toLocaleTimeString()}</small>
+                `;
+                
+                chatContainer.appendChild(messageDiv);
+                chatContainer.scrollTop = chatContainer.scrollHeight;
+                
+            } else if (data.type === 'status') {
+                // 处理状态消息
+                if (data.content === '完成' && currentStreamingMessage) {
+                    currentStreamingMessage = null;
+                } else if (data.content !== '完成') {
+                    const messageDiv = document.createElement('div');
+                    messageDiv.className = 'message status';
+                    messageDiv.id = 'status-' + (data.message_id || 'default');
+                    messageDiv.innerHTML = `
+                        <div class="message-content">${data.content}</div>
+                        <small class="message-time">${new Date(data.timestamp).toLocaleTimeString()}</small>
+                    `;
+                    
+                    chatContainer.appendChild(messageDiv);
+                    chatContainer.scrollTop = chatContainer.scrollHeight;
+                }
+                
+            } else if (data.type === 'error') {
+                // 处理错误消息
+                const messageDiv = document.createElement('div');
+                messageDiv.className = 'message error';
+                messageDiv.innerHTML = `
+                    <div class="message-content">❌ ${data.content}</div>
+                    <small class="message-time">${new Date(data.timestamp).toLocaleTimeString()}</small>
+                `;
+                
+                chatContainer.appendChild(messageDiv);
+                chatContainer.scrollTop = chatContainer.scrollHeight;
+            }
+        }
+
+        // 发送消息
+        function sendMessage() {
+            const input = document.getElementById('messageInput');
+            const message = input.value.trim();
+            
+            if (message && ws) {
+                // 显示用户消息
+                const chatContainer = document.getElementById('chatContainer');
+                const messageDiv = document.createElement('div');
+                messageDiv.className = 'message user-message';
+                messageDiv.innerHTML = `
+                    <div class="message-content">${message}</div>
+                    <small class="message-time">${new Date().toLocaleTimeString()}</small>
+                `;
+                chatContainer.appendChild(messageDiv);
+                
+                // 发送消息
+                ws.send(JSON.stringify({ content: message }));
+                input.value = '';
+                chatContainer.scrollTop = chatContainer.scrollHeight;
+            }
+        }
+
+        // 处理回车键
+        function handleKeyPress(event) {
+            if (event.key === 'Enter') {
+                sendMessage();
+            }
+        }
+
+        // 显示用户信息
+        function showUserInfo(username) {
+            const userInfo = document.getElementById('userInfo');
+            const userAvatar = document.getElementById('userAvatar');
+            const userName = document.getElementById('userName');
+            
+            // 设置用户头像（取用户名首字母）
+            userAvatar.textContent = username.charAt(0).toUpperCase();
+            userName.textContent = username;
+            
+            // 显示用户信息区域
+            userInfo.style.display = 'flex';
+        }
+
+        // 登出
+        async function logout() {
+            if (ws) {
+                ws.close();
+            }
+            
+            if (token) {
+                try {
+                    await fetch('/auth/logout', {
+                        method: 'POST',
+                        headers: { 'Authorization': `Bearer ${token}` }
+                    });
+                } catch (error) {
+                    console.error('登出错误:', error);
+                }
+            }
+            
+            token = null;
+            
+            // 隐藏用户信息区域
+            document.getElementById('userInfo').style.display = 'none';
+            
+            // 显示登录表单
+            document.getElementById('loginForm').style.display = 'block';
+            document.getElementById('chatContainer').style.display = 'none';
+            document.getElementById('inputContainer').style.display = 'none';
+            document.getElementById('chatContainer').innerHTML = '';
+        }
+    </script>
+</body>
+</html>

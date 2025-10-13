@@ -14,6 +14,7 @@ from passlib.context import CryptContext
 from loguru import logger
 
 from ty_mem_agent.config.settings import settings
+from ty_mem_agent.server.user_database import UserDatabase
 
 
 @dataclass
@@ -51,12 +52,40 @@ class Session:
 class UserManager:
     """用户管理器"""
     
-    def __init__(self):
+    def __init__(self, db_path: str = None):
         # 使用更兼容的密码哈希方案
         self.pwd_context = CryptContext(schemes=["pbkdf2_sha256", "bcrypt"], deprecated="auto")
-        self.users: Dict[str, User] = {}  # 内存存储，生产环境应使用数据库
+        
+        # 使用数据库持久化存储
+        self.db = UserDatabase(db_path)
+        
+        # 内存缓存（用于快速访问）
+        self.users: Dict[str, User] = {}
         self.sessions: Dict[str, Session] = {}
         self.active_sessions: Dict[str, str] = {}  # user_id -> session_id
+        
+        # 从数据库加载用户
+        self._load_users_from_db()
+    
+    def _load_users_from_db(self):
+        """从数据库加载所有用户到内存"""
+        try:
+            users_data = self.db.get_all_users()
+            for user_data in users_data:
+                user = User(
+                    user_id=user_data['user_id'],
+                    username=user_data['username'],
+                    email=user_data.get('email'),
+                    hashed_password=user_data['hashed_password'],
+                    is_active=user_data.get('is_active', True),
+                    created_at=datetime.fromisoformat(user_data['created_at']) if user_data.get('created_at') else None,
+                    last_login=datetime.fromisoformat(user_data['last_login']) if user_data.get('last_login') else None
+                )
+                self.users[user.user_id] = user
+            
+            logger.info(f"💾 从数据库加载 {len(self.users)} 个用户")
+        except Exception as e:
+            logger.error(f"❌ 从数据库加载用户失败: {e}")
     
     def hash_password(self, password: str) -> str:
         """哈希密码"""
@@ -85,7 +114,21 @@ class UserManager:
                 hashed_password=self.hash_password(password)
             )
             
+            # 保存到内存
             self.users[user_id] = user
+            
+            # 保存到数据库
+            user_data = {
+                'user_id': user.user_id,
+                'username': user.username,
+                'email': user.email,
+                'hashed_password': user.hashed_password,
+                'is_active': user.is_active,
+                'created_at': user.created_at.isoformat() if user.created_at else datetime.now().isoformat(),
+                'last_login': user.last_login.isoformat() if user.last_login else None
+            }
+            self.db.save_user(user_data)
+            
             logger.info(f"👤 创建用户: {username} ({user_id})")
             return user
             
@@ -114,6 +157,12 @@ class UserManager:
             
             # 更新最后登录时间
             user.last_login = datetime.now()
+            
+            # 同步到数据库
+            self.db.update_user(user.user_id, {
+                'last_login': user.last_login.isoformat()
+            })
+            
             logger.info(f"🔐 用户认证成功: {username}")
             return user
             
@@ -306,10 +355,11 @@ class UserManager:
             return 0
     
     def _generate_user_id(self, username: str) -> str:
-        """生成用户ID"""
-        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-        hash_input = f"{username}_{timestamp}_{secrets.token_hex(8)}"
-        return f"user_{hashlib.md5(hash_input.encode()).hexdigest()[:12]}"
+        """生成用户ID - 基于用户名生成稳定的ID"""
+        # 使用固定的盐值确保同一用户名总是生成相同的ID
+        salt = "ty_memory_agent_user_salt_2024"
+        hash_input = f"{username}_{salt}"
+        return f"user_{hashlib.sha256(hash_input.encode()).hexdigest()[:12]}"
     
     def _generate_session_id(self) -> str:
         """生成会话ID"""

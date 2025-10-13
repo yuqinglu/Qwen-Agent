@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     # SQLite配置（用户数据）
     DATABASE_URL: str = Field(default="sqlite:///./ty_mem_agent.db", env="DATABASE_URL")
     
+    # 数据库文件路径配置（将在__init__中动态设置为绝对路径）
+    DATA_DIR: str = Field(default="", env="DATA_DIR")
+    USER_MEMORY_DB_PATH: str = Field(default="", env="USER_MEMORY_DB_PATH")
+    USERS_DB_PATH: str = Field(default="", env="USERS_DB_PATH")
+    
     # === 用户认证配置 ===
     SECRET_KEY: str = Field(default="your-secret-key-change-in-production", env="SECRET_KEY")
     ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=30, env="ACCESS_TOKEN_EXPIRE_MINUTES")
@@ -101,6 +106,31 @@ class Settings(BaseSettings):
     # === 日志配置 ===
     LOG_LEVEL: str = Field(default="INFO", env="LOG_LEVEL")
     LOG_FILE: str = Field(default="logs/ty_mem_agent.log", env="LOG_FILE")
+    
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        # 动态设置数据库路径为绝对路径
+        self._setup_database_paths()
+    
+    def _setup_database_paths(self):
+        """设置数据库路径为绝对路径"""
+        import os
+        from pathlib import Path
+        
+        # 获取项目根目录（ty_mem_agent的父目录）
+        current_file = Path(__file__)
+        project_root = current_file.parent.parent.parent  # 从config/settings.py -> ty_mem_agent -> 项目根目录
+        
+        # 设置数据目录
+        if not self.DATA_DIR:
+            self.DATA_DIR = str(project_root / "ty_mem_agent" / "data")
+        
+        # 设置数据库文件路径
+        if not self.USER_MEMORY_DB_PATH:
+            self.USER_MEMORY_DB_PATH = str(project_root / "ty_mem_agent" / "data" / "user_memory.db")
+        
+        if not self.USERS_DB_PATH:
+            self.USERS_DB_PATH = str(project_root / "ty_mem_agent" / "data" / "users.db")
     
     class Config:
         env_file = ".env"
