@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>待办事项 - TY Memory Agent</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: white;
+            border-radius: 15px;
+            padding: 25px 30px;
+            margin-bottom: 20px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+        }
+        .header-content {
+            display: -webkit-flex;
+            display: -ms-flexbox;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .header-left h1 {
+            font-size: 28px;
+            color: #333;
+            display: -webkit-flex;
+            display: -ms-flexbox;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin: 0;
+        }
+        .header-right {
+            display: -webkit-flex;
+            display: -ms-flexbox;
+            display: flex;
+            align-items: center;
+        }
+        .user-info {
+            display: -webkit-flex;
+            display: -ms-flexbox;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .user-avatar {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            display: -webkit-flex;
+            display: -ms-flexbox;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 16px;
+        }
+        .user-name {
+            font-size: 16px;
+            font-weight: 500;
+            color: #333;
+        }
+
+
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.3s;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-secondary {
+            background: #e0e0e0;
+            color: #333;
+        }
+
+        .btn-secondary:hover {
+            background: #d0d0d0;
+        }
+
+        .stats-bar {
+            background: white;
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+            display: flex;
+            gap: 20px;
+        }
+
+        .stat-item {
+            flex: 1;
+            text-align: center;
+            padding: 15px;
+            border-radius: 10px;
+            background: #f5f5f5;
+        }
+
+        .stat-value {
+            font-size: 32px;
+            font-weight: bold;
+            color: #667eea;
+        }
+
+        .stat-label {
+            font-size: 14px;
+            color: #666;
+            margin-top: 5px;
+        }
+
+        .controls {
+            background: white;
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+
+        .date-selector {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .date-selector input {
+            padding: 10px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+        }
+
+        .filter-buttons {
+            display: flex;
+            gap: 10px;
+        }
+
+        .filter-btn {
+            padding: 10px 15px;
+            border: 2px solid #e0e0e0;
+            background: white;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+
+        .filter-btn.active {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-color: #667eea;
+        }
+
+        .todos-container {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+            min-height: 400px;
+        }
+
+        .todo-item {
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 15px;
+            border-left: 4px solid #667eea;
+            transition: all 0.3s;
+        }
+
+        .todo-item:hover {
+            transform: translateX(5px);
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+        }
+
+        .todo-item.completed {
+            opacity: 0.7;
+            border-left-color: #28a745;
+        }
+
+        .todo-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 10px;
+        }
+
+        .todo-title {
+            font-size: 18px;
+            font-weight: 600;
+            color: #333;
+            flex: 1;
+        }
+
+        .todo-time {
+            font-size: 14px;
+            color: #667eea;
+            font-weight: 500;
+        }
+
+        .todo-meta {
+            display: flex;
+            gap: 15px;
+            margin-top: 10px;
+            flex-wrap: wrap;
+        }
+
+        .meta-item {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            font-size: 13px;
+            color: #666;
+        }
+
+        .todo-actions {
+            margin-top: 15px;
+            display: flex;
+            gap: 10px;
+        }
+
+        .action-btn {
+            padding: 6px 12px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            transition: all 0.3s;
+        }
+
+        .action-btn.complete {
+            background: #28a745;
+            color: white;
+        }
+
+        .action-btn.delete {
+            background: #dc3545;
+            color: white;
+        }
+
+        .action-btn:hover {
+            opacity: 0.8;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #999;
+        }
+
+        .empty-state svg {
+            width: 120px;
+            height: 120px;
+            margin-bottom: 20px;
+            opacity: 0.3;
+        }
+
+        .priority-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+
+        .priority-low {
+            background: #e8f5e9;
+            color: #2e7d32;
+        }
+
+        .priority-medium {
+            background: #fff3e0;
+            color: #ef6c00;
+        }
+
+        .priority-high {
+            background: #ffebee;
+            color: #c62828;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #999;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="header-content">
+                <div class="header-left">
+                    <h1>📝 待办事项管理</h1>
+                </div>
+                <div class="header-right">
+                    <div class="user-info" id="userInfo">
+                        <div class="user-avatar" id="userAvatar">U</div>
+                        <div class="user-name" id="userName">用户</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="stats-bar">
+            <div class="stat-item">
+                <div class="stat-value" id="stat-today">0</div>
+                <div class="stat-label">今日待办</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-value" id="stat-pending">0</div>
+                <div class="stat-label">未完成</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-value" id="stat-completed">0</div>
+                <div class="stat-label">已完成</div>
+            </div>
+        </div>
+
+        <div class="controls">
+            <div class="date-selector">
+                <label>📅 选择日期：</label>
+                <input type="date" id="date-input" onchange="loadTodos()">
+            </div>
+            <div class="filter-buttons">
+                <button class="filter-btn active" data-filter="all" onclick="setFilter('all')">全部</button>
+                <button class="filter-btn" data-filter="pending" onclick="setFilter('pending')">未完成</button>
+                <button class="filter-btn" data-filter="completed" onclick="setFilter('completed')">已完成</button>
+            </div>
+        </div>
+
+        <div class="todos-container" id="todos-container">
+            <div class="loading">加载中...</div>
+        </div>
+    </div>
+
+    <script>
+        let currentUserId = null;
+        let currentFilter = 'pending';
+        let currentDate = new Date().toISOString().split('T')[0];
+
+        // 显示用户信息
+        function showUserInfo(username) {
+            const userAvatar = document.getElementById('userAvatar');
+            const userName = document.getElementById('userName');
+            
+            if (userAvatar && userName) {
+                userName.textContent = username;
+                userAvatar.textContent = username.charAt(0).toUpperCase();
+            }
+        }
+
+        // 获取当前用户ID（用于待办查询，使用真实的user_id）
+        async function getCurrentUserId() {
+            try {
+                // 尝试从localStorage获取用户信息
+                const userInfo = localStorage.getItem('userInfo');
+                if (userInfo) {
+                    const user = JSON.parse(userInfo);
+                    // 优先使用user_id，确保数据一致性
+                    const userId = user.user_id || user.id;
+                    if (userId) {
+                        return userId;
+                    }
+                }
+                
+                // 如果没有用户信息，尝试从服务器获取
+                const response = await fetch('/user/profile', {
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('access_token')}`
+                    }
+                });
+                
+                if (response.ok) {
+                    const user = await response.json();
+                    // 使用真实的user_id
+                    if (user.user_id) {
+                        return user.user_id;
+                    }
+                }
+            } catch (error) {
+                console.error('获取用户ID失败:', error);
+            }
+            
+            // 如果都失败了，使用默认用户
+            console.warn('无法获取用户ID，使用默认用户');
+            return 'default_user';
+        }
+
+        // 初始化
+        document.addEventListener('DOMContentLoaded', async function() {
+            document.getElementById('date-input').value = currentDate;
+            
+            // 获取用户ID
+            currentUserId = await getCurrentUserId();
+            console.log('当前用户ID:', currentUserId);
+            
+            // 显示用户信息
+            try {
+                const userInfo = localStorage.getItem('userInfo');
+                if (userInfo) {
+                    const user = JSON.parse(userInfo);
+                    showUserInfo(user.username);
+                }
+            } catch (error) {
+                console.error('显示用户信息失败:', error);
+            }
+            
+            loadStats();
+            loadTodos();
+        });
+
+        // 设置筛选器
+        function setFilter(filter) {
+            currentFilter = filter;
+            document.querySelectorAll('.filter-btn').forEach(btn => {
+                btn.classList.remove('active');
+                if (btn.dataset.filter === filter) {
+                    btn.classList.add('active');
+                }
+            });
+            loadTodos();
+        }
+
+        // 加载统计数据
+        async function loadStats() {
+            try {
+                console.log('正在加载统计数据，用户ID:', currentUserId);
+                
+                if (!currentUserId) {
+                    console.error('用户ID为空，无法加载统计数据');
+                    return;
+                }
+                
+                const response = await fetch(`/api/todos/stats/${currentUserId}`);
+                
+                if (!response.ok) {
+                    console.error(`API请求失败: ${response.status} ${response.statusText}`);
+                    const errorText = await response.text();
+                    console.error('错误详情:', errorText);
+                    return;
+                }
+                
+                const data = await response.json();
+                console.log('统计数据响应:', data);
+                
+                if (data.success) {
+                    document.getElementById('stat-today').textContent = data.stats.today;
+                    document.getElementById('stat-pending').textContent = data.stats.pending;
+                    document.getElementById('stat-completed').textContent = data.stats.completed;
+                } else {
+                    console.error('API返回失败:', data);
+                }
+            } catch (error) {
+                console.error('加载统计数据失败:', error);
+            }
+        }
+
+        // 加载待办列表
+        async function loadTodos() {
+            const container = document.getElementById('todos-container');
+            container.innerHTML = '<div class="loading">加载中...</div>';
+
+            currentDate = document.getElementById('date-input').value;
+
+            try {
+                let url = `/api/todos/list/${currentUserId}?date=${currentDate}`;
+                if (currentFilter !== 'all') {
+                    url += `&status=${currentFilter}`;
+                }
+
+                const response = await fetch(url);
+                const data = await response.json();
+
+                if (data.success && data.todos.length > 0) {
+                    container.innerHTML = data.todos.map(todo => renderTodoItem(todo)).join('');
+                } else {
+                    container.innerHTML = `
+                        <div class="empty-state">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                <path d="M9 11l3 3L22 4"></path>
+                                <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"></path>
+                            </svg>
+                            <h3>暂无待办事项</h3>
+                            <p>在聊天中告诉我"帮我记个待办"来创建新的待办</p>
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                console.error('加载待办失败:', error);
+                container.innerHTML = '<div class="empty-state"><p>加载失败，请刷新页面重试</p></div>';
+            }
+        }
+
+        // 渲染待办项
+        function renderTodoItem(todo) {
+            const deadline = todo.deadline ? new Date(todo.deadline) : null;
+            const timeStr = deadline ? formatTime(deadline) : '未设置时间';
+            const priorityClass = ['priority-low', 'priority-medium', 'priority-high'][todo.priority || 0];
+            const priorityText = ['低', '中', '高'][todo.priority || 0];
+            const isCompleted = todo.status === 'completed';
+
+            let metaHtml = '';
+            if (todo.location) {
+                metaHtml += `<div class="meta-item">📍 ${todo.location}</div>`;
+            }
+            if (todo.participants && todo.participants.length > 0) {
+                metaHtml += `<div class="meta-item">👥 ${todo.participants.join(', ')}</div>`;
+            }
+            metaHtml += `<div class="meta-item"><span class="priority-badge ${priorityClass}">优先级: ${priorityText}</span></div>`;
+
+            return `
+                <div class="todo-item ${isCompleted ? 'completed' : ''}">
+                    <div class="todo-header">
+                        <div class="todo-title">${todo.title}</div>
+                        <div class="todo-time">⏰ ${timeStr}</div>
+                    </div>
+                    ${todo.description ? `<div style="color: #666; margin: 10px 0;">${todo.description}</div>` : ''}
+                    <div class="todo-meta">
+                        ${metaHtml}
+                    </div>
+                    ${!isCompleted ? `
+                    <div class="todo-actions">
+                        <button class="action-btn complete" onclick="completeTodo(${todo.id})">
+                            ✓ 完成
+                        </button>
+                        <button class="action-btn delete" onclick="deleteTodo(${todo.id})">
+                            🗑️ 删除
+                        </button>
+                    </div>
+                    ` : ''}
+                </div>
+            `;
+        }
+
+        // 格式化时间
+        function formatTime(date) {
+            const hours = date.getHours().toString().padStart(2, '0');
+            const minutes = date.getMinutes().toString().padStart(2, '0');
+            return `${hours}:${minutes}`;
+        }
+
+        // 完成待办
+        async function completeTodo(todoId) {
+            if (!confirm('确认完成这个待办吗？')) return;
+
+            try {
+                const response = await fetch(`/api/todos/${currentUserId}/${todoId}/complete`, {
+                    method: 'POST'
+                });
+                const data = await response.json();
+
+                if (data.success) {
+                    alert('✅ 待办已完成');
+                    loadStats();
+                    loadTodos();
+                } else {
+                    alert('操作失败');
+                }
+            } catch (error) {
+                console.error('完成待办失败:', error);
+                alert('操作失败');
+            }
+        }
+
+        // 删除待办
+        async function deleteTodo(todoId) {
+            if (!confirm('确认删除这个待办吗？')) return;
+
+            try {
+                const response = await fetch(`/api/todos/${currentUserId}/${todoId}`, {
+                    method: 'DELETE'
+                });
+                const data = await response.json();
+
+                if (data.success) {
+                    alert('✅ 待办已删除');
+                    loadStats();
+                    loadTodos();
+                } else {
+                    alert('操作失败');
+                }
+            } catch (error) {
+                console.error('删除待办失败:', error);
+                alert('操作失败');
+            }
+        }
+    </script>
+</body>
+</html>
+
