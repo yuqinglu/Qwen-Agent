@@ -23,6 +23,24 @@ from .time_mcp_server import (
     shutdown_time_mcp
 )
 
+# 通用工具包装器
+from .tool_wrapper import (
+    LoggingToolWrapper,
+    RetryToolWrapper,
+    CompositeToolWrapper,
+    wrap_tool_with_logging,
+    wrap_tool_with_retry,
+    wrap_tool_with_composite
+)
+
+# 工具注册中心
+from .tool_registry import (
+    ToolRegistry,
+    get_tool_registry,
+    initialize_tools,
+    shutdown_tools
+)
+
 __all__ = [
     # MCP Router
     'EnhancedMCPRouter',
@@ -42,4 +60,18 @@ __all__ = [
     'TimeQueryTool',
     'get_time_mcp_manager',
     'shutdown_time_mcp',
+    
+    # 通用工具包装器
+    'LoggingToolWrapper',
+    'RetryToolWrapper',
+    'CompositeToolWrapper',
+    'wrap_tool_with_logging',
+    'wrap_tool_with_retry',
+    'wrap_tool_with_composite',
+    
+    # 工具注册中心
+    'ToolRegistry',
+    'get_tool_registry',
+    'initialize_tools',
+    'shutdown_tools',
 ]

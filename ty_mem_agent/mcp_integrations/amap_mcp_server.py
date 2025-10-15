@@ -8,6 +8,7 @@ import os
 from typing import Dict, Optional, List
 from qwen_agent.tools.base import BaseTool
 from ty_mem_agent.utils.logger_config import get_logger
+from .tool_wrapper import LoggingToolWrapper
 
 logger = get_logger("AmapMCPServer")
 
@@ -95,140 +96,6 @@ def get_amap_mcp_server_config_stdio(api_key: Optional[str] = None) -> Dict:
     logger.info("   需要 Node.js v22.14.0+ 和 @amap/amap-maps-mcp-server")
     
     return config
-
-
-class LoggingToolWrapper(BaseTool):
-    """工具包装器，用于添加日志记录和智能降级"""
-    
-    def __init__(self, original_tool: BaseTool):
-        self.original_tool = original_tool
-        self.name = original_tool.name
-        self.description = getattr(original_tool, 'description', '')
-        self.parameters = getattr(original_tool, 'parameters', {})
-    
-    def _generate_fallback_cities(self, original_city: str) -> list:
-        """
-        生成降级城市列表
-        例如："重庆市渝中区" -> ["重庆市", "渝中区", "重庆"]
-        """
-        import re
-        
-        fallback_cities = []
-        city = original_city.strip()
-        
-        # 策略1: 移除区县，保留城市
-        # "重庆市渝中区" -> "重庆市"
-        # "北京市朝阳区" -> "北京市"
-        match = re.match(r'(.*?[市州盟])(.+[区县市])?', city)
-        if match and match.group(1):
-            city_only = match.group(1)
-            if city_only != city:
-                fallback_cities.append(city_only)
-        
-        # 策略2: 只保留区县
-        # "重庆市渝中区" -> "渝中区"
-        match = re.search(r'([^市州盟]+[区县市])$', city)
-        if match:
-            district_only = match.group(1)
-            if district_only != city:
-                fallback_cities.append(district_only)
-        
-        # 策略3: 移除"市"后缀
-        # "重庆市" -> "重庆"
-        if city.endswith('市'):
-            city_without_suffix = city[:-1]
-            if city_without_suffix not in fallback_cities:
-                fallback_cities.append(city_without_suffix)
-        
-        # 去重并保持顺序
-        seen = set()
-        unique_cities = []
-        for c in fallback_cities:
-            if c and c not in seen and c != original_city:
-                seen.add(c)
-                unique_cities.append(c)
-        
-        return unique_cities
-    
-    def call(self, params, **kwargs):
-        """带日志的工具调用"""
-        import json
-        
-        # 解析参数
-        if isinstance(params, str):
-            try:
-                params_dict = json.loads(params)
-            except:
-                params_dict = {'params': params}
-        else:
-            params_dict = params
-        
-        # 记录调用开始
-        logger.info("=" * 80)
-        logger.info(f"🔧 MCP 工具调用: {self.name}")
-        logger.info("-" * 80)
-        logger.info(f"📥 输入参数:")
-        logger.info(json.dumps(params_dict, ensure_ascii=False, indent=2))
-        logger.info("-" * 80)
-        
-        try:
-            # 调用原始工具
-            result = self.original_tool.call(params, **kwargs)
-            
-            # 特殊处理：天气工具的智能降级
-            if 'weather' in self.name.lower():
-                result_dict = json.loads(result) if isinstance(result, str) else result
-                
-                # 检查返回是否为空
-                if not result_dict.get('city') or not result_dict.get('forecasts'):
-                    logger.warning(f"⚠️ 天气查询返回空数据，尝试智能降级...")
-                    
-                    # 尝试降级策略
-                    if 'city' in params_dict:
-                        original_city = params_dict['city']
-                        fallback_cities = self._generate_fallback_cities(original_city)
-                        
-                        for i, fallback_city in enumerate(fallback_cities, 1):
-                            logger.info(f"🔄 降级尝试 {i}/{len(fallback_cities)}: {fallback_city}")
-                            try:
-                                fallback_params = params_dict.copy()
-                                fallback_params['city'] = fallback_city
-                                result = self.original_tool.call(json.dumps(fallback_params), **kwargs)
-                                result_dict = json.loads(result) if isinstance(result, str) else result
-                                
-                                if result_dict.get('city') and result_dict.get('forecasts'):
-                                    logger.info(f"✅ 降级成功！使用 '{fallback_city}' 查询到数据")
-                                    break
-                            except Exception as e:
-                                logger.debug(f"降级尝试失败: {e}")
-                                continue
-            
-            # 记录返回结果
-            logger.info(f"📤 返回结果:")
-            try:
-                # 尝试格式化 JSON
-                result_dict = json.loads(result) if isinstance(result, str) else result
-                logger.info(json.dumps(result_dict, ensure_ascii=False, indent=2))
-            except:
-                # 如果不是 JSON，直接输出
-                result_str = str(result)
-                if len(result_str) > 500:
-                    logger.info(f"{result_str[:500]}... (共 {len(result_str)} 字符)")
-                else:
-                    logger.info(result_str)
-            
-            logger.info("-" * 80)
-            logger.info(f"✅ 工具调用成功: {self.name}")
-            logger.info("=" * 80 + "\n")
-            
-            return result
-            
-        except Exception as e:
-            # 记录错误
-            logger.error(f"❌ 工具调用失败: {self.name}")
-            logger.error(f"错误信息: {str(e)}")
-            logger.info("=" * 80 + "\n")
-            raise
 
 
 class AmapMCPServerManager:

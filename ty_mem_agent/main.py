@@ -78,25 +78,24 @@ class TYMemoryAgentApp:
             return False
     
     async def _initialize_mcp_services(self):
-        """预初始化 MCP 服务"""
+        """初始化所有工具（使用统一的工具注册中心）"""
         self.logger.info("")
         self.logger.info("=" * 50)
-        self.logger.info("🔧 初始化 MCP 服务...")
+        self.logger.info("🔧 初始化工具注册中心...")
         self.logger.info("=" * 50)
         
-        # 初始化高德地图 MCP
-        await self._initialize_amap_mcp()
+        # 使用统一的工具注册中心
+        from ty_mem_agent.mcp_integrations import initialize_tools
         
-        # 初始化时间查询 MCP
-        await self._initialize_time_mcp()
-        
-        # 未来可以在这里添加其他 MCP 服务的初始化
-        # await self._initialize_other_mcp()
+        await initialize_tools()
         
         self.logger.info("=" * 50)
     
     async def _initialize_amap_mcp(self):
-        """初始化高德地图 MCP Server"""
+        """[已废弃] 初始化高德地图 MCP Server - 现在由 ToolRegistry 统一管理"""
+        return  # 已废弃，直接返回
+        
+        # 以下代码保留供参考
         try:
             # 延迟导入项目 MCP 集成模块
             from ty_mem_agent.mcp_integrations import get_amap_mcp_manager
@@ -154,7 +153,10 @@ class TYMemoryAgentApp:
             self.logger.error("   3. MCP 版本是否符合要求 (pip install -U mcp)")
     
     async def _initialize_time_mcp(self):
-        """初始化时间查询 MCP Server"""
+        """[已废弃] 初始化时间查询 MCP Server - 现在由 ToolRegistry 统一管理"""
+        return  # 已废弃，直接返回
+        
+        # 以下代码保留供参考
         try:
             # 延迟导入项目 MCP 集成模块
             from ty_mem_agent.mcp_integrations import get_time_mcp_manager
@@ -263,14 +265,13 @@ class TYMemoryAgentApp:
             except Exception as e:
                 self.logger.warning(f"⚠️ 记忆系统清理失败: {e}")
             
-            # 关闭 MCP 连接
+            # 关闭工具注册中心（统一管理所有工具的清理）
             try:
-                from ty_mem_agent.mcp_integrations import shutdown_amap_mcp, shutdown_time_mcp
-                shutdown_amap_mcp()
-                shutdown_time_mcp()
-                self.logger.info("✅ MCP 连接已关闭")
-            except Exception as mcp_e:
-                self.logger.warning(f"⚠️ 关闭 MCP 连接时出错: {mcp_e}")
+                from ty_mem_agent.mcp_integrations import shutdown_tools
+                await shutdown_tools()
+                self.logger.info("✅ 工具注册中心已关闭")
+            except Exception as tool_e:
+                self.logger.warning(f"⚠️ 关闭工具注册中心时出错: {tool_e}")
             
             self.logger.info("👋 TY Memory Agent 已安全关闭")
             

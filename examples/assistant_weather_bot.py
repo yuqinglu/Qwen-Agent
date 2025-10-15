@@ -28,7 +28,18 @@ def init_agent_service():
     system = ('你扮演一个天气预报助手，你具有查询天气和画图能力。'
               '你需要查询相应地区的天气，然后调用给你的画图工具绘制一张城市的图，并从给定的诗词文档中选一首相关的诗词来描述天气，不要说文档以外的诗词。')
 
-    tools = ['image_gen', 'amap_weather']
+    tools = [
+        {
+            'mcpServers': {  # You can specify the MCP configuration file
+                'time': {
+                    'command': 'uvx',
+                    'args': ['mcp-server-time', '--local-timezone=Asia/Shanghai']
+                }
+            }
+        },
+            'image_gen', 
+            'amap_weather'
+        ]
     bot = Assistant(
         llm=llm_cfg,
         name='天气预报助手',

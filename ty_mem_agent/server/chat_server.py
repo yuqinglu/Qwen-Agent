@@ -101,6 +101,9 @@ class ChatServer:
         # 初始化路由
         self._setup_routes()
         
+        # 注册待办API路由
+        self._register_todo_routes()
+        
         # 初始化默认用户
         init_default_users()
         
@@ -225,7 +228,7 @@ class ChatServer:
                 with open(html_path, 'r', encoding='utf-8') as f:
                     return HTMLResponse(f.read())
             else:
-                return HTMLResponse(self._get_fallback_html())
+                return HTMLResponse("<h1>聊天页面模板未找到</h1>", status_code=404)
     
     async def _handle_websocket_connection(self, websocket: WebSocket, user):
         """处理WebSocket连接"""
@@ -496,239 +499,23 @@ class ChatServer:
         except Exception as e:
             logger.error(f"❌ 断开用户连接失败: {e}")
     
-    def _get_fallback_html(self) -> str:
-        """获取备用演示页面HTML（当外部文件不存在时使用）"""
-        return """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>TY Memory Agent Chat Demo</title>
-    <meta charset="UTF-8">
-    <style>
-        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background-color: #f5f5f5; }
-        .container { max-width: 800px; margin: 0 auto; background: white; border-radius: 10px; overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        .header { background: #007bff; color: white; padding: 20px; text-align: center; }
-        .login-form { padding: 20px; border-bottom: 1px solid #eee; }
-        .chat-container { height: 400px; overflow-y: auto; padding: 20px; border-bottom: 1px solid #eee; }
-        .message { margin-bottom: 15px; padding: 10px; border-radius: 5px; }
-        .user-message { background: #e3f2fd; margin-left: 50px; }
-        .assistant-message { background: #f3e5f5; margin-right: 50px; }
-        .input-container { padding: 20px; display: flex; gap: 10px; }
-        input, button { padding: 10px; border: 1px solid #ddd; border-radius: 5px; }
-        input[type="text"] { flex: 1; }
-        button { background: #007bff; color: white; border: none; cursor: pointer; }
-        button:hover { background: #0056b3; }
-        .status { color: #666; font-style: italic; }
-        .error { color: #dc3545; }
-        .message-content { word-wrap: break-word; white-space: pre-wrap; }
-        .message-time { color: #999; font-size: 0.8em; }
-        .assistant-message { border-left: 3px solid #007bff; }
-        .user-message { border-left: 3px solid #28a745; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>🤖 TY Memory Agent</h1>
-            <p>智能记忆助手演示</p>
-        </div>
+    
+    def _register_todo_routes(self):
+        """注册待办管理路由"""
+        from ty_mem_agent.server.todo_api import router as todo_router
+        self.app.include_router(todo_router)
         
-        <div class="login-form" id="loginForm">
-            <h3>请先登录</h3>
-            <input type="text" id="username" placeholder="用户名 (test)" value="test">
-            <input type="password" id="password" placeholder="密码 (test123)" value="test123">
-            <button onclick="login()">登录</button>
-            <p class="status">默认用户: test/test123 或 admin/admin123</p>
-        </div>
+        # 添加待办管理页面路由
+        @self.app.get("/todos")
+        async def todos_page():
+            """待办管理页面"""
+            template_path = Path(__file__).parent / "templates" / "todos.html"
+            if template_path.exists():
+                return FileResponse(template_path)
+            else:
+                return HTMLResponse(content="<h1>待办管理页面未找到</h1>", status_code=404)
         
-        <div class="chat-container" id="chatContainer" style="display: none;"></div>
-        
-        <div class="input-container" id="inputContainer" style="display: none;">
-            <input type="text" id="messageInput" placeholder="输入消息..." onkeypress="handleKeyPress(event)">
-            <button onclick="sendMessage()">发送</button>
-            <button onclick="logout()">登出</button>
-        </div>
-    </div>
-
-    <script>
-        let ws = null;
-        let token = null;
-
-        async function login() {
-            const username = document.getElementById('username').value;
-            const password = document.getElementById('password').value;
-            
-            try {
-                const response = await fetch('/auth/login', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ username, password })
-                });
-                
-                if (response.ok) {
-                    const data = await response.json();
-                    token = data.access_token;
-                    connectWebSocket();
-                    
-                    document.getElementById('loginForm').style.display = 'none';
-                    document.getElementById('chatContainer').style.display = 'block';
-                    document.getElementById('inputContainer').style.display = 'flex';
-                } else {
-                    alert('登录失败');
-                }
-            } catch (error) {
-                alert('登录错误: ' + error.message);
-            }
-        }
-
-        function connectWebSocket() {
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            ws = new WebSocket(`${protocol}//${window.location.host}/ws/${token}`);
-            
-            ws.onmessage = function(event) {
-                const data = JSON.parse(event.data);
-                displayMessage(data);
-            };
-            
-            ws.onclose = function() {
-                console.log('WebSocket连接关闭');
-            };
-        }
-
-        // 存储当前正在流式输出的消息
-        let currentStreamingMessage = null;
-        
-        function displayMessage(data) {
-            const chatContainer = document.getElementById('chatContainer');
-            
-            if (data.type === 'hide_thinking') {
-                // 隐藏"正在思考..."消息
-                const thinkingElement = document.getElementById('status-' + data.message_id);
-                if (thinkingElement) {
-                    thinkingElement.style.display = 'none';
-                }
-                
-            } else if (data.type === 'message_chunk') {
-                // 处理流式消息块
-                if (!currentStreamingMessage) {
-                    // 创建新的流式消息容器
-                    currentStreamingMessage = document.createElement('div');
-                    currentStreamingMessage.className = 'message assistant-message';
-                    currentStreamingMessage.id = 'streaming-' + data.message_id;
-                    currentStreamingMessage.innerHTML = `
-                        <div class="message-content"></div>
-                        <small class="message-time">${new Date(data.timestamp).toLocaleTimeString()}</small>
-                    `;
-                    chatContainer.appendChild(currentStreamingMessage);
-                }
-                
-                // 追加增量内容
-                const contentDiv = currentStreamingMessage.querySelector('.message-content');
-                contentDiv.textContent = data.full_content;
-                
-                // 滚动到底部
-                chatContainer.scrollTop = chatContainer.scrollHeight;
-                
-            } else if (data.type === 'message') {
-                // 处理完整消息
-                if (currentStreamingMessage) {
-                    // 完成当前流式消息
-                    currentStreamingMessage = null;
-                }
-                
-                const messageDiv = document.createElement('div');
-                messageDiv.className = 'message assistant-message';
-                messageDiv.innerHTML = `
-                    <div class="message-content">${data.content}</div>
-                    <small class="message-time">${new Date(data.timestamp).toLocaleTimeString()}</small>
-                `;
-                
-                chatContainer.appendChild(messageDiv);
-                chatContainer.scrollTop = chatContainer.scrollHeight;
-                
-            } else if (data.type === 'status') {
-                // 处理状态消息
-                if (data.content === '完成' && currentStreamingMessage) {
-                    // 流式消息完成，清理引用
-                    currentStreamingMessage = null;
-                } else {
-                    // 显示状态消息
-                    const messageDiv = document.createElement('div');
-                    messageDiv.className = 'message status';
-                    messageDiv.id = 'status-' + (data.message_id || 'default');
-                    messageDiv.innerHTML = `
-                        <div class="message-content">${data.content}</div>
-                        <small class="message-time">${new Date(data.timestamp).toLocaleTimeString()}</small>
-                    `;
-                    
-                    chatContainer.appendChild(messageDiv);
-                    chatContainer.scrollTop = chatContainer.scrollHeight;
-                }
-                
-            } else if (data.type === 'error') {
-                // 处理错误消息
-                const messageDiv = document.createElement('div');
-                messageDiv.className = 'message error';
-                messageDiv.innerHTML = `
-                    <div class="message-content">${data.content}</div>
-                    <small class="message-time">${new Date(data.timestamp).toLocaleTimeString()}</small>
-                `;
-                
-                chatContainer.appendChild(messageDiv);
-                chatContainer.scrollTop = chatContainer.scrollHeight;
-            }
-        }
-
-        function sendMessage() {
-            const input = document.getElementById('messageInput');
-            const message = input.value.trim();
-            
-            if (message && ws) {
-                // 显示用户消息
-                const chatContainer = document.getElementById('chatContainer');
-                const messageDiv = document.createElement('div');
-                messageDiv.className = 'message user-message';
-                messageDiv.innerHTML = `
-                    <div>${message}</div>
-                    <small>${new Date().toLocaleTimeString()}</small>
-                `;
-                chatContainer.appendChild(messageDiv);
-                
-                // 发送消息
-                ws.send(JSON.stringify({ content: message }));
-                input.value = '';
-                chatContainer.scrollTop = chatContainer.scrollHeight;
-            }
-        }
-
-        function handleKeyPress(event) {
-            if (event.key === 'Enter') {
-                sendMessage();
-            }
-        }
-
-        async function logout() {
-            if (ws) {
-                ws.close();
-            }
-            
-            if (token) {
-                await fetch('/auth/logout', {
-                    method: 'POST',
-                    headers: { 'Authorization': `Bearer ${token}` }
-                });
-            }
-            
-            token = null;
-            document.getElementById('loginForm').style.display = 'block';
-            document.getElementById('chatContainer').style.display = 'none';
-            document.getElementById('inputContainer').style.display = 'none';
-            document.getElementById('chatContainer').innerHTML = '';
-        }
-    </script>
-</body>
-</html>
-        """
+        logger.info("✅ 待办管理路由已注册")
     
     async def start_server(self):
         """启动服务器"""

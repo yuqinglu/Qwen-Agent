@@ -5,7 +5,6 @@ TY Memory Agent - 基于QwenAgent的智能记忆代理
 """
 
 import sys
-import os
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Union
 from dataclasses import asdict
@@ -18,8 +17,7 @@ sys.path.insert(0, str(project_root))
 try:
     from qwen_agent.agents.assistant import Assistant
     from qwen_agent.llm import get_chat_model
-    from qwen_agent.llm.schema import Message, USER, ASSISTANT, SYSTEM
-    from qwen_agent.tools.amap_weather import AmapWeather
+    from qwen_agent.llm.schema import Message, USER, SYSTEM
     from qwen_agent.tools.base import BaseTool
     logger.info("✅ 成功导入QwenAgent核心组件")
 except ImportError as e:
@@ -27,15 +25,8 @@ except ImportError as e:
     raise
 
 # 本地导入
-from ty_mem_agent.config.settings import settings, get_llm_config
+from ty_mem_agent.config.settings import get_llm_config
 from ty_mem_agent.memory.user_memory import get_integrated_memory
-from ty_mem_agent.mcp_integrations import get_amap_mcp_manager, get_time_mcp_manager  # 使用 MCP Manager 单例
-
-# 全局工具缓存，避免重复初始化 MCP
-_amap_tools_cache = None
-_amap_tools_initialized = False
-_time_tools_cache = None
-_time_tools_initialized = False
 
 
 class TYMemoryAgent(Assistant):
@@ -105,10 +96,19 @@ class TYMemoryAgent(Assistant):
 - 维护对话上下文，提供连贯的交互体验
 - 为不同用户提供个性化服务
 
+📝 待办管理：
+- 智能识别用户提到的待办事项，自动提取时间、地点、人物、事件等信息
+- 当用户说"帮我记个待办"、"添加待办"时，使用extract_todo工具创建待办
+- 当用户询问"我今天有什么事"、"明天的日程"时，使用query_todos工具查询
+- 主动检测时间冲突，提醒用户待办安排
+- 支持待办的完成、删除、修改等操作
+- 重要：调用待办工具时，必须使用用户的真实user_id（不是用户名或显示名称）
+
 🛠️ 智能工具：
 - 查询天气信息，为用户出行提供参考
 - 规划行程路线，优化出行方案
 - 查询时间和日期，支持不同时区和格式
+- 管理待办事项，智能提醒和冲突检测
 - 调用其他实用工具，满足用户日常需求
 
 💡 服务原则：
@@ -116,64 +116,35 @@ class TYMemoryAgent(Assistant):
 - 主动利用记忆信息提供个性化服务
 - 根据用户偏好调整服务风格和内容
 - 及时调用工具满足用户实际需求
+- 主动提醒待办事项和时间冲突
 - 保持友好、专业、贴心的服务态度
 
 请根据用户的需求和记忆信息，提供最合适的个人助理服务。"""
     
     def _get_default_tools(self) -> List[Union[str, Dict, BaseTool]]:
-        """获取默认工具列表"""
-        tools = []
-        
-        # 添加高德地图 MCP Server 工具（标准 MCP 协议）
-        # 使用全局缓存，避免重复初始化 MCPManager
-        # 注意：MCP 应该已经在应用启动时初始化，这里只是获取工具
-        global _amap_tools_cache, _amap_tools_initialized
-        
-        if not _amap_tools_initialized:
-            try:
-                manager = get_amap_mcp_manager()
-                # 如果 manager 已经有工具（说明在 main.py 中已初始化），直接使用
-                if manager.tools:
-                    _amap_tools_cache = manager.get_tools()
-                    _amap_tools_initialized = True
-                    logger.debug(f"✅ 从 MCP Manager 获取到 {len(_amap_tools_cache)} 个高德工具")
-                else:
-                    # 如果没有工具，说明应用启动时初始化失败
-                    logger.debug("⚠️ MCP Manager 未初始化，可能是 AMAP_TOKEN 未配置或初始化失败")
-                    _amap_tools_cache = []
-                    _amap_tools_initialized = True
-            except Exception as e:
-                logger.debug(f"⚠️ 无法获取高德 MCP 工具: {e}")
-                _amap_tools_cache = []
-                _amap_tools_initialized = True  # 标记已尝试，避免重复尝试
-        
-        # 使用缓存的工具
-        if _amap_tools_cache:
-            tools.extend(_amap_tools_cache)
-            logger.debug(f"✅ Agent 使用 {len(_amap_tools_cache)} 个高德 MCP 工具")
-        
-        # 添加时间查询 MCP Server 工具
-        global _time_tools_cache, _time_tools_initialized
-        
-        if not _time_tools_initialized:
-            try:
-                manager = get_time_mcp_manager()
-                # 初始化时间工具
-                manager.initialize()
-                _time_tools_cache = manager.get_tools()
-                _time_tools_initialized = True
-                logger.debug(f"✅ 从时间 MCP Manager 获取到 {len(_time_tools_cache)} 个时间工具")
-            except Exception as e:
-                logger.debug(f"⚠️ 无法获取时间 MCP 工具: {e}")
-                _time_tools_cache = []
-                _time_tools_initialized = True  # 标记已尝试，避免重复尝试
-        
-        # 使用缓存的时间工具
-        if _time_tools_cache:
-            tools.extend(_time_tools_cache)
-            logger.debug(f"✅ Agent 使用 {len(_time_tools_cache)} 个时间查询工具")
-        
-        return tools
+        """获取默认工具列表（从工具注册中心获取）"""
+        try:
+            from ty_mem_agent.mcp_integrations import get_tool_registry
+            
+            # 从工具注册中心获取所有已初始化的工具
+            registry = get_tool_registry()
+            tools = registry.get_all_tools()
+            
+            if tools:
+                logger.debug(f"✅ Agent 从工具注册中心获取到 {len(tools)} 个工具")
+                
+                # 打印工具摘要
+                tool_names = [getattr(t, 'name', 'unknown') for t in tools]
+                logger.debug(f"   工具列表: {', '.join(tool_names)}")
+            else:
+                logger.warning("⚠️ 工具注册中心未返回任何工具")
+            
+            return tools
+            
+        except Exception as e:
+            logger.error(f"❌ 从工具注册中心获取工具失败: {e}")
+            logger.error("   Agent 将在没有工具的情况下运行")
+            return []
     
     async def run_with_memory(self, 
                        messages: List[Any], 
@@ -194,7 +165,7 @@ class TYMemoryAgent(Assistant):
             logger.debug(f"🔍 获取用户记忆: {user_memory}")
             
             # 构建带记忆的消息
-            enhanced_messages = self._enhance_messages_with_memory(messages, user_memory)
+            enhanced_messages = self._enhance_messages_with_memory(messages, user_memory, user_id)
             logger.debug(f"🔍 构建带记忆的消息: {enhanced_messages}")
             
             # 记录发送给LLM的完整提示词
@@ -296,14 +267,14 @@ class TYMemoryAgent(Assistant):
             logger.warning(f"⚠️ 获取用户记忆失败: {e}")
             return {}
     
-    def _enhance_messages_with_memory(self, messages: List[Message], user_memory: Dict[str, Any]) -> List[Message]:
+    def _enhance_messages_with_memory(self, messages: List[Message], user_memory: Dict[str, Any], user_id: str = None) -> List[Message]:
         """用记忆增强消息"""
         try:
             enhanced_messages = messages.copy()
             
             # 添加用户记忆信息到第一条消息
             if enhanced_messages and user_memory:
-                memory_context = self._format_memory_context(user_memory)
+                memory_context = self._format_memory_context(user_memory, user_id)
                 if memory_context:
                     # 在第一条消息前添加记忆上下文
                     memory_message = Message(
@@ -317,7 +288,7 @@ class TYMemoryAgent(Assistant):
             logger.warning(f"⚠️ 记忆增强失败: {e}")
             return messages
     
-    def _format_memory_context(self, user_memory: Dict[str, Any]) -> str:
+    def _format_memory_context(self, user_memory: Dict[str, Any], user_id: str = None) -> str:
         """格式化记忆上下文"""
         try:
             context_parts = []
@@ -326,6 +297,8 @@ class TYMemoryAgent(Assistant):
             user_profile = user_memory.get("user_profile", {})
             if user_profile:
                 profile_info = []
+                if hasattr(user_profile, 'user_id') and user_profile.user_id:
+                    profile_info.append(f"用户ID: {user_profile.user_id}")
                 if hasattr(user_profile, 'name') and user_profile.name:
                     profile_info.append(f"姓名: {user_profile.name}")
                 if hasattr(user_profile, 'age') and user_profile.age:
@@ -338,6 +311,8 @@ class TYMemoryAgent(Assistant):
                     profile_info.append(f"兴趣: {', '.join(user_profile.interests)}")
                 if profile_info:
                     context_parts.append(f"用户画像: {'; '.join(profile_info)}")
+            elif user_id:
+                context_parts.append(f"用户ID: {user_id}")
             
             # 2. 对话历史
             conversation_history = user_memory.get("conversation_history", [])

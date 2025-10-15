@@ -48,7 +48,30 @@ class MyImageGen(BaseTool):
 
 
 def init_agent_service():
+    # 配置选项1: 使用DashScope（需要DASHSCOPE_API_KEY）
     llm_cfg = {'model': 'qwen-max'}
+    
+    # 配置选项2: 使用OpenAI（需要OPENAI_API_KEY）
+    # llm_cfg = {
+    #     'model': 'gpt-4o-mini',
+    #     'model_server': 'https://api.openai.com/v1',
+    #     'api_key': os.getenv('OPENAI_API_KEY'),
+    # }
+    
+    # 配置选项3: 使用Together.AI免费模型（需要TOGETHER_API_KEY）
+    # llm_cfg = {
+    #     'model': 'meta-llama/Llama-3.2-3B-Instruct-Turbo',
+    #     'model_server': 'https://api.together.xyz/v1',
+    #     'api_key': os.getenv('TOGETHER_API_KEY'),
+    # }
+    
+    # 配置选项4: 使用本地Ollama模型（需要先安装Ollama）
+    # llm_cfg = {
+    #     'model': 'qwen2.5:7b',
+    #     'model_server': 'http://localhost:11434/v1', 
+    #     'api_key': 'EMPTY',
+    # }
+    
     system = ("According to the user's request, you first draw a picture and then automatically "
               'run code to download the picture and select an image operation from the given document '
               'to process the image')
@@ -111,6 +134,14 @@ def app_gui():
 
 
 if __name__ == '__main__':
+    print("=== qwen-agent 自定义工具示例 ===")
+    print("当前配置: DashScope (需要DASHSCOPE_API_KEY)")
+    print("如果没有API密钥，请:")
+    print("1. 申请阿里云DashScope API密钥")
+    print("2. 或修改llm_cfg使用其他模型服务")
+    print("3. 设置环境变量: export DASHSCOPE_API_KEY='your-key'")
+    print("=" * 40)
+    
     # test()
     # app_tui()
     app_gui()

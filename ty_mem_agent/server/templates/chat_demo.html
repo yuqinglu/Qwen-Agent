@@ -23,7 +23,24 @@
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white; 
             padding: 20px; 
-            text-align: center; 
+        }
+        .header-content {
+            display: -webkit-flex;
+            display: -ms-flexbox;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .header-left {
+            display: -webkit-flex;
+            display: -ms-flexbox;
+            display: flex;
+            align-items: center;
+        }
+        .title-section {
+            text-align: left;
         }
         .header h1 { margin: 0; font-size: 2em; }
         .header p { margin: 10px 0 0 0; opacity: 0.9; }
@@ -61,18 +78,26 @@
         }
         
         .btn-group { 
+            display: -webkit-flex;
+            display: -ms-flexbox;
             display: flex; 
             gap: 10px; 
             margin-top: 20px;
         }
         button { 
+            -webkit-flex: 1;
+            -ms-flex: 1;
             flex: 1;
             padding: 12px 20px; 
             border: none; 
             border-radius: 5px; 
             cursor: pointer; 
-            font-size: 14px;
+            font-size: 14px; 
             font-weight: 500;
+            -webkit-transition: all 0.3s;
+            -moz-transition: all 0.3s;
+            -ms-transition: all 0.3s;
+            -o-transition: all 0.3s;
             transition: all 0.3s;
         }
         .btn-primary { 
@@ -80,6 +105,10 @@
             color: white; 
         }
         .btn-primary:hover { 
+            -webkit-transform: translateY(-2px);
+            -moz-transform: translateY(-2px);
+            -ms-transform: translateY(-2px);
+            -o-transform: translateY(-2px);
             transform: translateY(-2px);
             box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
         }
@@ -130,11 +159,15 @@
         }
         .input-container { 
             padding: 20px; 
+            display: -webkit-flex;
+            display: -ms-flexbox;
             display: flex; 
             gap: 10px; 
             background: #f8f9fa;
         }
         input[type="text"] { 
+            -webkit-flex: 1;
+            -ms-flex: 1;
             flex: 1; 
             min-width: 0; /* 确保输入框可以收缩 */
         }
@@ -199,11 +232,47 @@
             display: block;
         }
         
+        /* 待办管理区域 */
+        .todo-manager-area {
+            position: absolute;
+            top: 20px;
+            right: 300px;
+            z-index: 1000;
+        }
+        .todo-manager-btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 20px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+            -webkit-transition: all 0.3s;
+            -moz-transition: all 0.3s;
+            -ms-transition: all 0.3s;
+            -o-transition: all 0.3s;
+            transition: all 0.3s;
+            min-width: 120px;
+        }
+        .todo-manager-btn:hover {
+            background: linear-gradient(135deg, #5a6fd8 0%, #6a4190 100%);
+            -webkit-transform: translateY(-2px);
+            -moz-transform: translateY(-2px);
+            -ms-transform: translateY(-2px);
+            -o-transform: translateY(-2px);
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+        }
+        
         /* 用户信息区域 */
         .user-info {
             position: absolute;
             top: 20px;
             right: 20px;
+            display: -webkit-flex;
+            display: -ms-flexbox;
             display: flex;
             align-items: center;
             gap: 10px;
@@ -212,6 +281,7 @@
             border-radius: 20px;
             box-shadow: 0 2px 8px rgba(0,0,0,0.1);
             backdrop-filter: blur(10px);
+            z-index: 1000;
         }
         .user-avatar {
             width: 32px;
@@ -248,6 +318,11 @@
 </head>
 <body>
     <div class="container">
+        <!-- 待办管理按钮（独立区域） -->
+        <div class="todo-manager-area" id="todoManagerArea" style="display: none;">
+            <button class="btn btn-primary todo-manager-btn" id="todoButton" onclick="openTodoPage()">📝 待办管理</button>
+        </div>
+        
         <!-- 用户信息区域（登录后显示） -->
         <div class="user-info" id="userInfo" style="display: none;">
             <div class="user-avatar" id="userAvatar">U</div>
@@ -256,8 +331,14 @@
         </div>
         
         <div class="header">
-            <h1>🤖 TY Memory Agent</h1>
-            <p>智能记忆助手演示</p>
+            <div class="header-content">
+                <div class="header-left">
+                    <div class="title-section">
+                        <h1>🤖 TY Memory Agent</h1>
+                        <p>智能记忆助手演示</p>
+                    </div>
+                </div>
+            </div>
         </div>
         
         <!-- 登录表单 -->
@@ -319,6 +400,33 @@
     <script>
         let ws = null;
         let token = null;
+
+        // 检查用户登录状态
+        function checkLoginStatus() {
+            const token = localStorage.getItem('access_token');
+            const userInfo = localStorage.getItem('userInfo');
+            
+            if (token && userInfo) {
+                try {
+                    const user = JSON.parse(userInfo);
+                    // 自动登录
+                    window.token = token;
+                    connectWebSocket();
+                    showUserInfo(user.username);
+                    
+                    document.getElementById('loginForm').style.display = 'none';
+                    document.getElementById('chatContainer').style.display = 'block';
+                    document.getElementById('inputContainer').style.display = 'flex';
+                    document.getElementById('todoManagerArea').style.display = 'block';
+                    
+                    return true;
+                } catch (error) {
+                    console.error('解析用户信息失败:', error);
+                    localStorage.clear();
+                }
+            }
+            return false;
+        }
 
         // 显示登录表单
         function showLoginForm() {
@@ -451,6 +559,15 @@
                 if (response.ok) {
                     const data = await response.json();
                     token = data.access_token;
+                    
+                    // 保存用户信息到localStorage
+                    localStorage.setItem('access_token', token);
+                    localStorage.setItem('userInfo', JSON.stringify({
+                        user_id: data.user_id,
+                        username: data.username,
+                        session_id: data.session_id
+                    }));
+                    
                     connectWebSocket();
                     
                     // 显示用户信息区域
@@ -459,6 +576,7 @@
                     document.getElementById('loginForm').style.display = 'none';
                     document.getElementById('chatContainer').style.display = 'block';
                     document.getElementById('inputContainer').style.display = 'flex';
+                    document.getElementById('todoManagerArea').style.display = 'block';
                 } else {
                     const data = await response.json();
                     errorDiv.textContent = data.detail || '登录失败';
@@ -473,7 +591,9 @@
         // 连接WebSocket
         function connectWebSocket() {
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            ws = new WebSocket(`${protocol}//${window.location.host}/ws/${token}`);
+            const currentToken = token || window.token || localStorage.getItem('access_token');
+            console.log('WebSocket连接token:', currentToken);
+            ws = new WebSocket(`${protocol}//${window.location.host}/ws/${currentToken}`);
             
             ws.onmessage = function(event) {
                 const data = JSON.parse(event.data);
@@ -623,6 +743,25 @@
             userInfo.style.display = 'flex';
         }
 
+        // 新标签页打开待办管理
+        function openTodoPage() {
+            // 在新标签页中打开待办管理页面
+            const todoWindow = window.open('/todos', '_blank');
+            
+            // 检查是否成功打开新窗口
+            if (!todoWindow || todoWindow.closed || typeof todoWindow.closed == 'undefined') {
+                alert('无法打开新窗口，请检查浏览器弹窗设置');
+            }
+        }
+
+        // 页面加载时检查登录状态
+        document.addEventListener('DOMContentLoaded', function() {
+            if (!checkLoginStatus()) {
+                // 如果没有登录，显示登录表单
+                document.getElementById('loginForm').style.display = 'block';
+            }
+        });
+
         // 登出
         async function logout() {
             if (ws) {
@@ -642,8 +781,15 @@
             
             token = null;
             
+            // 清理localStorage
+            localStorage.removeItem('access_token');
+            localStorage.removeItem('userInfo');
+            
             // 隐藏用户信息区域
             document.getElementById('userInfo').style.display = 'none';
+            
+            // 隐藏待办管理区域
+            document.getElementById('todoManagerArea').style.display = 'none';
             
             // 显示登录表单
             document.getElementById('loginForm').style.display = 'block';
