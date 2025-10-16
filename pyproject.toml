@@ -63,7 +63,6 @@ multiprocess = {version = "*", optional = true}
 timeout_decorator = {version = "*", optional = true}
 python-dateutil = {version = "*", optional = true}
 openpyxl = "^3.1.5"
-jwt = "^1.4.0"
 pyjwt = "^2.10.1"
 
 [tool.poetry.extras]

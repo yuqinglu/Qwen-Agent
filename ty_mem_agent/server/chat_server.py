@@ -284,10 +284,8 @@ class ChatServer:
                     welcome_parts.append(f"您对{', '.join(profile['interests'][:2])}感兴趣")
             
             welcome_parts.append("\n🤖 我是您的智能记忆助手，可以为您：")
-            welcome_parts.append("• 🚗 叫车服务（滴滴）")
             welcome_parts.append("• 🌤️ 查询天气（高德）")
             welcome_parts.append("• 🕐 时间查询")
-            welcome_parts.append("• 🎨 图像生成")
             welcome_parts.append("• 💭 记住我们的对话和您的偏好")
             
             welcome_message = "\n".join(welcome_parts)

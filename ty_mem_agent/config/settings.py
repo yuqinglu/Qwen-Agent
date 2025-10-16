@@ -105,7 +105,7 @@ class Settings(BaseSettings):
     
     # === 日志配置 ===
     LOG_LEVEL: str = Field(default="INFO", env="LOG_LEVEL")
-    LOG_FILE: str = Field(default="logs/ty_mem_agent.log", env="LOG_FILE")
+    LOG_FILE: str = Field(default="ty_mem_agent/logs/ty_mem_agent.log", env="LOG_FILE")
     
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
