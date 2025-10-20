@@ -211,6 +211,15 @@ class TYMemoryAgentApp:
         self.logger.info(f"🔧 MCP服务: {len([s for s in settings.MCP_SERVICES.values() if s.get('enabled')])} 个已启用")
         self.logger.info(f"📊 调试模式: {'开启' if settings.DEBUG else '关闭'}")
         self.logger.info(f"📝 日志级别: {settings.LOG_LEVEL}")
+        
+        # 打印API key信息（用于调试）
+        self.logger.info("=" * 50)
+        self.logger.info("🔑 API Key 配置信息")
+        self.logger.info("=" * 50)
+        self.logger.info(f"DASHSCOPE_API_KEY: {settings.DASHSCOPE_API_KEY[:10] if settings.DASHSCOPE_API_KEY else 'None'}...")
+        self.logger.info(f"OPENAI_API_KEY: {settings.OPENAI_API_KEY[:10] if settings.OPENAI_API_KEY else 'None'}...")
+        self.logger.info(f"MEMOS_API_KEY: {settings.MEMOS_API_KEY[:10] if settings.MEMOS_API_KEY else 'None'}...")
+        self.logger.info(f"AMAP_TOKEN: {settings.AMAP_TOKEN[:10] if settings.AMAP_TOKEN else 'None'}...")
         self.logger.info("=" * 50)
     
     def _setup_signal_handlers(self):

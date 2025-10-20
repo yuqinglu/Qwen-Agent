@@ -4,6 +4,7 @@ TY Memory Agent 配置文件
 """
 
 import os
+from pathlib import Path
 from typing import Dict, List, Optional
 from pydantic import Field
 from pydantic_settings import BaseSettings
@@ -11,6 +12,10 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     """系统配置"""
+    
+    class Config:
+        env_file = str(Path(__file__).parent.parent / ".env")
+        env_file_encoding = "utf-8"
     
     # === 基础配置 ===
     PROJECT_NAME: str = "TY Memory Agent"

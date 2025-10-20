@@ -235,6 +235,35 @@ class TodoExtractorTool(BaseTool):
         if 'title' not in cleaned:
             cleaned['title'] = '未命名待办'
         
+        # 🔧 修复：处理deadline时间设置问题
+        # 当deadline只有日期没有具体时间（即00:00:00）时，改成前一天的23:59:59
+        # 例如：2025-10-24T00:00:00 -> 2025-10-23T23:59:59
+        if 'deadline' in cleaned and cleaned['deadline']:
+            deadline_str = str(cleaned['deadline'])
+            try:
+                # 检查是否是00:00:00或00:00
+                if 'T00:00:00' in deadline_str or ('T00:00' in deadline_str and 'T00:00:' not in deadline_str):
+                    # 解析为datetime对象
+                    from datetime import datetime, timedelta
+                    
+                    # 尝试解析ISO格式
+                    try:
+                        deadline_dt = datetime.fromisoformat(deadline_str.replace('Z', '+00:00'))
+                    except:
+                        # 如果失败，尝试不带时区的格式
+                        deadline_dt = datetime.fromisoformat(deadline_str.split('+')[0].split('Z')[0])
+                    
+                    # 减去1天，并设置为23:59:59
+                    corrected_dt = deadline_dt - timedelta(days=1)
+                    corrected_dt = corrected_dt.replace(hour=23, minute=59, second=59, microsecond=0)
+                    
+                    # 格式化为ISO字符串
+                    cleaned['deadline'] = corrected_dt.strftime('%Y-%m-%dT%H:%M:%S')
+                    
+                    logger.info(f"⏰ 修正deadline时间: {deadline_str} -> {cleaned['deadline']} (前一天23:59:59)")
+            except Exception as e:
+                logger.warning(f"处理deadline时间时出错: {e}，保持原值")
+        
         # 确保participants是列表
         if 'participants' in cleaned and not isinstance(cleaned['participants'], list):
             if isinstance(cleaned['participants'], str):
@@ -387,6 +416,26 @@ class TodoUpdateTool(BaseTool):
 - 用户说"把XX待办标记为完成"
 - 用户说"删除XX待办"
 - 用户说"修改待办时间"
+- 用户说"对了，地点是XX"（补充地点信息）
+- 用户说"补充一下，时间是XX"（补充时间信息）
+- 用户说"还有，参与人包括XX"（补充参与人信息）
+
+重要：当用户使用"对了"、"补充一下"、"还有"、"修改"等词语时，通常是在更新刚创建的待办，应该调用此工具。
+
+⚠️ 关键要求：
+- todo_id必须是正确的待办ID，不能使用硬编码的1、2等
+- 如果刚创建了待办，从工具调用结果中获取返回的todo_id
+- 如果无法确定ID，先调用query_todos工具查询待办列表
+
+可更新的字段：
+- deadline: 截止时间（ISO 8601格式，如"2025-10-24T17:30:00"）
+- reminder_time: 提醒时间（ISO 8601格式）
+- location: 地点
+- participants: 参与人列表（数组）
+- title: 标题
+- description: 描述
+- priority: 优先级（0-2）
+- tags: 标签列表（数组）
 """
     
     parameters = {
@@ -407,7 +456,41 @@ class TodoUpdateTool(BaseTool):
             },
             "updates": {
                 "type": "object",
-                "description": "更新的字段（action为update时使用）"
+                "description": "更新的字段（action为update时使用）。支持字段：deadline（截止时间）、reminder_time（提醒时间）、location（地点）、participants（参与人）、title（标题）、description（描述）、priority（优先级）、tags（标签）",
+                "properties": {
+                    "deadline": {
+                        "type": "string",
+                        "description": "截止时间（ISO 8601格式，如2025-10-24T17:30:00）"
+                    },
+                    "reminder_time": {
+                        "type": "string", 
+                        "description": "提醒时间（ISO 8601格式）"
+                    },
+                    "location": {
+                        "type": "string",
+                        "description": "地点"
+                    },
+                    "participants": {
+                        "type": "array",
+                        "description": "参与人列表"
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "标题"
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "描述"
+                    },
+                    "priority": {
+                        "type": "integer",
+                        "description": "优先级（0-2）"
+                    },
+                    "tags": {
+                        "type": "array",
+                        "description": "标签列表"
+                    }
+                }
             }
         },
         "required": ["user_id", "todo_id", "action"]

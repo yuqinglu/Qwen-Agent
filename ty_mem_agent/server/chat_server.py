@@ -21,6 +21,7 @@ from ty_mem_agent.config.settings import settings
 from ty_mem_agent.agents.ty_memory_agent import TYMemoryAgent
 from ty_mem_agent.memory.user_memory import get_integrated_memory
 from ty_mem_agent.server.user_manager import user_manager, init_default_users
+from ty_mem_agent.server.conversation_manager import get_conversation_manager
 from qwen_agent.llm.schema import Message, USER, ASSISTANT
 
 
@@ -47,6 +48,14 @@ class ChatResponse(BaseModel):
     timestamp: datetime
     message_id: str
     metadata: Optional[Dict] = None
+
+
+class CreateConversationRequest(BaseModel):
+    title: Optional[str] = "新对话"
+
+
+class UpdateConversationTitleRequest(BaseModel):
+    title: str
 
 
 # 安全相关
@@ -97,6 +106,12 @@ class ChatServer:
         # WebSocket连接管理
         self.active_connections: Dict[str, WebSocket] = {}
         self.user_agents: Dict[str, TYMemoryAgent] = {}
+        
+        # 会话管理器
+        self.conversation_manager = get_conversation_manager()
+        
+        # 用户当前会话追踪
+        self.user_current_conversation: Dict[str, str] = {}  # user_id -> conversation_id
         
         # 初始化路由
         self._setup_routes()
@@ -229,6 +244,256 @@ class ChatServer:
                     return HTMLResponse(f.read())
             else:
                 return HTMLResponse("<h1>聊天页面模板未找到</h1>", status_code=404)
+        
+        # ==================== 会话管理API ====================
+        
+        @self.app.get("/conversations")
+        async def get_conversations(current_user = Depends(get_current_user)):
+            """获取用户的所有会话列表"""
+            try:
+                conversations = self.conversation_manager.get_user_conversations(
+                    user_id=current_user.user_id,
+                    limit=50
+                )
+                return {
+                    "conversations": conversations,
+                    "total": len(conversations)
+                }
+            except Exception as e:
+                logger.error(f"获取会话列表失败: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=str(e)
+                )
+        
+        @self.app.post("/conversations")
+        async def create_conversation(
+            request: CreateConversationRequest,
+            current_user = Depends(get_current_user)
+        ):
+            """创建新会话"""
+            try:
+                conversation = self.conversation_manager.create_conversation(
+                    user_id=current_user.user_id,
+                    title=request.title
+                )
+                
+                # 设置为当前会话
+                self.user_current_conversation[current_user.user_id] = conversation.conversation_id
+                
+                return {
+                    "conversation_id": conversation.conversation_id,
+                    "title": conversation.title,
+                    "created_at": conversation.created_at
+                }
+            except Exception as e:
+                logger.error(f"创建会话失败: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=str(e)
+                )
+        
+        @self.app.get("/conversations/{conversation_id}")
+        async def get_conversation(
+            conversation_id: str,
+            current_user = Depends(get_current_user)
+        ):
+            """获取指定会话的详细信息"""
+            try:
+                conversation = self.conversation_manager.get_conversation(conversation_id)
+                
+                if not conversation:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="会话不存在"
+                    )
+                
+                # 验证会话所有权
+                if conversation.user_id != current_user.user_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="无权访问此会话"
+                    )
+                
+                return conversation.to_dict()
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"获取会话失败: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=str(e)
+                )
+        
+        @self.app.get("/conversations/{conversation_id}/messages")
+        async def get_conversation_messages(
+            conversation_id: str,
+            current_user = Depends(get_current_user)
+        ):
+            """获取指定会话的所有消息"""
+            try:
+                conversation = self.conversation_manager.get_conversation(conversation_id)
+                
+                if not conversation:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="会话不存在"
+                    )
+                
+                # 验证会话所有权
+                if conversation.user_id != current_user.user_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="无权访问此会话"
+                    )
+                
+                messages = self.conversation_manager.get_conversation_messages(conversation_id)
+                return {
+                    "conversation_id": conversation_id,
+                    "messages": messages,
+                    "total": len(messages)
+                }
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"获取会话消息失败: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=str(e)
+                )
+        
+        @self.app.put("/conversations/{conversation_id}/title")
+        async def update_conversation_title(
+            conversation_id: str,
+            request: UpdateConversationTitleRequest,
+            current_user = Depends(get_current_user)
+        ):
+            """更新会话标题"""
+            try:
+                conversation = self.conversation_manager.get_conversation(conversation_id)
+                
+                if not conversation:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="会话不存在"
+                    )
+                
+                # 验证会话所有权
+                if conversation.user_id != current_user.user_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="无权访问此会话"
+                    )
+                
+                success = self.conversation_manager.update_conversation_title(
+                    conversation_id,
+                    request.title
+                )
+                
+                if success:
+                    return {"message": "标题更新成功", "title": request.title}
+                else:
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail="标题更新失败"
+                    )
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"更新会话标题失败: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=str(e)
+                )
+        
+        @self.app.post("/conversations/{conversation_id}/generate-title")
+        async def generate_conversation_title(
+            conversation_id: str,
+            current_user = Depends(get_current_user)
+        ):
+            """使用AI自动生成会话标题"""
+            try:
+                conversation = self.conversation_manager.get_conversation(conversation_id)
+                
+                if not conversation:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="会话不存在"
+                    )
+                
+                # 验证会话所有权
+                if conversation.user_id != current_user.user_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="无权访问此会话"
+                    )
+                
+                # 获取用户的第一条消息
+                user_messages = [msg for msg in conversation.messages if msg.role == 'user']
+                if not user_messages:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="会话中没有用户消息"
+                    )
+                
+                first_user_message = user_messages[0].content
+                
+                # 使用AI生成标题
+                title = await self._generate_title_with_llm(first_user_message)
+                
+                # 更新标题
+                self.conversation_manager.update_conversation_title(conversation_id, title)
+                
+                return {"title": title, "conversation_id": conversation_id}
+                
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"生成会话标题失败: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=str(e)
+                )
+        
+        @self.app.delete("/conversations/{conversation_id}")
+        async def delete_conversation(
+            conversation_id: str,
+            current_user = Depends(get_current_user)
+        ):
+            """删除会话"""
+            try:
+                conversation = self.conversation_manager.get_conversation(conversation_id)
+                
+                if not conversation:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="会话不存在"
+                    )
+                
+                # 验证会话所有权
+                if conversation.user_id != current_user.user_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="无权访问此会话"
+                    )
+                
+                success = self.conversation_manager.delete_conversation(conversation_id)
+                
+                if success:
+                    return {"message": "会话删除成功"}
+                else:
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail="会话删除失败"
+                    )
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"删除会话失败: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=str(e)
+                )
     
     async def _handle_websocket_connection(self, websocket: WebSocket, user):
         """处理WebSocket连接"""
@@ -246,7 +511,9 @@ class ChatServer:
             await agent.set_user_context(user_id, session_id)
             self.user_agents[user_id] = agent
         
-        logger.info(f"🔗 用户连接: {user.username} ({user_id})")
+        # 不自动创建会话，让用户主动选择
+        # 只有在用户发送消息时才创建会话
+        logger.info(f"🔗 用户连接: {user.username} ({user_id})，等待用户主动创建会话")
         
         try:
             # 发送欢迎消息
@@ -310,6 +577,26 @@ class ChatServer:
             if not content.strip():
                 return
             
+            # 获取当前会话ID
+            conversation_id = message_data.get("conversation_id") or self.user_current_conversation.get(user_id)
+            
+            if not conversation_id:
+                # 创建新会话
+                conversation = self.conversation_manager.create_conversation(
+                    user_id=user_id,
+                    title="新对话"
+                )
+                conversation_id = conversation.conversation_id
+                self.user_current_conversation[user_id] = conversation_id
+                logger.info(f"📝 创建新会话: {conversation_id}")
+            
+            # 保存用户消息到会话
+            self.conversation_manager.add_message(
+                conversation_id=conversation_id,
+                role='user',
+                content=content
+            )
+            
             # 发送正在处理消息
             thinking_message_id = f"thinking_{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
             await websocket.send_text(json.dumps({
@@ -329,8 +616,27 @@ class ChatServer:
                 }))
                 return
             
-            # 创建消息对象
-            user_message = Message(role=USER, content=content)
+            # 🔧 修复：获取会话历史，构建包含上下文的消息列表
+            conversation = self.conversation_manager.get_conversation(conversation_id)
+            messages = []
+            
+            if conversation and conversation.messages:
+                # 获取最近N轮对话（默认最近10条消息，约5轮对话）
+                max_context_messages = 10  # 可以在settings中配置
+                recent_messages = conversation.messages[-max_context_messages:]
+                
+                # 构建消息列表
+                for msg in recent_messages:
+                    messages.append(Message(
+                        role=msg.role,
+                        content=msg.content
+                    ))
+                
+                logger.debug(f"📜 传递会话历史: {len(messages)} 条消息")
+            else:
+                # 如果没有历史，就只传当前消息
+                messages = [Message(role=USER, content=content)]
+                logger.debug(f"📜 无会话历史，只传递当前消息")
             
             # 处理消息并流式返回
             response_content = ""
@@ -340,7 +646,7 @@ class ChatServer:
             
             # 使用run_with_memory进行带记忆的对话
             async for response in agent.run_with_memory(
-                messages=[user_message], 
+                messages=messages,  # ✅ 传递包含历史上下文的消息列表
                 user_id=user_id, 
                 session_id=agent.current_session_id
             ):
@@ -444,6 +750,53 @@ class ChatServer:
                                 }
                             }))
             
+            # 保存assistant的回复到会话
+            if response_content:
+                self.conversation_manager.add_message(
+                    conversation_id=conversation_id,
+                    role='assistant',
+                    content=response_content
+                )
+                
+                # 检查是否需要生成标题（在保存assistant消息后检查）
+                conversation = self.conversation_manager.get_conversation(conversation_id)
+                
+                if conversation and conversation.title == "新对话":
+                    # 检查是否只有用户和助手各一条消息
+                    user_messages = [msg for msg in conversation.messages if msg.role == 'user']
+                    assistant_messages = [msg for msg in conversation.messages if msg.role == 'assistant']
+                    
+                    if len(user_messages) == 1 and len(assistant_messages) == 1:
+                        try:
+                            logger.info(f"🎯 开始为会话 {conversation_id} 生成标题，用户消息: {content[:50]}...")
+                            
+                            # 异步生成标题，不阻塞消息发送
+                            title = await self._generate_title_with_llm(content)
+                            self.conversation_manager.update_conversation_title(conversation_id, title)
+                            
+                            logger.info(f"✅ 标题生成成功: {title}")
+                            
+                            # 通知前端标题已更新
+                            await websocket.send_text(json.dumps({
+                                "type": "title_updated",
+                                "conversation_id": conversation_id,
+                                "title": title,
+                                "timestamp": datetime.now().isoformat()
+                            }))
+                        except Exception as e:
+                            logger.error(f"❌ 自动生成标题失败: {e}")
+                            # 如果AI生成失败，使用简化标题生成
+                            fallback_title = self._generate_simple_title(content)
+                            self.conversation_manager.update_conversation_title(conversation_id, fallback_title)
+                            
+                            # 通知前端使用备用标题
+                            await websocket.send_text(json.dumps({
+                                "type": "title_updated",
+                                "conversation_id": conversation_id,
+                                "title": fallback_title,
+                                "timestamp": datetime.now().isoformat()
+                            }))
+            
             # 发送完成状态
             await websocket.send_text(json.dumps({
                 "type": "status",
@@ -459,6 +812,102 @@ class ChatServer:
                 "content": f"处理消息时出错：{str(e)}",
                 "timestamp": datetime.now().isoformat()
             }))
+    
+    def _generate_simple_title(self, user_message: str) -> str:
+        """
+        简化的标题生成（不依赖LLM）
+        
+        Args:
+            user_message: 用户消息
+        
+        Returns:
+            生成的标题
+        """
+        # 移除常见的开头词汇
+        message = user_message.strip()
+        
+        # 移除问号、感叹号等标点
+        message = message.replace('？', '').replace('?', '').replace('！', '').replace('!', '')
+        
+        # 移除常见的开头
+        prefixes_to_remove = [
+            '请帮我', '帮我', '请问', '我想', '我需要', '能否', '可以', '能不能',
+            '请', '帮我写', '帮我做', '帮我找', '帮我查', '帮我分析'
+        ]
+        
+        for prefix in prefixes_to_remove:
+            if message.startswith(prefix):
+                message = message[len(prefix):].strip()
+                break
+        
+        # 限制长度
+        if len(message) > 20:
+            message = message[:20] + '...'
+        
+        return message if message else '新对话'
+    
+    async def _generate_title_with_llm(self, first_user_message: str) -> str:
+        """
+        使用大模型生成会话标题
+        
+        Args:
+            first_user_message: 用户的第一条消息
+        
+        Returns:
+            生成的标题
+        """
+        try:
+            # 检查是否有LLM API配置
+            if not settings.DASHSCOPE_API_KEY and not settings.OPENAI_API_KEY:
+                logger.warning("⚠️ 未配置LLM API密钥，使用简化标题生成")
+                return self._generate_simple_title(first_user_message)
+            
+            # 导入LLM
+            from qwen_agent.llm import get_chat_model
+            
+            # 创建提示词
+            prompt = f"""请根据用户的第一条消息，生成一个简洁的对话标题（不超过20个字）。
+            
+用户消息：{first_user_message}
+
+要求：
+1. 标题要简洁明了，能概括对话主题
+2. 不要包含标点符号
+3. 不要添加引号或其他修饰
+4. 直接输出标题内容，不要有任何前缀或后缀
+
+标题："""
+            
+            # 调用LLM生成标题
+            llm = get_chat_model({'model': settings.DEFAULT_LLM_MODEL})
+            
+            messages = [Message(role=USER, content=prompt)]
+            
+            # 使用非流式调用
+            response = llm.chat(messages=messages, stream=False)
+            
+            # 提取标题
+            if response and response[-1]:
+                title = response[-1].content.strip()
+                
+                # 清理标题
+                title = title.replace('"', '').replace("'", '').replace('：', '').replace(':', '')
+                title = title.replace('标题', '').strip()
+                
+                # 限制长度
+                if len(title) > 30:
+                    title = title[:30] + '...'
+                
+                logger.info(f"✅ LLM生成标题: {title}")
+                return title if title else self._generate_simple_title(first_user_message)
+            else:
+                logger.warning("⚠️ LLM返回空响应，使用简化标题生成")
+                return self._generate_simple_title(first_user_message)
+                
+        except Exception as e:
+            logger.error(f"❌ LLM生成标题失败: {e}")
+            logger.info("🔄 使用简化标题生成作为备选方案")
+            return self._generate_simple_title(first_user_message)
     
     async def _get_user_memory_summary(self, user_id: str) -> Dict:
         """获取用户记忆摘要"""

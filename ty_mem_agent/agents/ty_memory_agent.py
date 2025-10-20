@@ -60,6 +60,15 @@ class TYMemoryAgent(Assistant):
         # 默认LLM配置
         if llm is None:
             llm_config = get_llm_config()
+            logger.info("=" * 50)
+            logger.info("🔑 TYMemoryAgent 使用的API Key信息")
+            logger.info("=" * 50)
+            logger.info(f"模型类型: {llm_config.get('model_type', 'unknown')}")
+            logger.info(f"模型名称: {llm_config.get('model', 'unknown')}")
+            logger.info(f"API Key: {llm_config.get('api_key', 'None')[:10]}...")
+            if 'model_server' in llm_config:
+                logger.info(f"模型服务器: {llm_config.get('model_server', 'None')}")
+            logger.info("=" * 50)
             llm = get_chat_model(llm_config)
         
         # 默认工具列表 - 使用QwenAgent内置工具和自定义工具
@@ -103,6 +112,21 @@ class TYMemoryAgent(Assistant):
 - 主动检测时间冲突，提醒用户待办安排
 - 支持待办的完成、删除、修改等操作
 - 重要：调用待办工具时，必须使用用户的真实user_id（不是用户名或显示名称）
+
+🔄 待办更新识别：
+- 当用户说"补充一下"、"对了"、"还有"、"修改"、"更新"等词语时，通常是在更新刚创建的待办
+- 如果对话历史中有刚创建的待办，用户补充信息时应该调用update_todo工具更新
+- 更新场景示例：
+  * "对了，地点是XX" → 更新location字段
+  * "补充一下，时间是XX" → 更新deadline字段  
+  * "还有，参与人包括XX" → 更新participants字段
+  * "修改一下，改成XX" → 更新相应字段
+
+📋 待办ID获取：
+- 更新待办时，必须使用正确的todo_id
+- 如果对话历史中刚创建了待办，从工具调用结果中获取返回的todo_id
+- 如果无法确定待办ID，先调用query_todos工具查询用户的待办列表
+- 不要使用硬编码的ID（如1、2等），必须使用实际的待办ID
 
 🛠️ 智能工具：
 - 查询天气信息，为用户出行提供参考
@@ -179,6 +203,10 @@ class TYMemoryAgent(Assistant):
             logger.info("=" * 80)
             
             # 运行对话
+            logger.info("🔍 开始调用LLM...")
+            logger.info(f"🔍 当前LLM配置: {getattr(self.llm, '__class__', 'Unknown')}")
+            logger.info(f"🔍 LLM类型: {type(self.llm)}")
+            
             response = []
             for chunk in self.run(messages=enhanced_messages, **kwargs):
                 response = chunk
