@@ -117,6 +117,59 @@ async def get_todo_stats(user_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/calendar-status/{user_id}")
+async def get_calendar_status(user_id: str, start_date: str, end_date: str):
+    """获取日历日期范围内的待办状态
+    
+    Args:
+        user_id: 用户ID
+        start_date: 开始日期 (YYYY-MM-DD)
+        end_date: 结束日期 (YYYY-MM-DD)
+    
+    Returns:
+        每日的待办状态统计
+    """
+    try:
+        logger.info(f"📅 获取日历状态: {user_id}, {start_date} 到 {end_date}")
+        todo_manager = get_todo_manager()
+        
+        # 规范化为当天零点和结束天23:59:59，避免边界遗漏
+        start_dt = f"{start_date}T00:00:00"
+        end_dt = f"{end_date}T23:59:59"
+        
+        # 获取日期范围内的所有待办
+        todos = todo_manager.get_todos_by_range(user_id, start_dt, end_dt)
+        
+        # 按日期分组统计
+        status_by_date = {}
+        
+        for todo in todos:
+            if todo.deadline:
+                # 提取日期部分
+                todo_date = todo.deadline.split('T')[0]
+                
+                if todo_date not in status_by_date:
+                    status_by_date[todo_date] = {
+                        "pending": 0,
+                        "completed": 0
+                    }
+                
+                if todo.status == TodoStatus.PENDING.value:
+                    status_by_date[todo_date]["pending"] += 1
+                elif todo.status == TodoStatus.COMPLETED.value:
+                    status_by_date[todo_date]["completed"] += 1
+        
+        logger.info(f"📅 日历状态结果: {status_by_date}")
+        
+        return {
+            "success": True,
+            "status_by_date": status_by_date
+        }
+    except Exception as e:
+        logger.error(f"❌ 获取日历状态失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/{user_id}/{todo_id}")
 async def get_todo(user_id: str, todo_id: int):
     """获取单个待办"""

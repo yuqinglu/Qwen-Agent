@@ -157,11 +157,143 @@
             gap: 10px;
         }
 
-        .date-selector input {
+        .date-selector {
+            position: relative;
+        }
+
+        /* 旧的输入框状态点样式已移除 */
+
+        /* 自定义日历样式 */
+        .calendar-container {
+            position: relative;
+            display: inline-block;
+        }
+
+        .calendar-input {
             padding: 10px;
             border: 2px solid #e0e0e0;
             border-radius: 8px;
             font-size: 14px;
+            width: 150px;
+            cursor: pointer;
+            background: white;
+        }
+
+        .calendar-dropdown {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            background: white;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            z-index: 1000;
+            min-width: 280px;
+            padding: 15px;
+            display: none;
+        }
+
+        .calendar-dropdown.show {
+            display: block;
+        }
+
+        .calendar-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .calendar-nav {
+            background: none;
+            border: none;
+            font-size: 18px;
+            cursor: pointer;
+            padding: 5px;
+            border-radius: 4px;
+        }
+
+        .calendar-nav:hover {
+            background: #f0f0f0;
+        }
+
+        .calendar-month-year {
+            font-weight: 600;
+            font-size: 16px;
+        }
+
+        .calendar-weekdays {
+            display: grid;
+            grid-template-columns: repeat(7, 1fr);
+            gap: 5px;
+            margin-bottom: 10px;
+        }
+
+        .calendar-weekday {
+            text-align: center;
+            font-size: 12px;
+            font-weight: 600;
+            color: #666;
+            padding: 5px;
+        }
+
+        .calendar-days {
+            display: grid;
+            grid-template-columns: repeat(7, 1fr);
+            gap: 5px;
+        }
+
+        .calendar-day {
+            position: relative;
+            aspect-ratio: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            border-radius: 4px;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+
+        .calendar-day:hover {
+            background: #f0f0f0;
+        }
+
+        .calendar-day.selected {
+            background: #667eea;
+            color: white;
+        }
+
+        .calendar-day.today {
+            background: #e3f2fd;
+            color: #1976d2;
+        }
+
+        .calendar-day.other-month {
+            color: #ccc;
+        }
+
+        .day-status-dots {
+            position: absolute;
+            bottom: 2px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 1px;
+        }
+
+        .day-status-dot {
+            width: 4px;
+            height: 4px;
+            border-radius: 50%;
+        }
+
+        .day-status-dot.pending {
+            background-color: #dc3545;
+        }
+
+        .day-status-dot.completed {
+            background-color: #28a745;
         }
 
         .filter-buttons {
@@ -353,7 +485,26 @@
         <div class="controls">
             <div class="date-selector">
                 <label>📅 选择日期：</label>
-                <input type="date" id="date-input" onchange="loadTodos()">
+                <div class="calendar-container">
+                    <input type="text" class="calendar-input" id="calendar-input" readonly onclick="toggleCalendar()" placeholder="选择日期">
+                    <div class="calendar-dropdown" id="calendar-dropdown">
+                        <div class="calendar-header">
+                            <button class="calendar-nav" onclick="changeMonth(-1)">‹</button>
+                            <div class="calendar-month-year" id="calendar-month-year"></div>
+                            <button class="calendar-nav" onclick="changeMonth(1)">›</button>
+                        </div>
+                        <div class="calendar-weekdays">
+                            <div class="calendar-weekday">日</div>
+                            <div class="calendar-weekday">一</div>
+                            <div class="calendar-weekday">二</div>
+                            <div class="calendar-weekday">三</div>
+                            <div class="calendar-weekday">四</div>
+                            <div class="calendar-weekday">五</div>
+                            <div class="calendar-weekday">六</div>
+                        </div>
+                        <div class="calendar-days" id="calendar-days"></div>
+                    </div>
+                </div>
             </div>
             <div class="filter-buttons">
                 <button class="filter-btn active" data-filter="all" onclick="setFilter('all')">全部</button>
@@ -371,6 +522,9 @@
         let currentUserId = null;
         let currentFilter = 'pending';
         let currentDate = new Date().toISOString().split('T')[0];
+        let calendarStatus = {}; // 存储日历状态数据
+        let currentCalendarMonth = new Date().getMonth();
+        let currentCalendarYear = new Date().getFullYear();
 
         // 显示用户信息
         function showUserInfo(username) {
@@ -420,9 +574,51 @@
             return 'default_user';
         }
 
+        // 获取日历状态
+        async function loadCalendarStatus() {
+            try {
+                if (!currentUserId) {
+                    console.log('用户ID为空，跳过日历状态加载');
+                    return;
+                }
+                
+                // 获取当前月份的开始和结束日期
+                const today = new Date();
+                const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+                const endOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+                
+                const startDate = startOfMonth.toISOString().split('T')[0];
+                const endDate = endOfMonth.toISOString().split('T')[0];
+                
+                console.log('正在加载日历状态:', { userId: currentUserId, startDate, endDate });
+                
+                const response = await fetch(`/api/todos/calendar-status/${currentUserId}?start_date=${startDate}&end_date=${endDate}`);
+                const data = await response.json();
+                
+                console.log('日历状态API响应:', data);
+                
+                if (data.success) {
+                    calendarStatus = data.status_by_date;
+                    console.log('日历状态数据:', calendarStatus);
+                    updateDateStatusDots();
+                } else {
+                    console.error('日历状态API返回失败:', data);
+                }
+            } catch (error) {
+                console.error('加载日历状态失败:', error);
+            }
+        }
+
+        // 旧的输入框状态点更新函数已移除
+        function updateDateStatusDots() { return; }
+
         // 初始化
         document.addEventListener('DOMContentLoaded', async function() {
-            document.getElementById('date-input').value = currentDate;
+            // 设置自定义日历的初始值
+            const calendarInput = document.getElementById('calendar-input');
+            if (calendarInput) {
+                calendarInput.value = formatDate(new Date(currentDate));
+            }
             
             // 获取用户ID
             currentUserId = await getCurrentUserId();
@@ -441,6 +637,7 @@
             
             loadStats();
             loadTodos();
+            loadCalendarStatus();
         });
 
         // 设置筛选器
@@ -494,7 +691,14 @@
             const container = document.getElementById('todos-container');
             container.innerHTML = '<div class="loading">加载中...</div>';
 
-            currentDate = document.getElementById('date-input').value;
+            // 从自定义日历输入框读取日期，若无则使用当前内存中的日期
+            const calendarInputEl = document.getElementById('calendar-input');
+            if (calendarInputEl && calendarInputEl.value) {
+                currentDate = calendarInputEl.value;
+            }
+            
+            // 更新日期状态点
+            updateDateStatusDots();
 
             try {
                 let url = `/api/todos/list/${currentUserId}?date=${currentDate}`;
@@ -505,7 +709,7 @@
                 const response = await fetch(url);
                 const data = await response.json();
 
-                if (data.success && data.todos.length > 0) {
+                if (data.success && data.todos && data.todos.length > 0) {
                     container.innerHTML = data.todos.map(todo => renderTodoItem(todo)).join('');
                 } else {
                     container.innerHTML = `
@@ -587,6 +791,7 @@
                     alert('✅ 待办已完成');
                     loadStats();
                     loadTodos();
+                    loadCalendarStatus(); // 刷新日历状态
                 } else {
                     alert('操作失败');
                 }
@@ -610,6 +815,7 @@
                     alert('✅ 待办已删除');
                     loadStats();
                     loadTodos();
+                    loadCalendarStatus(); // 刷新日历状态
                 } else {
                     alert('操作失败');
                 }
@@ -618,6 +824,126 @@
                 alert('操作失败');
             }
         }
+
+        // 自定义日历功能
+        function toggleCalendar() {
+            const dropdown = document.getElementById('calendar-dropdown');
+            dropdown.classList.toggle('show');
+            
+            if (dropdown.classList.contains('show')) {
+                renderCalendar();
+            }
+        }
+
+        function changeMonth(direction) {
+            currentCalendarMonth += direction;
+            if (currentCalendarMonth < 0) {
+                currentCalendarMonth = 11;
+                currentCalendarYear--;
+            } else if (currentCalendarMonth > 11) {
+                currentCalendarMonth = 0;
+                currentCalendarYear++;
+            }
+            renderCalendar();
+        }
+
+        function renderCalendar() {
+            const monthYear = document.getElementById('calendar-month-year');
+            const daysContainer = document.getElementById('calendar-days');
+            
+            const monthNames = ['一月', '二月', '三月', '四月', '五月', '六月', 
+                              '七月', '八月', '九月', '十月', '十一月', '十二月'];
+            
+            monthYear.textContent = `${currentCalendarYear}年 ${monthNames[currentCalendarMonth]}`;
+            daysContainer.innerHTML = '';
+            
+            const firstDay = new Date(currentCalendarYear, currentCalendarMonth, 1);
+            const lastDay = new Date(currentCalendarYear, currentCalendarMonth + 1, 0);
+            const startDate = new Date(firstDay);
+            startDate.setDate(startDate.getDate() - firstDay.getDay());
+            
+            const today = new Date();
+            const selectedDate = new Date(currentDate);
+            
+            for (let i = 0; i < 42; i++) {
+                const date = new Date(startDate);
+                date.setDate(startDate.getDate() + i);
+                
+                const dayElement = document.createElement('div');
+                dayElement.className = 'calendar-day';
+                dayElement.textContent = date.getDate();
+                
+                // 判断是否是当前月份
+                if (date.getMonth() !== currentCalendarMonth) {
+                    dayElement.classList.add('other-month');
+                }
+                
+                // 判断是否是今天
+                if (date.toDateString() === today.toDateString()) {
+                    dayElement.classList.add('today');
+                }
+                
+                // 判断是否是选中日期
+                if (date.toDateString() === selectedDate.toDateString()) {
+                    dayElement.classList.add('selected');
+                }
+                
+                // 添加状态点（使用本地日期避免时区偏差）
+                const dateStr = formatDate(date);
+                const dayStatus = calendarStatus[dateStr];
+                
+                if (dayStatus && (dayStatus.pending > 0 || dayStatus.completed > 0)) {
+                    const statusDots = document.createElement('div');
+                    statusDots.className = 'day-status-dots';
+                    
+                    if (dayStatus.pending > 0) {
+                        const pendingDot = document.createElement('div');
+                        pendingDot.className = 'day-status-dot pending';
+                        pendingDot.title = `${dayStatus.pending} 个未完成待办`;
+                        statusDots.appendChild(pendingDot);
+                    }
+                    
+                    if (dayStatus.completed > 0) {
+                        const completedDot = document.createElement('div');
+                        completedDot.className = 'day-status-dot completed';
+                        completedDot.title = `${dayStatus.completed} 个已完成待办`;
+                        statusDots.appendChild(completedDot);
+                    }
+                    
+                    dayElement.appendChild(statusDots);
+                }
+                
+                // 点击选择日期
+                dayElement.onclick = () => {
+                    currentDate = dateStr;
+                    document.getElementById('calendar-input').value = formatDate(date);
+                    const dropdown = document.getElementById('calendar-dropdown');
+                    dropdown.classList.remove('show');
+                    loadTodos();
+                };
+                
+                daysContainer.appendChild(dayElement);
+            }
+        }
+
+        function formatDate(date) {
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        }
+
+        // 点击外部关闭日历
+        document.addEventListener('click', function(event) {
+            const calendarContainer = document.querySelector('.calendar-container');
+            const dropdown = document.getElementById('calendar-dropdown');
+            
+            if (!calendarContainer.contains(event.target)) {
+                dropdown.classList.remove('show');
+            }
+        });
+
+        // 测试状态点相关的临时代码已移除
     </script>
 </body>
 </html>
