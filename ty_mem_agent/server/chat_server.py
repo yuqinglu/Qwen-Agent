@@ -644,6 +644,9 @@ class ChatServer:
             first_response = True  # 标记是否是第一次响应
             has_tool_call = False  # 标记是否有工具调用
             
+            # 🔧 工具调用去重：追踪已调用的工具（会话级别）
+            tool_call_history = set()
+            
             # 使用run_with_memory进行带记忆的对话
             async for response in agent.run_with_memory(
                 messages=messages,  # ✅ 传递包含历史上下文的消息列表
@@ -659,15 +662,6 @@ class ChatServer:
                         has_tool_call = True
                         func_call = assistant_message.function_call
                         
-                        # 完整打印工具调用信息
-                        logger.info("=" * 80)
-                        logger.info(f"🔧 工具调用检测")
-                        logger.info("-" * 80)
-                        
-                        # 打印完整的 function_call 对象
-                        logger.info(f"function_call 类型: {type(func_call)}")
-                        logger.info(f"function_call 完整内容: {func_call}")
-                        
                         # 尝试不同的方式获取工具名称和参数
                         tool_name = 'unknown'
                         tool_args = 'N/A'
@@ -678,6 +672,23 @@ class ChatServer:
                         elif hasattr(func_call, 'name'):
                             tool_name = func_call.name
                             tool_args = getattr(func_call, 'arguments', 'N/A')
+                        
+                        # 🔧 工具调用去重检查
+                        tool_id = f"{tool_name}:{str(tool_args)}"
+                        if tool_id in tool_call_history:
+                            logger.warning(f"⚠️ 检测到重复工具调用，跳过日志: {tool_name}")
+                            continue
+                        
+                        tool_call_history.add(tool_id)
+                        
+                        # 完整打印工具调用信息
+                        logger.info("=" * 80)
+                        logger.info(f"🔧 工具调用检测")
+                        logger.info("-" * 80)
+                        
+                        # 打印完整的 function_call 对象
+                        logger.info(f"function_call 类型: {type(func_call)}")
+                        logger.info(f"function_call 完整内容: {func_call}")
                         
                         logger.info(f"工具名称: {tool_name}")
                         
@@ -879,12 +890,16 @@ class ChatServer:
 标题："""
             
             # 调用LLM生成标题
-            llm = get_chat_model({'model': settings.DEFAULT_LLM_MODEL})
+            from ty_mem_agent.config.settings import get_llm_config
+            llm_config = get_llm_config()
+            llm = get_chat_model(llm_config)
             
             messages = [Message(role=USER, content=prompt)]
             
-            # 使用非流式调用
-            response = llm.chat(messages=messages, stream=False)
+            # 使用流式调用
+            response = None
+            for chunk in llm.chat(messages=messages, stream=True):
+                response = chunk
             
             # 提取标题
             if response and response[-1]:

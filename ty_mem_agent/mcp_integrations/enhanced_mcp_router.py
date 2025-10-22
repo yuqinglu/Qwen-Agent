@@ -131,7 +131,7 @@ class LLMIntentAnalyzer:
             
             # 调用LLM
             response = []
-            for resp in self.llm.chat(messages=messages, stream=False):
+            for resp in self.llm.chat(messages=messages, stream=True):
                 response = resp
             
             # 解析响应

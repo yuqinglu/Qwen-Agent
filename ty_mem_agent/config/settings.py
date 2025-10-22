@@ -93,6 +93,9 @@ class Settings(BaseSettings):
         }
     
     # === Agent配置 ===
+    # Agent 主动性级别
+    AGENT_PROACTIVITY_LEVEL: str = Field(default="proactive", env="AGENT_PROACTIVITY_LEVEL")
+    
     AGENT_CONFIG: Dict = {
         "max_memory_context": 10,  # 最大记忆上下文轮数
         "enable_proactive_memory": True,  # 启用主动记忆

@@ -45,3 +45,11 @@ LOG_FILE=logs/ty_mem_agent.log
 # === 记忆配置 ===
 MEMORY_MAX_TOKENS=4000
 MEMORY_RETENTION_DAYS=30
+
+# === Agent 行为配置 ===
+# Agent 主动性级别 (passive/moderate/proactive/aggressive)
+# passive: 被动模式 - 只执行明确要求，不主动建议
+# moderate: 适中模式 - 适度主动，不会过度打扰
+# proactive: 主动模式 - 积极主动服务 (默认)
+# aggressive: 激进模式 - 非常主动，提供大量建议
+AGENT_PROACTIVITY_LEVEL=proactive

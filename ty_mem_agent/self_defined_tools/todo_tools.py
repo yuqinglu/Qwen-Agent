@@ -181,7 +181,7 @@ class TodoExtractorTool(BaseTool):
         # 调用LLM
         llm = self._get_llm()
         response = None
-        for chunk in llm.chat(messages=messages, stream=False):
+        for chunk in llm.chat(messages=messages, stream=True):
             response = chunk
         
         if not response:
