@@ -36,6 +36,7 @@ class ToolRegistry:
         # 初始化顺序：先测试连接，再缓存工具
         await self._init_amap_tools()
         await self._init_time_tools()
+        await self._init_bocha_search_tools()
         await self._init_todo_tools()
         
         # 统计
@@ -106,6 +107,44 @@ class ToolRegistry:
             logger.warning(f"⚠️  时间查询工具初始化失败: {e}")
             self.connection_status['time'] = False
             self.tools_cache['time'] = []
+    
+    async def _init_bocha_search_tools(self):
+        """初始化博查搜索工具（只注册Web搜索，节省费用）"""
+        try:
+            from ty_mem_agent.mcp_integrations import get_bocha_search_mcp_manager
+            
+            logger.info("🔍 正在初始化博查搜索工具...")
+            
+            # 检查配置
+            bocha_api_key = getattr(settings, 'BOCHA_API_KEY', None)
+            print(f"bocha_api_key: {bocha_api_key}")
+            if not bocha_api_key:
+                logger.warning("⚠️  未配置 BOCHA_API_KEY，跳过博查搜索工具")
+                self.connection_status['bocha_search'] = False
+                self.tools_cache['bocha_search'] = []
+                return
+            
+            # 初始化博查搜索 MCP Manager
+            manager = get_bocha_search_mcp_manager()
+            manager.initialize(api_key=bocha_api_key)
+            
+            # 只获取Web搜索工具（节省费用）
+            web_search_tool = manager.get_web_search_tool()
+            
+            if web_search_tool:
+                self.tools_cache['bocha_search'] = [web_search_tool]
+                self.connection_status['bocha_search'] = True
+                logger.info(f"✅ 博查Web搜索工具初始化成功")
+                logger.info(f"   💡 只注册Web搜索，不注册AI搜索（节省费用）")
+            else:
+                self.connection_status['bocha_search'] = False
+                self.tools_cache['bocha_search'] = []
+                logger.warning("⚠️  未找到Web搜索工具")
+                
+        except Exception as e:
+            logger.warning(f"⚠️  博查搜索工具初始化失败: {e}")
+            self.connection_status['bocha_search'] = False
+            self.tools_cache['bocha_search'] = []
     
     async def _init_todo_tools(self):
         """初始化待办管理工具"""
@@ -178,7 +217,8 @@ class ToolRegistry:
             # 关闭 MCP 连接
             from ty_mem_agent.mcp_integrations import (
                 get_amap_mcp_manager,
-                get_time_mcp_manager
+                get_time_mcp_manager,
+                get_bocha_search_mcp_manager
             )
             
             if self.connection_status.get('amap'):
@@ -206,6 +246,17 @@ class ToolRegistry:
                         logger.debug("时间查询工具无需关闭或已关闭")
                 except Exception as e:
                     logger.warning(f"⚠️  关闭时间查询工具失败: {e}")
+            
+            if self.connection_status.get('bocha_search'):
+                try:
+                    manager = get_bocha_search_mcp_manager()
+                    if manager and hasattr(manager, 'cleanup'):
+                        manager.cleanup()
+                        logger.info("✅ 博查搜索工具已关闭")
+                    else:
+                        logger.debug("博查搜索工具无需关闭或已关闭")
+                except Exception as e:
+                    logger.warning(f"⚠️  关闭博查搜索工具失败: {e}")
             
             logger.info("✅ 工具注册中心已关闭")
             

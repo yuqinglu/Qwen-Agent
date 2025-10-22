@@ -57,11 +57,13 @@ class Settings(BaseSettings):
     
     # === 用户认证配置 ===
     SECRET_KEY: str = Field(default="your-secret-key-change-in-production", env="SECRET_KEY")
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=30, env="ACCESS_TOKEN_EXPIRE_MINUTES")
+    # 访问令牌过期时间（30天 = 43200分钟）
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=43200, env="ACCESS_TOKEN_EXPIRE_MINUTES")
     
     # === MCP服务API密钥 ===
     DIDI_API_KEY: Optional[str] = Field(default=None, env="DIDI_API_KEY")
     AMAP_TOKEN: Optional[str] = Field(default=None, env="AMAP_TOKEN")
+    BOCHA_API_KEY: Optional[str] = Field(default=None, env="BOCHA_API_KEY")
     
     # === MCP服务配置 ===
     @property
@@ -89,6 +91,11 @@ class Settings(BaseSettings):
                 "command": "npx", 
                 "args": ["-y", "@modelcontextprotocol/server-filesystem", "~/Documents/"],
                 "description": "文件系统操作"
+            },
+            "bocha_search": {
+                "enabled": True,
+                "api_key": self.BOCHA_API_KEY,
+                "description": "博查AI搜索引擎"
             }
         }
     

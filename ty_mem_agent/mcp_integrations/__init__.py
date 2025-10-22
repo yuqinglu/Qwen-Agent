@@ -23,6 +23,15 @@ from .time_mcp_server import (
     shutdown_time_mcp
 )
 
+# 博查搜索 - 标准 MCP 协议（只使用Web搜索）
+from .bocha_search_mcp_server import (
+    BochaSearchMCPServerManager,
+    get_bocha_search_mcp_server_config,
+    get_bocha_search_mcp_manager,
+    register_bocha_web_search_only,
+    shutdown_bocha_search_mcp
+)
+
 # 通用工具包装器
 from .tool_wrapper import (
     LoggingToolWrapper,
@@ -60,6 +69,13 @@ __all__ = [
     'TimeQueryTool',
     'get_time_mcp_manager',
     'shutdown_time_mcp',
+    
+    # 博查搜索 MCP Server（只使用Web搜索）
+    'BochaSearchMCPServerManager',
+    'get_bocha_search_mcp_server_config',
+    'get_bocha_search_mcp_manager',
+    'register_bocha_web_search_only',
+    'shutdown_bocha_search_mcp',
     
     # 通用工具包装器
     'LoggingToolWrapper',
