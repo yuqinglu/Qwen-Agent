@@ -27,6 +27,11 @@ DIDI_API_KEY=your_didi_api_key_here
 # 功能包括: 天气查询、地理编码、POI搜索、路径规划、距离测量等
 AMAP_TOKEN=your_amap_api_key_here
 
+# 博查AI搜索引擎 API Key（可选 - 用于智能搜索功能）
+# 申请地址: https://bocha-ai.feishu.cn/wiki/DCZTwH6OMidCbTkWFRVcVkHonag
+# 功能包括: Web搜索、AI搜索（需要付费）
+BOCHA_API_KEY=your_bocha_api_key_here
+
 # === 数据库配置 ===
 # Redis（可选，用于会话存储）
 REDIS_URL=redis://localhost:6379/0
@@ -36,7 +41,8 @@ DATABASE_URL=sqlite:///./ty_mem_agent.db
 
 # === 安全配置 ===
 SECRET_KEY=your_super_secret_key_change_in_production
-ACCESS_TOKEN_EXPIRE_MINUTES=30
+# 访问令牌过期时间（分钟）- 默认43200分钟（30天）
+ACCESS_TOKEN_EXPIRE_MINUTES=43200
 
 # === 日志配置（仅保留 LOG_LEVEL 作为唯一入口） ===
 LOG_LEVEL=INFO

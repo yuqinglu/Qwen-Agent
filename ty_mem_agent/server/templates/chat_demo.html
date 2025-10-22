@@ -619,6 +619,42 @@
         let currentConversationId = null;  // 当前会话ID
         let conversations = [];  // 会话列表
 
+        // 统一的认证错误处理
+        function handleAuthError(response) {
+            if (response && (response.status === 401 || response.status === 403)) {
+                console.warn('🔒 令牌已过期，正在跳转到登录页面...');
+                // 清理本地存储
+                localStorage.removeItem('access_token');
+                localStorage.removeItem('userInfo');
+                
+                // 关闭WebSocket连接
+                if (ws) {
+                    ws.close();
+                    ws = null;
+                }
+                
+                // 重置状态
+                token = null;
+                currentConversationId = null;
+                conversations = [];
+                
+                // 切换到登录界面
+                document.getElementById('appLayout').style.display = 'none';
+                document.getElementById('loginLayout').style.display = 'block';
+                
+                // 清空聊天窗口
+                document.getElementById('chatContainer').innerHTML = '';
+                
+                // 显示提示消息
+                const errorDiv = document.getElementById('loginError');
+                errorDiv.textContent = '您的登录已过期，请重新登录';
+                errorDiv.classList.add('show');
+                
+                return true;
+            }
+            return false;
+        }
+
         // 检查用户登录状态
         async function checkLoginStatus() {
             const savedToken = localStorage.getItem('access_token');
@@ -827,8 +863,12 @@
                 displayMessage(data);
             };
             
-            ws.onclose = function() {
-                console.log('WebSocket连接关闭');
+            ws.onclose = function(event) {
+                console.log('WebSocket连接关闭', event.code, event.reason);
+                // 如果是认证失败导致的关闭（403），触发登出
+                if (event.code === 1008 || event.reason.includes('403')) {
+                    handleAuthError({ status: 403 });
+                }
             };
             
             ws.onerror = function(error) {
@@ -847,6 +887,11 @@
                 const response = await fetch('/conversations', {
                     headers: { 'Authorization': `Bearer ${token}` }
                 });
+                
+                // 检查认证错误
+                if (handleAuthError(response)) {
+                    return;
+                }
                 
                 if (response.ok) {
                     const data = await response.json();
@@ -1007,6 +1052,11 @@
                     body: JSON.stringify({ title: '新对话' })
                 });
                 
+                // 检查认证错误
+                if (handleAuthError(response)) {
+                    return;
+                }
+                
                 if (response.ok) {
                     const data = await response.json();
                     currentConversationId = data.conversation_id;
@@ -1059,6 +1109,11 @@
                     headers: { 'Authorization': `Bearer ${token}` }
                 });
                 
+                // 检查认证错误
+                if (handleAuthError(response)) {
+                    return;
+                }
+                
                 if (response.ok) {
                     const data = await response.json();
                     const messages = data.messages || [];
@@ -1100,6 +1155,11 @@
                     method: 'DELETE',
                     headers: { 'Authorization': `Bearer ${token}` }
                 });
+                
+                // 检查认证错误
+                if (handleAuthError(response)) {
+                    return;
+                }
                 
                 if (response.ok) {
                     // 如果删除的是当前会话，创建新会话
