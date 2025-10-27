@@ -32,6 +32,11 @@ AMAP_TOKEN=your_amap_api_key_here
 # 功能包括: Web搜索、AI搜索（需要付费）
 BOCHA_API_KEY=your_bocha_api_key_here
 
+# 飞常准航班信息 API Key（可选 - 用于航班信息查询）
+# 申请地址: 飞友AI开放平台 https://ai.variflight.com/
+# 功能包括: 航班实时动态、行程价格、舒适度、航班行程价格等
+VARIFLIGHT_API_KEY=your_variflight_api_key_here
+
 # === 数据库配置 ===
 # Redis（可选，用于会话存储）
 REDIS_URL=redis://localhost:6379/0

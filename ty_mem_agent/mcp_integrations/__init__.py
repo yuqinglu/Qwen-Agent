@@ -32,6 +32,24 @@ from .bocha_search_mcp_server import (
     shutdown_bocha_search_mcp
 )
 
+# 飞常准航班信息 - 标准 MCP 协议
+from .variflight_mcp_server import (
+    VariFlightMCPServerManager,
+    get_variflight_mcp_server_config,
+    get_variflight_mcp_manager,
+    register_variflight_tools,
+    register_variflight_flight_tools_only,
+    shutdown_variflight_mcp
+)
+
+# 12306铁路票务查询 - 标准 MCP 协议
+from .railway_12306_mcp_server import (
+    Railway12306MCPServerManager,
+    get_railway_12306_mcp_server_config,
+    get_railway_12306_mcp_manager,
+    shutdown_railway_12306_mcp
+)
+
 # 通用工具包装器
 from .tool_wrapper import (
     LoggingToolWrapper,
@@ -76,6 +94,20 @@ __all__ = [
     'get_bocha_search_mcp_manager',
     'register_bocha_web_search_only',
     'shutdown_bocha_search_mcp',
+    
+    # 飞常准航班信息 MCP Server（只使用核心航班工具）
+    'VariFlightMCPServerManager',
+    'get_variflight_mcp_server_config',
+    'get_variflight_mcp_manager',
+    'register_variflight_tools',
+    'register_variflight_flight_tools_only',
+    'shutdown_variflight_mcp',
+    
+    # 12306铁路票务查询 MCP Server
+    'Railway12306MCPServerManager',
+    'get_railway_12306_mcp_server_config',
+    'get_railway_12306_mcp_manager',
+    'shutdown_railway_12306_mcp',
     
     # 通用工具包装器
     'LoggingToolWrapper',

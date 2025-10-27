@@ -64,6 +64,7 @@ class Settings(BaseSettings):
     DIDI_API_KEY: Optional[str] = Field(default=None, env="DIDI_API_KEY")
     AMAP_TOKEN: Optional[str] = Field(default=None, env="AMAP_TOKEN")
     BOCHA_API_KEY: Optional[str] = Field(default=None, env="BOCHA_API_KEY")
+    VARIFLIGHT_API_KEY: Optional[str] = Field(default=None, env="VARIFLIGHT_API_KEY")
     
     # === MCP服务配置 ===
     @property
@@ -96,6 +97,17 @@ class Settings(BaseSettings):
                 "enabled": True,
                 "api_key": self.BOCHA_API_KEY,
                 "description": "博查AI搜索引擎"
+            },
+            "variflight": {
+                "enabled": True,
+                "api_key": self.VARIFLIGHT_API_KEY,
+                "description": "飞常准航班信息查询服务"
+            },
+            "railway_12306": {
+                "enabled": True,
+                "command": "npx",
+                "args": ["-y", "12306-mcp"],
+                "description": "12306铁路票务查询服务"
             }
         }
     

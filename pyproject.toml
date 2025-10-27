@@ -64,6 +64,7 @@ timeout_decorator = {version = "*", optional = true}
 python-dateutil = {version = "*", optional = true}
 openpyxl = "^3.1.5"
 pyjwt = "^2.10.1"
+dateparser = "^1.2.2"
 
 [tool.poetry.extras]
 rag = [

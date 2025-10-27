@@ -35,8 +35,10 @@ class ToolRegistry:
         
         # 初始化顺序：先测试连接，再缓存工具
         await self._init_amap_tools()
-        await self._init_time_tools()
         await self._init_bocha_search_tools()
+        await self._init_variflight_tools()
+        await self._init_railway_12306_tools()
+        await self._init_natural_time_tools()
         await self._init_todo_tools()
         
         # 统计
@@ -146,6 +148,88 @@ class ToolRegistry:
             self.connection_status['bocha_search'] = False
             self.tools_cache['bocha_search'] = []
     
+    async def _init_variflight_tools(self):
+        """初始化飞常准航班信息查询工具"""
+        try:
+            from ty_mem_agent.mcp_integrations import get_variflight_mcp_manager
+            
+            logger.info("✈️  正在初始化飞常准航班信息查询工具...")
+            
+            # 检查配置
+            variflight_api_key = getattr(settings, 'VARIFLIGHT_API_KEY', None)
+            if not variflight_api_key:
+                logger.warning("⚠️  未配置 VARIFLIGHT_API_KEY，跳过飞常准工具")
+                self.connection_status['variflight'] = False
+                self.tools_cache['variflight'] = []
+                return
+            
+            manager = get_variflight_mcp_manager()
+            manager.initialize(api_key=variflight_api_key)
+            
+            # 只获取航班核心工具（避免与其他工具混淆）
+            tools = manager.get_flight_tools_only()
+            
+            if tools:
+                self.tools_cache['variflight'] = tools
+                self.connection_status['variflight'] = True
+                logger.info(f"✅ 飞常准工具初始化成功，共 {len(tools)} 个工具")
+            else:
+                self.connection_status['variflight'] = False
+                self.tools_cache['variflight'] = []
+                logger.warning("⚠️  未找到飞常准工具")
+                
+        except Exception as e:
+            logger.warning(f"⚠️  飞常准工具初始化失败: {e}")
+            self.connection_status['variflight'] = False
+            self.tools_cache['variflight'] = []
+    
+    async def _init_railway_12306_tools(self):
+        """初始化12306铁路票务查询工具"""
+        try:
+            from ty_mem_agent.mcp_integrations import get_railway_12306_mcp_manager
+            
+            logger.info("🚄 正在初始化12306铁路票务查询工具...")
+            
+            # 初始化12306 MCP Manager
+            manager = get_railway_12306_mcp_manager()
+            manager.initialize()
+            
+            # 获取工具
+            tools = manager.get_tools()
+            
+            if tools:
+                self.tools_cache['railway_12306'] = tools
+                self.connection_status['railway_12306'] = True
+                logger.info(f"✅ 12306工具初始化成功，共 {len(tools)} 个工具")
+            else:
+                self.connection_status['railway_12306'] = False
+                self.tools_cache['railway_12306'] = []
+                logger.warning("⚠️  12306工具初始化失败")
+                
+        except Exception as e:
+            logger.warning(f"⚠️  12306工具初始化失败: {e}")
+            self.connection_status['railway_12306'] = False
+            self.tools_cache['railway_12306'] = []
+    
+    async def _init_natural_time_tools(self):
+        """初始化自然语言时间解析工具"""
+        try:
+            from ty_mem_agent.self_defined_tools.natural_time_parser import NaturalTimeParserTool
+            
+            logger.info("🕐 正在初始化自然语言时间解析工具...")
+            
+            # 创建自然语言时间解析工具
+            tools = [NaturalTimeParserTool()]
+            
+            self.tools_cache['natural_time'] = tools
+            self.connection_status['natural_time'] = True
+            logger.info(f"✅ 自然语言时间解析工具初始化成功，共 {len(tools)} 个工具")
+            
+        except Exception as e:
+            logger.error(f"❌ 自然语言时间解析工具初始化失败: {e}")
+            self.connection_status['natural_time'] = False
+            self.tools_cache['natural_time'] = []
+    
     async def _init_todo_tools(self):
         """初始化待办管理工具"""
         try:
@@ -217,8 +301,9 @@ class ToolRegistry:
             # 关闭 MCP 连接
             from ty_mem_agent.mcp_integrations import (
                 get_amap_mcp_manager,
-                get_time_mcp_manager,
-                get_bocha_search_mcp_manager
+                get_bocha_search_mcp_manager,
+                get_variflight_mcp_manager,
+                get_railway_12306_mcp_manager
             )
             
             if self.connection_status.get('amap'):
@@ -233,20 +318,6 @@ class ToolRegistry:
                 except Exception as e:
                     logger.warning(f"⚠️  关闭高德地图工具失败: {e}")
             
-            if self.connection_status.get('time'):
-                try:
-                    manager = get_time_mcp_manager()
-                    if manager:
-                        if hasattr(manager, 'shutdown'):
-                            await manager.shutdown()
-                        elif hasattr(manager, 'cleanup'):
-                            manager.cleanup()
-                        logger.info("✅ 时间查询工具已关闭")
-                    else:
-                        logger.debug("时间查询工具无需关闭或已关闭")
-                except Exception as e:
-                    logger.warning(f"⚠️  关闭时间查询工具失败: {e}")
-            
             if self.connection_status.get('bocha_search'):
                 try:
                     manager = get_bocha_search_mcp_manager()
@@ -257,6 +328,28 @@ class ToolRegistry:
                         logger.debug("博查搜索工具无需关闭或已关闭")
                 except Exception as e:
                     logger.warning(f"⚠️  关闭博查搜索工具失败: {e}")
+            
+            if self.connection_status.get('variflight'):
+                try:
+                    manager = get_variflight_mcp_manager()
+                    if manager and hasattr(manager, 'cleanup'):
+                        manager.cleanup()
+                        logger.info("✅ 飞常准工具已关闭")
+                    else:
+                        logger.debug("飞常准工具无需关闭或已关闭")
+                except Exception as e:
+                    logger.warning(f"⚠️  关闭飞常准工具失败: {e}")
+            
+            if self.connection_status.get('railway_12306'):
+                try:
+                    manager = get_railway_12306_mcp_manager()
+                    if manager and hasattr(manager, 'cleanup'):
+                        manager.cleanup()
+                        logger.info("✅ 12306工具已关闭")
+                    else:
+                        logger.debug("12306工具无需关闭或已关闭")
+                except Exception as e:
+                    logger.warning(f"⚠️  关闭12306工具失败: {e}")
             
             logger.info("✅ 工具注册中心已关闭")
             

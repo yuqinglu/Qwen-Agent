@@ -1118,6 +1118,29 @@ websocket-client = "*"
 tokenizer = ["tiktoken"]
 
 [[package]]
+name = "dateparser"
+version = "1.2.2"
+description = "Date parsing library designed to parse dates from HTML pages"
+optional = false
+python-versions = ">=3.8"
+groups = ["main"]
+files = [
+    {file = "dateparser-1.2.2-py3-none-any.whl", hash = "sha256:5a5d7211a09013499867547023a2a0c91d5a27d15dd4dbcea676ea9fe66f2482"},
+    {file = "dateparser-1.2.2.tar.gz", hash = "sha256:986316f17cb8cdc23ea8ce563027c5ef12fc725b6fb1d137c14ca08777c5ecf7"},
+]
+
+[package.dependencies]
+python-dateutil = ">=2.7.0"
+pytz = ">=2024.2"
+regex = ">=2024.9.11"
+tzlocal = ">=0.2"
+
+[package.extras]
+calendars = ["convertdate (>=2.2.1)", "hijridate"]
+fasttext = ["fasttext (>=0.9.1)", "numpy (>=1.19.3,<2)"]
+langdetect = ["langdetect (>=1.0.0)"]
+
+[[package]]
 name = "debugpy"
 version = "1.8.17"
 description = "An implementation of the Debug Adapter Protocol for Python"
@@ -4715,10 +4738,9 @@ testing = ["argcomplete", "attrs (>=19.2.0)", "hypothesis (>=3.56)", "mock", "no
 name = "python-dateutil"
 version = "2.9.0.post0"
 description = "Extensions to the standard Python datetime module"
-optional = true
+optional = false
 python-versions = "!=3.0.*,!=3.1.*,!=3.2.*,>=2.7"
 groups = ["main"]
-markers = "extra == \"rag\" or extra == \"code-interpreter\" or extra == \"gui\" or extra == \"python-executor\""
 files = [
     {file = "python-dateutil-2.9.0.post0.tar.gz", hash = "sha256:37dd54208da7e1cd875388217d5e00ebd4179249f90fb72437e91a35459a0ad3"},
     {file = "python_dateutil-2.9.0.post0-py2.py3-none-any.whl", hash = "sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427"},
@@ -4835,10 +4857,9 @@ XlsxWriter = ">=0.5.7"
 name = "pytz"
 version = "2025.2"
 description = "World timezone definitions, modern and historical"
-optional = true
+optional = false
 python-versions = "*"
 groups = ["main"]
-markers = "extra == \"rag\" or extra == \"code-interpreter\" or extra == \"gui\""
 files = [
     {file = "pytz-2025.2-py2.py3-none-any.whl", hash = "sha256:5ddf76296dd8c44c26eb8f4b6f35488f3ccbf6fbbd7adee0b7262d43f0ec2f00"},
     {file = "pytz-2025.2.tar.gz", hash = "sha256:360b9e3dbb49a209c21ad61809c7fb453643e048b38924c765813546746e81c3"},
@@ -5824,7 +5845,6 @@ files = [
     {file = "six-1.17.0-py2.py3-none-any.whl", hash = "sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274"},
     {file = "six-1.17.0.tar.gz", hash = "sha256:ff70335d468e7eb6ec65b95b99d3a2836546063f63acc5171de367e834932a81"},
 ]
-markers = {main = "extra == \"rag\" or extra == \"code-interpreter\" or extra == \"gui\" or extra == \"python-executor\""}
 
 [[package]]
 name = "sniffio"
@@ -6247,14 +6267,32 @@ typing-extensions = ">=4.12.0"
 name = "tzdata"
 version = "2025.2"
 description = "Provider of IANA time zone data"
-optional = true
+optional = false
 python-versions = ">=2"
 groups = ["main"]
-markers = "extra == \"rag\" or extra == \"code-interpreter\" or extra == \"gui\""
+markers = "extra == \"rag\" or extra == \"code-interpreter\" or extra == \"gui\" or platform_system == \"Windows\""
 files = [
     {file = "tzdata-2025.2-py2.py3-none-any.whl", hash = "sha256:1a403fada01ff9221ca8044d701868fa132215d84beb92242d9acd2147f667a8"},
     {file = "tzdata-2025.2.tar.gz", hash = "sha256:b60a638fcc0daffadf82fe0f57e53d06bdec2f36c4df66280ae79bce6bd6f2b9"},
 ]
+
+[[package]]
+name = "tzlocal"
+version = "5.3.1"
+description = "tzinfo object for the local timezone"
+optional = false
+python-versions = ">=3.9"
+groups = ["main"]
+files = [
+    {file = "tzlocal-5.3.1-py3-none-any.whl", hash = "sha256:eb1a66c3ef5847adf7a834f1be0800581b683b5608e74f86ecbcef8ab91bb85d"},
+    {file = "tzlocal-5.3.1.tar.gz", hash = "sha256:cceffc7edecefea1f595541dbd6e990cb1ea3d19bf01b2809f362a03dd7921fd"},
+]
+
+[package.dependencies]
+tzdata = {version = "*", markers = "platform_system == \"Windows\""}
+
+[package.extras]
+devenv = ["check-manifest", "pytest (>=4.3)", "pytest-cov", "pytest-mock (>=3.3)", "zest.releaser"]
 
 [[package]]
 name = "uri-template"
@@ -6618,4 +6656,4 @@ rag = ["beautifulsoup4", "charset-normalizer", "jieba", "pandas", "pdfminer-six"
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.10"
-content-hash = "46a5c37c84e7fca036d6c6c95f7732832d3934570fa99d8b38aa66b8a4a42261"
+content-hash = "dcb56f158b496b8f787ef28f63cb3251a5f73cb9693fc760182949e909a6470d"
