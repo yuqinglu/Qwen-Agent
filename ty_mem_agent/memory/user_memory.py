@@ -689,41 +689,92 @@ class IntegratedMemorySystem:
         - occupation: 职业
         - interests: 兴趣爱好（数组）
         - preferences: 偏好设置（对象）
+        
+        重要：只提取用户自己的信息，排除用户提到的其他人（如孩子、朋友、家人等）
+        
+        安全机制：
+        1. 获取现有用户画像用于交叉验证
+        2. 对于姓名字段，只有当对话中明确表达"我是XX"、"我的名字是XX"时才提取
+        3. 如果提取的姓名与现有不一致且没有明确的第一人称表达，拒绝更新
+        4. 过滤掉明显是其他人信息的字段
         """
         try:
-            extract_prompt = f"""请从以下对话中提取用户的个人信息（如果有的话）：
+            # ==================== 步骤1: 获取现有用户画像用于验证 ====================
+            existing_profile = self.user_manager.get_user_profile(user_id)
+            existing_name = existing_profile.name if existing_profile else None
+            
+            # ==================== 步骤2: 构建增强的提示词 ====================
+            # 在提示词中包含现有信息，帮助LLM更好地判断
+            existing_info_context = ""
+            if existing_profile:
+                existing_info_context = f"""
+**重要：现有用户画像信息**（用于验证）：
+- 现有姓名: {existing_name if existing_name else "未知"}
+- 现有年龄: {existing_profile.age if existing_profile.age else "未知"}
+- 现有性别: {existing_profile.gender if existing_profile.gender else "未知"}
+
+**关键规则**：
+1. 只有当对话中**明确使用第一人称**表达信息时，才能提取为用户本人信息
+2. 姓名字段提取规则（最严格）：
+   - ✅ 可以提取的情况："我是XX"、"我的名字是XX"、"我叫XX"、"我是XX，今年XX岁"
+   - ❌ 禁止提取的情况："XX要参加"、"帮XX做"、"XX的XX"、"为XX安排"（这些明显是在说别人）
+3. 如果提取的姓名与现有姓名不一致，且对话中没有第一人称表达，**必须返回空对象**
+4. **绝对禁止**：将"XX要参加竞赛"、"帮XX添加待办"中的XX提取为用户自己的姓名
+"""
+            else:
+                existing_info_context = """
+**关键规则**：
+1. 只有当对话中**明确使用第一人称**表达信息时，才能提取为用户本人信息
+2. 姓名字段提取规则（最严格）：
+   - ✅ 可以提取的情况："我是XX"、"我的名字是XX"、"我叫XX"、"我是XX，今年XX岁"
+   - ❌ 禁止提取的情况："XX要参加"、"帮XX做"、"XX的XX"、"为XX安排"（这些明显是在说别人）
+3. **绝对禁止**：将"帮XX添加待办"中的XX提取为用户自己的姓名
+"""
+            
+            extract_prompt = f"""请从以下对话中提取**用户本人**的个人信息（如果有的话）：
 
 用户：{message}
 助手：{response}
 
+{existing_info_context}
+
+**提取规则**：
+- **只提取用户自己的信息**，不要提取用户提到的其他人的信息
+- **姓名提取最严格**：只有当用户明确说"我是XX"、"我的名字是XX"、"我叫XX"时才能提取
+- 如果对话中只是提到要帮别人做什么、为别人安排什么、别人要参加什么，**这些都不是用户自己的信息**
+- 对于"XX要参加"、"帮XX做"这类表达，XX一定是其他人，不是用户本人
+
 请以JSON格式返回提取的信息（只返回JSON，不要其他内容）：
 {{
-    "name": "姓名（如果提到）",
-    "age": "年龄（如果提到，数字）",
-    "gender": "性别（如果提到，如：男/女/男性/女性）",
-    "location": "当前位置或工作地点（如果提到）",
-    "home_address": "家庭住址（如果提到）",
-    "occupation": "职业（如果提到）",
-    "interests": ["兴趣爱好（如果提到，数组格式）"],
-    "preferences": {{"任何偏好设置（如语言偏好、沟通风格等）"}}
+    "name": "用户自己的姓名（必须对话中有'我是XX'、'我叫XX'等第一人称表达）",
+    "age": "用户自己的年龄（数字，必须有'我今年XX岁'、'我是XX岁'等表达）",
+    "gender": "用户自己的性别（必须有'我是男/女性'、'我是XX性'等表达）",
+    "location": "用户自己的当前位置或工作地点",
+    "home_address": "用户自己的家庭住址",
+    "occupation": "用户的职业（必须有'我是XX'、'我从事XX'等表达）",
+    "interests": ["用户自己的兴趣爱好（必须有'我喜欢XX'、'我爱好XX'等表达）"],
+    "preferences": {{"用户自己的偏好设置（如语言偏好、沟通风格等）"}}
 }}
 
 注意：
-- 如果没有提取到任何信息，返回空对象 {{}}
-- 年龄必须是数字类型
-- interests必须是数组格式
-- preferences必须是对象格式
-- 只提取明确提到的信息，不要推测"""
+- **如果没有提取到任何关于用户本人的明确信息，返回空对象 {{}}**
+- **对于姓名、年龄、性别等关键字段，必须对话中有明确的第一人称表达，否则不要提取**
+- **绝对不要将用户提到的其他人（如孩子、朋友、同事、家人）的信息误认为是用户自己的**
+- 年龄必须是数字类型或null
+- interests必须是数组格式或null
+- preferences必须是对象格式或null
+- 只提取明确提到的信息，不要推测
+- 如果对话是"帮XX做XX"、"XX要参加XX"这类，说明XX是别人，不是用户本人"""
             
             messages = [Message(role=USER, content=extract_prompt)]
             
-            # 调用LLM提取
+            # ==================== 步骤3: 调用LLM提取 ====================
             extract_result = ""
             for response_chunk in self.llm.chat(messages=messages):
                 if response_chunk:
                     extract_result = response_chunk[-1].content
             
-            # 解析JSON结果
+            # ==================== 步骤4: 解析和验证提取结果 ====================
             if extract_result:
                 # 提取JSON部分
                 json_str = extract_result.strip()
@@ -734,14 +785,46 @@ class IntegratedMemorySystem:
                 
                 profile_info = json.loads(json_str)
                 
+                # ==================== 步骤5: 严格验证和过滤 ====================
                 # 过滤空值
-                profile_updates = {k: v for k, v in profile_info.items() if v and v != "null" and v != "未提到"}
+                profile_updates = {}
+                for k, v in profile_info.items():
+                    if v and v != "null" and v != "未提到":
+                        # 对于姓名字段，进行额外的安全检查
+                        if k == "name":
+                            # 检查对话中是否有明确的第一人称表达（中文和英文）
+                            first_person_indicators = [
+                                "我是", "我叫", "我的名字是", "我姓", "我名", "本人是", "本人叫",
+                                "i am", "i'm", "my name is", "i am called", "i go by"
+                            ]
+                            # 同时检查原始消息和转换为小写的消息（用于英文检测）
+                            message_for_check = message + " " + message.lower()
+                            
+                            # 检查是否有第一人称表达
+                            has_first_person = any(indicator in message_for_check for indicator in first_person_indicators)
+                            
+                            # 如果有现有姓名且不一致，需要第一人称表达才能更新
+                            if existing_name and v != existing_name:
+                                if not has_first_person:
+                                    logger.warning(f"⚠️ 拒绝更新姓名：提取到 '{v}' 与现有姓名 '{existing_name}' 不一致，且对话中没有第一人称表达")
+                                    continue
+                                else:
+                                    logger.info(f"✅ 允许更新姓名：有第一人称表达，从 '{existing_name}' 更新为 '{v}'")
+                            # 如果没有现有姓名（首次设置），也需要第一人称表达才能设置（防止误提取他人姓名）
+                            elif not existing_name:
+                                if not has_first_person:
+                                    logger.warning(f"⚠️ 拒绝设置姓名：提取到 '{v}' 但没有第一人称表达，可能是他人的姓名（如'XX要参加'中的XX）")
+                                    continue
+                                else:
+                                    logger.info(f"✅ 允许设置姓名：有第一人称表达，设置姓名为 '{v}'")
+                        
+                        profile_updates[k] = v
                 
                 if profile_updates:
                     # 更新用户画像
                     success = self.user_manager.update_user_profile(user_id, profile_updates)
                     if success:
-                        logger.info(f"👤 从对话中更新用户画像: {user_id} - {list(profile_updates.keys())}")
+                        logger.info(f"👤 从对话中更新用户画像: {user_id} - {profile_updates}")
                     return success
             
             return False

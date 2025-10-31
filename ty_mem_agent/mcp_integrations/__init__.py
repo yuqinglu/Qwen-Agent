@@ -6,6 +6,15 @@ MCP Integrations - 模型上下文协议服务集成模块
 
 from .enhanced_mcp_router import EnhancedMCPRouter, MCPService, MCPRequest, MCPResponse
 
+# 滴滴叫车 - 标准 MCP 协议
+from .didi_mcp_server import (
+    DidiMCPServerManager,
+    get_didi_mcp_server_config,
+    get_didi_mcp_manager,
+    register_didi_tools,
+    shutdown_didi_mcp
+)
+
 # 高德地图 - 标准 MCP 协议
 from .amap_mcp_server import (
     AmapMCPServerManager,
@@ -74,6 +83,13 @@ __all__ = [
     'MCPService',
     'MCPRequest', 
     'MCPResponse',
+    
+    # 滴滴叫车 MCP Server（标准 MCP 协议）
+    'DidiMCPServerManager',
+    'get_didi_mcp_server_config',
+    'get_didi_mcp_manager',
+    'register_didi_tools',
+    'shutdown_didi_mcp',
     
     # 高德地图 MCP Server（标准 MCP 协议）
     'AmapMCPServerManager',

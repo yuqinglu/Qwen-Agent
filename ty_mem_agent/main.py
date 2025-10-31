@@ -85,9 +85,18 @@ class TYMemoryAgentApp:
         self.logger.info("=" * 50)
         
         # 使用统一的工具注册中心
-        from ty_mem_agent.mcp_integrations import initialize_tools
+        from ty_mem_agent.mcp_integrations import initialize_tools, get_tool_registry
         
+        # 初始化工具注册中心
         await initialize_tools()
+        
+        # 验证初始化是否成功
+        registry = get_tool_registry()
+        if registry._initialized and registry.tools_cache:
+            total_tools = sum(len(tools) for tools in registry.tools_cache.values())
+            self.logger.info(f"✅ 工具注册中心初始化成功，共加载 {total_tools} 个工具")
+        else:
+            self.logger.warning("⚠️ 工具注册中心初始化后未获取到工具，Agent 将在无工具模式下运行")
         
         self.logger.info("=" * 50)
     

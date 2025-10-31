@@ -34,17 +34,56 @@ class ToolRegistry:
         logger.info("🔧 开始初始化工具注册中心...")
         
         # 初始化顺序：先测试连接，再缓存工具
+        await self._init_didi_tools()
         await self._init_amap_tools()
         await self._init_bocha_search_tools()
         await self._init_variflight_tools()
         await self._init_railway_12306_tools()
         await self._init_natural_time_tools()
         await self._init_todo_tools()
+        await self._init_profile_tools()
+        await self._init_location_tools()
+        await self._init_eleme_tools()
         
         # 统计
         total_tools = sum(len(tools) for tools in self.tools_cache.values())
         logger.info(f"✅ 工具注册中心初始化完成，共 {total_tools} 个工具")
         self._print_tool_summary()
+    
+    async def _init_didi_tools(self):
+        """初始化滴滴叫车工具"""
+        try:
+            from ty_mem_agent.mcp_integrations.didi_mcp_server import get_didi_mcp_manager
+            
+            logger.info("🚗 正在初始化滴滴叫车工具...")
+            
+            # 检查配置
+            didi_api_key = getattr(settings, 'DIDI_API_KEY', None)
+            didi_mode = getattr(settings, 'DIDI_MCP_MODE', 'production')
+            
+            if not didi_api_key:
+                logger.warning("⚠️  未配置 DIDI_API_KEY，跳过滴滴工具")
+                self.connection_status["didi"] = False
+                self.tools_cache["didi"] = []
+                return
+            
+            # 使用优化后的工具注册函数（只保留打车相关功能）
+            from ty_mem_agent.mcp_integrations.didi_mcp_server import register_didi_tools
+            tools = register_didi_tools(api_key=didi_api_key, mode=didi_mode)
+            
+            if tools:
+                self.tools_cache["didi"] = tools
+                self.connection_status["didi"] = True
+                logger.info(f"✅ 滴滴叫车工具初始化成功，共 {len(tools)} 个工具")
+            else:
+                self.connection_status["didi"] = False
+                self.tools_cache["didi"] = []
+                logger.warning("⚠️  滴滴 MCP 连接成功，但未获取到工具")
+                
+        except Exception as e:
+            logger.warning(f"⚠️  滴滴叫车工具初始化失败: {e}")
+            self.connection_status["didi"] = False
+            self.tools_cache["didi"] = []
     
     async def _init_amap_tools(self):
         """初始化高德地图工具"""
@@ -256,6 +295,100 @@ class ToolRegistry:
             logger.error(f"❌ 待办管理工具初始化失败: {e}")
             self.connection_status['todo'] = False
             self.tools_cache['todo'] = []
+    
+    async def _init_profile_tools(self):
+        """初始化用户画像管理工具"""
+        try:
+            from ty_mem_agent.self_defined_tools.profile_tools import (
+                UpdateUserProfileTool,
+                GetUserProfileTool
+            )
+            
+            logger.info("👤 正在初始化用户画像管理工具...")
+            
+            # 创建用户画像工具实例
+            tools = [
+                UpdateUserProfileTool(),
+                GetUserProfileTool()
+            ]
+            
+            self.tools_cache['profile'] = tools
+            self.connection_status['profile'] = True
+            logger.info(f"✅ 用户画像管理工具初始化成功，共 {len(tools)} 个工具")
+            
+        except Exception as e:
+            logger.error(f"❌ 用户画像管理工具初始化失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            self.connection_status['profile'] = False
+            self.tools_cache['profile'] = []
+    
+    async def _init_location_tools(self):
+        """初始化位置坐标工具"""
+        try:
+            from ty_mem_agent.self_defined_tools.location_tools import get_location_tools
+            
+            logger.info("📍 正在初始化位置坐标工具...")
+            
+            # 获取位置工具
+            tools = get_location_tools()
+            
+            if tools:
+                self.tools_cache["location"] = tools
+                self.connection_status["location"] = True
+                logger.info(f"✅ 位置坐标工具初始化成功，共 {len(tools)} 个工具")
+                for tool in tools:
+                    logger.debug(f"   - {tool.name}: {tool.description}")
+            else:
+                self.connection_status["location"] = False
+                self.tools_cache["location"] = []
+                logger.warning("⚠️  位置坐标工具初始化失败")
+                
+        except Exception as e:
+            logger.warning(f"⚠️  位置坐标工具初始化失败: {e}")
+            self.connection_status["location"] = False
+            self.tools_cache["location"] = []
+    
+    async def _init_eleme_tools(self):
+        """初始化饿了么外卖工具"""
+        try:
+            from ty_mem_agent.self_defined_tools.eleme_tools import get_eleme_tools
+            
+            logger.info("🍔 正在初始化饿了么外卖工具...")
+            
+            # 检查配置
+            eleme_app_key = getattr(settings, 'ELEME_APP_KEY', None)
+            eleme_app_secret = getattr(settings, 'ELEME_APP_SECRET', None)
+            eleme_mode = getattr(settings, 'ELEME_MODE', 'sandbox')
+            
+            if not eleme_app_key or not eleme_app_secret:
+                logger.warning("⚠️  未配置 ELEME_APP_KEY 或 ELEME_APP_SECRET，跳过饿了么工具")
+                self.connection_status["eleme"] = False
+                self.tools_cache["eleme"] = []
+                return
+            
+            # 获取饿了么工具
+            tools = get_eleme_tools(
+                app_key=eleme_app_key,
+                app_secret=eleme_app_secret,
+                mode=eleme_mode
+            )
+            
+            if tools:
+                self.tools_cache["eleme"] = tools
+                self.connection_status["eleme"] = True
+                logger.info(f"✅ 饿了么外卖工具初始化成功，共 {len(tools)} 个工具")
+                for tool in tools:
+                    logger.debug(f"   - {tool.name}: {tool.description}")
+            else:
+                self.connection_status["eleme"] = False
+                self.tools_cache["eleme"] = []
+                logger.warning("⚠️  饿了么外卖工具初始化失败")
+                
+        except Exception as e:
+            logger.warning(f"⚠️  饿了么外卖工具初始化失败: {e}")
+            self.connection_status["eleme"] = False
+            self.tools_cache["eleme"] = []
     
     def get_all_tools(self) -> List[BaseTool]:
         """获取所有可用工具"""

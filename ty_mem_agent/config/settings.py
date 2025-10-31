@@ -62,9 +62,15 @@ class Settings(BaseSettings):
     
     # === MCP服务API密钥 ===
     DIDI_API_KEY: Optional[str] = Field(default=None, env="DIDI_API_KEY")
+    DIDI_MCP_MODE: str = Field(default="production", env="DIDI_MCP_MODE")  # production 或 sandbox
     AMAP_TOKEN: Optional[str] = Field(default=None, env="AMAP_TOKEN")
     BOCHA_API_KEY: Optional[str] = Field(default=None, env="BOCHA_API_KEY")
     VARIFLIGHT_API_KEY: Optional[str] = Field(default=None, env="VARIFLIGHT_API_KEY")
+    
+    # === 饿了么外卖API密钥 ===
+    ELEME_APP_KEY: Optional[str] = Field(default=None, env="ELEME_APP_KEY")
+    ELEME_APP_SECRET: Optional[str] = Field(default=None, env="ELEME_APP_SECRET")
+    ELEME_MODE: str = Field(default="sandbox", env="ELEME_MODE")  # sandbox 或 production
     
     # === MCP服务配置 ===
     @property
@@ -74,6 +80,7 @@ class Settings(BaseSettings):
             "didi_ride": {
                 "enabled": True,
                 "api_key": self.DIDI_API_KEY,
+                "mode": self.DIDI_MCP_MODE,
                 "description": "滴滴叫车服务"
             },
             "amap_weather": {
@@ -108,6 +115,13 @@ class Settings(BaseSettings):
                 "command": "npx",
                 "args": ["-y", "12306-mcp"],
                 "description": "12306铁路票务查询服务"
+            },
+            "eleme": {
+                "enabled": False,
+                "app_key": self.ELEME_APP_KEY,
+                "app_secret": self.ELEME_APP_SECRET,
+                "mode": self.ELEME_MODE,
+                "description": "饿了么外卖服务"
             }
         }
     

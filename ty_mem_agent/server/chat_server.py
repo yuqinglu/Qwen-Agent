@@ -597,11 +597,12 @@ class ChatServer:
                 content=content
             )
             
-            # 发送正在处理消息
+            # 发送正在处理消息（使用thinking类型）
             thinking_message_id = f"thinking_{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
             await websocket.send_text(json.dumps({
-                "type": "status",
-                "content": "正在思考...",
+                "type": "thinking",
+                "subtype": "processing",
+                "content": "💭 正在思考...",
                 "timestamp": datetime.now().isoformat(),
                 "message_id": thinking_message_id
             }))
@@ -639,13 +640,11 @@ class ChatServer:
                 logger.debug(f"📜 无会话历史，只传递当前消息")
             
             # 处理消息并流式返回
-            response_content = ""
+            response_content = ""  # 累积的内容
+            displayed_content = ""  # 已经显示的内容（小字）
             message_id = f"msg_{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
-            first_response = True  # 标记是否是第一次响应
-            has_tool_call = False  # 标记是否有工具调用
-            
-            # 🔧 工具调用去重：追踪已调用的工具（会话级别）
-            tool_call_history = set()
+            has_tool_call = False  # 是否有工具调用
+            tool_call_history = set()  # 工具调用去重
             
             # 使用run_with_memory进行带记忆的对话
             async for response in agent.run_with_memory(
@@ -657,109 +656,120 @@ class ChatServer:
                     assistant_message = response[-1]
                     new_content = assistant_message.content
                     
-                    # 检查是否有工具调用（这通常表示中间步骤）
+                    # 检查是否有工具调用
                     if hasattr(assistant_message, 'function_call') and assistant_message.function_call:
                         has_tool_call = True
                         func_call = assistant_message.function_call
                         
-                        # 尝试不同的方式获取工具名称和参数
+                        # 获取工具名称
                         tool_name = 'unknown'
-                        tool_args = 'N/A'
-                        
                         if isinstance(func_call, dict):
                             tool_name = func_call.get('name', 'unknown')
-                            tool_args = func_call.get('arguments', 'N/A')
                         elif hasattr(func_call, 'name'):
                             tool_name = func_call.name
-                            tool_args = getattr(func_call, 'arguments', 'N/A')
                         
-                        # 🔧 工具调用去重检查
-                        tool_id = f"{tool_name}:{str(tool_args)}"
-                        if tool_id in tool_call_history:
-                            logger.warning(f"⚠️ 检测到重复工具调用，跳过日志: {tool_name}")
+                        # 工具调用去重
+                        if tool_name in tool_call_history:
                             continue
+                        tool_call_history.add(tool_name)
                         
-                        tool_call_history.add(tool_id)
+                        # 💡 如果有未显示的内容，作为思考过程显示（小字）
+                        if response_content and response_content != displayed_content:
+                            # 判断是追加还是新内容
+                            if displayed_content and response_content.startswith(displayed_content):
+                                # 追加模式：显示增量
+                                thinking_text = response_content[len(displayed_content):]
+                            else:
+                                # 新内容或首次显示：显示完整内容
+                                thinking_text = response_content
+                            
+                            if thinking_text.strip():
+                                logger.info(f"💭 显示思考过程: {thinking_text[:50]}...")
+                                await websocket.send_text(json.dumps({
+                                    "type": "thinking",
+                                    "subtype": "intermediate",
+                                    "content": thinking_text,
+                                    "timestamp": datetime.now().isoformat(),
+                                    "message_id": f"thinking_{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+                                }))
+                                displayed_content = response_content
                         
-                        # 完整打印工具调用信息
-                        logger.info("=" * 80)
-                        logger.info(f"🔧 工具调用检测")
-                        logger.info("-" * 80)
-                        
-                        # 打印完整的 function_call 对象
-                        logger.info(f"function_call 类型: {type(func_call)}")
-                        logger.info(f"function_call 完整内容: {func_call}")
-                        
-                        logger.info(f"工具名称: {tool_name}")
-                        
-                        # 完整显示参数（不截断）
-                        if tool_args and tool_args != 'N/A':
-                            args_str = str(tool_args)
-                            logger.info(f"调用参数 (长度 {len(args_str)}): {args_str}")
-                        else:
-                            logger.warning(f"⚠️ 调用参数为空或 N/A: {tool_args}")
-                        
-                        logger.info("-" * 80)
-                        
-                        # 注意：有 function_call 的 Message，其 content 通常为空
-                        # 这是正常的，因为这是工具调用请求，不是工具返回
-                        # 工具的实际返回值会在下一条 Message 中
-                        if new_content:
-                            content_str = str(new_content)
-                            logger.info(f"Message content (长度 {len(content_str)}): {content_str[:200]}...")
-                        else:
-                            logger.debug("Message content 为空（这是正常的，工具调用请求阶段）")
-                        logger.info("=" * 80)
-                        
-                        continue  # 跳过工具调用的中间结果，只显示最终回答
-                    
-                    # 如果是第一次响应，先隐藏"正在思考..."消息
-                    if first_response and new_content.strip():
-                        # 发送隐藏"正在思考..."的消息
+                        # 🔧 立即显示工具调用提示（小字）
+                        logger.info(f"🔧 工具调用: {tool_name}")
                         await websocket.send_text(json.dumps({
-                            "type": "hide_thinking",
-                            "message_id": thinking_message_id,
-                            "timestamp": datetime.now().isoformat()
+                            "type": "thinking",
+                            "subtype": "tool_call",
+                            "content": f"🔧 正在调用工具 {tool_name} 进行处理...",
+                            "tool_name": tool_name,
+                            "timestamp": datetime.now().isoformat(),
+                            "message_id": f"tool_{tool_name}_{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
                         }))
-                        first_response = False
+                        
+                        continue
                     
-                    # 发送增量内容
-                    if new_content != response_content:
-                        # 计算增量内容
-                        if new_content.startswith(response_content):
-                            # 新内容是旧内容的扩展，发送增量部分
-                            incremental_content = new_content[len(response_content):]
-                            response_content = new_content
-                            
-                            await websocket.send_text(json.dumps({
-                                "type": "message_chunk",
-                                "content": incremental_content,
-                                "full_content": response_content,
-                                "timestamp": datetime.now().isoformat(),
-                                "message_id": message_id,
-                                "metadata": {
-                                    "type": "assistant_response_chunk",
-                                    "extra": getattr(assistant_message, 'extra', {})
-                                }
-                            }))
-                        else:
-                            # 内容完全不同（可能是工具调用后重新生成）
-                            # 如果有工具调用，这可能是最终回答，替换之前的内容
-                            logger.debug(f"🔄 内容变化: '{response_content[:50]}...' -> '{new_content[:50]}...'")
-                            response_content = new_content
-                            
-                            await websocket.send_text(json.dumps({
-                                "type": "message_chunk",
-                                "content": new_content,  # 发送完整内容作为增量
-                                "full_content": new_content,
-                                "timestamp": datetime.now().isoformat(),
-                                "message_id": message_id,
-                                "metadata": {
-                                    "type": "assistant_response_chunk",
-                                    "replace": True,  # 标记这是替换而不是追加
-                                    "extra": getattr(assistant_message, 'extra', {})
-                                }
-                            }))
+                    # 过滤JSON和指令文本
+                    if new_content.strip():
+                        is_filtered = False
+                        
+                        # 检测AI指令文本
+                        if '【AI执行指令】' in new_content or '【用户显示内容】' in new_content:
+                            is_filtered = True
+                            logger.debug(f"🔍 过滤AI指令文本")
+                        
+                        # 检测JSON
+                        elif new_content.strip().startswith(('{', '[')):
+                            try:
+                                parsed = json.loads(new_content.strip())
+                                if isinstance(parsed, (dict, list)):
+                                    is_filtered = True
+                                    logger.debug(f"🔍 过滤工具JSON结果")
+                            except:
+                                pass
+                        
+                        if is_filtered:
+                            continue
+                    
+                    # 累积内容
+                    response_content = new_content
+            
+            # 循环结束，显示最终答案
+            if has_tool_call:
+                # 有工具调用：显示最终答案（正常字体）
+                # 判断是追加还是新内容
+                if displayed_content and response_content.startswith(displayed_content):
+                    # 追加模式：显示增量（去掉已显示的思考部分）
+                    final_content = response_content[len(displayed_content):]
+                else:
+                    # 新内容或没有已显示内容：显示完整内容
+                    final_content = response_content
+                
+                if final_content.strip():
+                    logger.info(f"✅ 显示最终答案: {final_content[:100]}...")
+                    
+                    await websocket.send_text(json.dumps({
+                        "type": "final_answer_start",
+                        "message_id": message_id,
+                        "timestamp": datetime.now().isoformat()
+                    }))
+                    
+                    await websocket.send_text(json.dumps({
+                        "type": "message_chunk",
+                        "content": final_content,
+                        "full_content": final_content,
+                        "timestamp": datetime.now().isoformat(),
+                        "message_id": message_id
+                    }))
+            else:
+                # 没有工具调用：直接显示回答（正常字体）
+                logger.info(f"✅ 纯文本回答，显示最终结果")
+                if response_content:
+                    await websocket.send_text(json.dumps({
+                        "type": "message_chunk",
+                        "content": response_content,
+                        "full_content": response_content,
+                        "timestamp": datetime.now().isoformat(),
+                        "message_id": message_id
+                    }))
             
             # 保存assistant的回复到会话
             if response_content:

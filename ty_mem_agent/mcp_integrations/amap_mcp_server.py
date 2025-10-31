@@ -48,7 +48,8 @@ def get_amap_mcp_server_config(api_key: Optional[str] = None) -> Dict:
     config = {
         "mcpServers": {
             "amap_maps": {
-                "url": f"https://mcp.amap.com/sse?key={api_key}"
+                "url": f"https://mcp.amap.com/sse?key={api_key}",
+                "sse_read_timeout": 600  # 设置 SSE 读取超时为 600 秒（10分钟），避免连接超时
             }
         }
     }
@@ -149,7 +150,18 @@ class AmapMCPServerManager:
         
         try:
             # 初始化配置并获取原始工具
-            self.original_tools = self.mcp_manager.initConfig(mcp_config)
+            all_original_tools = self.mcp_manager.initConfig(mcp_config)
+            
+            # 过滤掉高德打车工具（maps_schema_take_taxi），暂时禁用
+            self.original_tools = []
+            excluded_tools = []
+            for tool in all_original_tools:
+                tool_name = tool.name.lower()
+                if "take_taxi" in tool_name or "schema_take_taxi" in tool_name:
+                    excluded_tools.append(tool.name)
+                    logger.debug(f"   🚫 已过滤高德打车工具: {tool.name}")
+                else:
+                    self.original_tools.append(tool)
             
             # 使用日志包装器包装所有工具
             self.tools = [LoggingToolWrapper(tool) for tool in self.original_tools]

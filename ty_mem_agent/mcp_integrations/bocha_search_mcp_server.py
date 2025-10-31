@@ -53,6 +53,7 @@ def get_bocha_search_mcp_server_config(api_key: Optional[str] = None) -> Dict:
         "mcpServers": {
             "bocha-search": {
                 "url": "https://mcp.bochaai.com/sse",
+                "sse_read_timeout": 600,  # 设置 SSE 读取超时为 600 秒（10分钟），避免连接超时
                 "headers": {
                     "Authorization": f"Bearer {api_key}",
                     "Accept": "text/event-stream"

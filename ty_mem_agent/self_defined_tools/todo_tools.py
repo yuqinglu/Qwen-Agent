@@ -306,9 +306,12 @@ class TodoQueryTool(BaseTool):
 - 查询未完成的待办
 - 按时间升序排列
 
+**重要**：如果用户提到的日期是自然语言（如"星期天"、"下周五"、"这个周末"），工具会自动解析为具体日期。
+
 适用场景：
 - 用户问"我今天有什么事？"
 - 用户问"明天的日程安排"
+- 用户问"这个星期天的待办事项"
 - 用户问"本周的待办事项"
 """
     
@@ -321,7 +324,7 @@ class TodoQueryTool(BaseTool):
             },
             "date": {
                 "type": "string",
-                "description": "查询日期（YYYY-MM-DD格式），可选"
+                "description": "查询日期（YYYY-MM-DD格式，或自然语言如'星期天'、'下周五'），可选。如果是自然语言，工具会自动解析"
             },
             "query_type": {
                 "type": "string",
@@ -337,6 +340,44 @@ class TodoQueryTool(BaseTool):
         },
         "required": ["user_id"]
     }
+    
+    def _parse_natural_date(self, date_text: str) -> str:
+        """解析自然语言日期为YYYY-MM-DD格式"""
+        try:
+            # 检查是否已经是YYYY-MM-DD格式
+            if re.match(r'^\d{4}-\d{2}-\d{2}$', date_text):
+                return date_text
+            
+            # 导入自然语言时间解析器
+            try:
+                from ty_mem_agent.self_defined_tools.natural_time_parser import parse_chinese_english_datetime
+            except ImportError:
+                logger.warning(f"⚠️ 无法导入时间解析器，将直接使用原始日期")
+                return date_text
+            
+            # 解析自然语言日期
+            result = parse_chinese_english_datetime(text=date_text)
+            
+            if result and result.get("parsed_datetime"):
+                # 提取日期部分（YYYY-MM-DD）
+                parsed_datetime = result["parsed_datetime"]
+                if isinstance(parsed_datetime, str):
+                    # 如果返回的是字符串，提取日期部分
+                    date_part = parsed_datetime.split("T")[0]
+                    logger.info(f"🕐 解析自然语言日期: '{date_text}' -> {date_part}")
+                    return date_part
+                elif hasattr(parsed_datetime, 'strftime'):
+                    # 如果返回的是datetime对象
+                    date_part = parsed_datetime.strftime("%Y-%m-%d")
+                    logger.info(f"🕐 解析自然语言日期: '{date_text}' -> {date_part}")
+                    return date_part
+            
+            logger.warning(f"⚠️ 无法解析日期: '{date_text}'，将尝试直接使用")
+            return date_text
+            
+        except Exception as e:
+            logger.warning(f"⚠️ 日期解析失败: {e}，将尝试直接使用原始日期")
+            return date_text
     
     def call(self, params: Union[str, Dict], **kwargs) -> str:
         """执行待办查询"""
@@ -354,7 +395,7 @@ class TodoQueryTool(BaseTool):
         date_str = params_dict.get("date")
         limit = params_dict.get("limit", 10)
         
-        logger.info(f"🔍 查询待办: user_id={user_id}, type={query_type}")
+        logger.info(f"🔍 查询待办: user_id={user_id}, type={query_type}, date={date_str}")
         
         try:
             todo_manager = get_todo_manager()
@@ -377,6 +418,8 @@ class TodoQueryTool(BaseTool):
                 )
             
             elif query_type == "date" and date_str:
+                # 🔧 优化：如果date_str是自然语言（如"星期天"、"下周五"），先解析为具体日期
+                date_str = self._parse_natural_date(date_str)
                 todos = todo_manager.get_todos_by_date(user_id, date_str, TodoStatus.PENDING)
             
             else:  # pending
