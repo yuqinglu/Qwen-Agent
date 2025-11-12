@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Union
 from dataclasses import asdict
+from datetime import datetime
 from loguru import logger
 
 # 添加QwenAgent路径
@@ -19,6 +20,7 @@ try:
     from qwen_agent.llm import get_chat_model
     from qwen_agent.llm.schema import Message, USER, SYSTEM
     from qwen_agent.tools.base import BaseTool
+    from qwen_agent.llm.schema import ContentItem
     logger.info("✅ 成功导入QwenAgent核心组件")
 except ImportError as e:
     logger.error(f"❌ 无法导入QwenAgent核心组件: {e}")
@@ -94,6 +96,23 @@ class TYMemoryAgent(Assistant):
         
         logger.info(f"✅ 成功创建TY记忆智能代理: {self.name}")
         logger.info(f"✅ 可用工具: {list(self.function_map.keys())}")
+    
+    def _call_tool(self, tool_name: str, tool_args: Union[str, dict] = '{}', **kwargs) -> Union[str, List[ContentItem]]:
+        """重写工具调用方法，自动传递用户上下文
+        
+        注意：
+        1. 只传递 user_id 到 kwargs，不修改 tool_args，避免影响 MCP 工具
+        2. 所有工具都接受 **kwargs（BaseTool 的抽象方法要求），所以传递额外的 user_id 是安全的
+        3. MCP 工具只使用 params，不使用 kwargs，所以不受影响
+        4. 自定义工具可以选择性地使用 kwargs.get("user_id")
+        """
+        # 如果当前有用户上下文，添加到 kwargs 中
+        # 注意：不覆盖已有的 user_id（如果工具已经通过其他方式传递了）
+        if self.current_user_id and 'user_id' not in kwargs:
+            kwargs['user_id'] = self.current_user_id
+        
+        # 调用父类方法（会经过 Assistant -> FnCallAgent -> Agent）
+        return super()._call_tool(tool_name, tool_args, **kwargs)
     
     def _build_system_message(self) -> str:
         """构建系统消息"""
@@ -171,6 +190,15 @@ class TYMemoryAgent(Assistant):
 - 查询时间和日期，支持不同时区和格式
 - 管理待办事项，智能提醒和冲突检测
 
+✈️ **航班和火车票查询规则（重要！）：**
+当用户查询航班或火车票信息后，**必须遵循以下规则**：
+1. **禁止询问预订**：查询完航班或火车票信息后，**绝对不要**询问"需要我帮您预订机票吗？"或"需要我帮您预订车票吗？"这类问题
+2. **直接说明限制**：
+   - 查询航班后，直接说明："由于MCP限制，无法直接帮您订购机票，需要您自行在APP上订购"
+   - 查询火车票后，直接说明："无法帮您订购火车票，需要您自行在APP上订购"
+3. **提供有用信息**：可以提供购票渠道建议（如12306官方APP、航空公司官网等），但不要询问是否需要帮助预订
+4. **减少无效沟通**：通过直接说明限制，避免用户产生误解和无效的后续沟通
+
 🚗 **打车服务使用规则（重要！）：**
 当用户需要使用打车服务时，必须遵循以下步骤，**确保经纬度精确**：
 1. **地理编码**：如果地点没有精确经纬度，必须先调用 `amap_maps-maps_geo` 或 `amap_maps-maps_text_search` 获取精确坐标
@@ -217,6 +245,15 @@ class TYMemoryAgent(Assistant):
 - 规划行程路线，优化出行方案
 - 查询时间和日期，支持不同时区和格式
 - 管理待办事项，智能提醒和冲突检测
+
+✈️ **航班和火车票查询规则（重要！）：**
+当用户查询航班或火车票信息后，**必须遵循以下规则**：
+1. **禁止询问预订**：查询完航班或火车票信息后，**绝对不要**询问"需要我帮您预订机票吗？"或"需要我帮您预订车票吗？"这类问题
+2. **直接说明限制**：
+   - 查询航班后，直接说明："由于MCP限制，无法直接帮您订购机票，需要您自行在APP上订购"
+   - 查询火车票后，直接说明："无法帮您订购火车票，需要您自行在APP上订购"
+3. **提供有用信息**：可以提供购票渠道建议（如12306官方APP、航空公司官网等），但不要询问是否需要帮助预订
+4. **减少无效沟通**：通过直接说明限制，避免用户产生误解和无效的后续沟通
 
 🚗 **打车服务使用规则（重要！）：**
 当用户需要使用打车服务时，必须遵循以下步骤，**确保经纬度精确**：
@@ -288,6 +325,15 @@ class TYMemoryAgent(Assistant):
 - **时间查询**：需要时间信息时，立即调用
 - **地图导航**：涉及地点时，主动提供路线规划
 - **待办管理**：智能提醒和冲突检测
+
+✈️ **航班和火车票查询规则（重要！）：**
+当用户查询航班或火车票信息后，**必须遵循以下规则**：
+1. **禁止询问预订**：查询完航班或火车票信息后，**绝对不要**询问"需要我帮您预订机票吗？"或"需要我帮您预订车票吗？"这类问题
+2. **直接说明限制**：
+   - 查询航班后，直接说明："由于MCP限制，无法直接帮您订购机票，需要您自行在APP上订购"
+   - 查询火车票后，直接说明："无法帮您订购火车票，需要您自行在APP上订购"
+3. **提供有用信息**：可以提供购票渠道建议（如12306官方APP、航空公司官网等），但不要询问是否需要帮助预订
+4. **减少无效沟通**：通过直接说明限制，避免用户产生误解和无效的后续沟通
 
 🚗 **打车服务使用规则（重要！）：**
 当用户需要使用打车服务时，必须遵循以下步骤，**确保经纬度精确**：
@@ -410,6 +456,15 @@ class TYMemoryAgent(Assistant):
 - **待办管理**：智能提醒和冲突检测
 - **其他工具**：根据情境主动调用所有可用工具
 
+✈️ **航班和火车票查询规则（重要！）：**
+当用户查询航班或火车票信息后，**必须遵循以下规则**：
+1. **禁止询问预订**：查询完航班或火车票信息后，**绝对不要**询问"需要我帮您预订机票吗？"或"需要我帮您预订车票吗？"这类问题
+2. **直接说明限制**：
+   - 查询航班后，直接说明："由于MCP限制，无法直接帮您订购机票，需要您自行在APP上订购"
+   - 查询火车票后，直接说明："无法帮您订购火车票，需要您自行在APP上订购"
+3. **提供有用信息**：可以提供购票渠道建议（如12306官方APP、航空公司官网等），但不要询问是否需要帮助预订
+4. **减少无效沟通**：通过直接说明限制，避免用户产生误解和无效的后续沟通
+
 🚗 **打车服务使用规则（重要！）：**
 当用户需要使用打车服务时，必须遵循以下步骤，**确保经纬度精确**：
 
@@ -506,9 +561,16 @@ class TYMemoryAgent(Assistant):
                        **kwargs):
         """带记忆的对话运行（异步）"""
         try:
+            # 设置当前用户上下文（用于工具调用时自动传递）
+            self.current_user_id = user_id
+            self.current_session_id = session_id
+            
             # 提取用户的原始query
             user_query = ""
-            for msg in messages:
+            # 规范化消息列表：确保第一条非系统消息是 USER 角色
+            normalized_messages = self._normalize_messages(messages)
+            
+            for msg in normalized_messages:
                 if msg.role == USER and isinstance(msg.content, str):
                     user_query = msg.content
                     break
@@ -517,8 +579,8 @@ class TYMemoryAgent(Assistant):
             user_memory = await self._get_user_memory(user_id, session_id, user_query)
             logger.debug(f"🔍 获取用户记忆: {user_memory}")
             
-            # 构建带记忆的消息
-            enhanced_messages = self._enhance_messages_with_memory(messages, user_memory, user_id)
+            # 构建带记忆的消息（使用规范化后的消息列表）
+            enhanced_messages = self._enhance_messages_with_memory(normalized_messages, user_memory, user_id)
             logger.debug(f"🔍 构建带记忆的消息: {enhanced_messages}")
             
             # 记录发送给LLM的完整提示词
@@ -542,7 +604,8 @@ class TYMemoryAgent(Assistant):
                 yield chunk
             
             # 更新用户记忆（异步）
-            await self._update_user_memory(user_id, session_id, messages, response)
+            # 使用规范化后的消息列表，确保消息格式正确
+            await self._update_user_memory(user_id, session_id, normalized_messages, response)
             
         except Exception as e:
             logger.error(f"❌ 带记忆对话运行失败: {e}")
@@ -639,10 +702,76 @@ class TYMemoryAgent(Assistant):
                         content=f"用户记忆信息：\n{memory_context}"
                     )
                     enhanced_messages.insert(0, memory_message)
+                    
+                    # 修复：确保系统消息之后的第一条消息是 USER 角色
+                    # LLM API要求（除了系统消息外）必须以 USER 消息开始
+                    if len(enhanced_messages) > 1:
+                        first_non_system_msg = enhanced_messages[1]
+                        if first_non_system_msg.role != USER:
+                            # 查找第一条 USER 消息
+                            first_user_idx = None
+                            for i, msg in enumerate(enhanced_messages[1:], start=1):
+                                if msg.role == USER:
+                                    first_user_idx = i
+                                    break
+                            
+                            if first_user_idx is not None and first_user_idx > 1:
+                                # 如果找到 USER 消息且不在第二个位置，需要调整顺序
+                                # 将 SYSTEM 消息保留在第一位，USER 消息移到第二位
+                                user_msg = enhanced_messages.pop(first_user_idx)
+                                enhanced_messages.insert(1, user_msg)
+                                logger.debug(f"🔧 调整消息顺序：将 USER 消息移到 SYSTEM 消息之后")
+                            else:
+                                # 如果没有找到 USER 消息，这是一个错误情况
+                                # 移除刚才插入的 SYSTEM 消息，保持原样
+                                logger.warning(f"⚠️ 警告：消息列表中没有找到 USER 消息，移除记忆增强")
+                                enhanced_messages.pop(0)
             
             return enhanced_messages
         except Exception as e:
             logger.warning(f"⚠️ 记忆增强失败: {e}")
+            return messages
+    
+    def _normalize_messages(self, messages: List[Message]) -> List[Message]:
+        """规范化消息列表，确保符合LLM API要求
+        
+        LLM API要求（除了系统消息外）必须以 USER 消息开始。
+        如果传入的消息列表以 ASSISTANT 开始，需要找到第一条 USER 消息并截取。
+        """
+        try:
+            if not messages:
+                return messages
+            
+            # 查找第一条 USER 消息的位置
+            first_user_idx = None
+            for i, msg in enumerate(messages):
+                if msg.role == USER:
+                    first_user_idx = i
+                    break
+            
+            # 如果第一条消息就是 USER 或者没找到 USER 消息，直接返回
+            if first_user_idx is None or first_user_idx == 0:
+                return messages
+            
+            # 如果第一条非系统消息不是 USER，需要截取从第一条 USER 消息开始的部分
+            # 但保留前面的 SYSTEM 消息（如果有）
+            normalized = []
+            
+            # 保留所有 SYSTEM 消息
+            for msg in messages[:first_user_idx]:
+                if msg.role == SYSTEM:
+                    normalized.append(msg)
+            
+            # 从第一条 USER 消息开始截取
+            normalized.extend(messages[first_user_idx:])
+            
+            if len(normalized) < len(messages):
+                logger.debug(f"🔧 规范化消息列表：从 {len(messages)} 条消息截取为 {len(normalized)} 条（第一条 USER 消息在位置 {first_user_idx}）")
+            
+            return normalized
+            
+        except Exception as e:
+            logger.warning(f"⚠️ 消息规范化失败: {e}")
             return messages
     
     def _format_memory_context(self, user_memory: Dict[str, Any], user_id: str = None) -> str:
@@ -702,12 +831,79 @@ class TYMemoryAgent(Assistant):
                 if memory_summaries:
                     context_parts.append(f"\n相关历史记忆:\n" + "\n".join([f"- {m}" for m in memory_summaries]))
             
-            # 4. 记忆洞察（新增）
+            # 4. 记忆洞察
             insights = user_memory.get("insights", [])
             if insights:
-                insight_types = [insight.get('type', '') for insight in insights if isinstance(insight, dict)]
-                if insight_types:
-                    context_parts.append(f"用户洞察: {', '.join(set(insight_types))}")
+                insight_summaries = []
+                
+                # 4.1 常见话题分析
+                topics = []
+                for insight in insights:
+                    if isinstance(insight, dict) and insight.get('type') == 'conversation':
+                        data = insight.get('data', {})
+                        topic = data.get('topic') if isinstance(data, dict) else None
+                        if topic and topic != '未分类':
+                            topics.append(topic)
+                
+                if topics:
+                    # 统计最常见的话题（使用Counter）
+                    from collections import Counter
+                    topic_counts = Counter(topics)
+                    common_topics = topic_counts.most_common(3)
+                    if common_topics:
+                        topic_str = ', '.join([f"{t}({c}次)" for t, c in common_topics])
+                        insight_summaries.append(f"常讨论: {topic_str}")
+                
+                # 4.2 用户意图分析（最近5条）
+                recent_intents = []
+                for insight in insights[:5]:
+                    if isinstance(insight, dict) and insight.get('type') == 'conversation':
+                        data = insight.get('data', {})
+                        intent = data.get('intent') if isinstance(data, dict) else None
+                        if intent:
+                            recent_intents.append(intent)
+                
+                if recent_intents:
+                    unique_intents = list(set(recent_intents))[:3]
+                    insight_summaries.append(f"最近意图: {', '.join(unique_intents)}")
+                
+                # 4.3 智能分析结果
+                for insight in insights:
+                    if isinstance(insight, dict) and insight.get('type') == 'smart_analysis':
+                        data = insight.get('data', {})
+                        if isinstance(data, dict):
+                            # 话题偏好
+                            topic_dist = data.get('topic_distribution', {})
+                            if topic_dist and isinstance(topic_dist, dict):
+                                top_topics = list(topic_dist.keys())[:3]
+                                if top_topics:
+                                    insight_summaries.append(f"话题偏好: {', '.join(top_topics)}")
+                            
+                            # 时间模式
+                            time_patterns = data.get('time_patterns', [])
+                            if time_patterns and isinstance(time_patterns, list):
+                                insight_summaries.append(f"活跃时段: {', '.join(time_patterns[:3])}")
+                            
+                            # 交互风格
+                            style = data.get('interaction_style')
+                            if style:
+                                insight_summaries.append(f"交互风格: {style}")
+                        break  # 只使用最新的智能分析
+                
+                # 4.4 模式分析结果
+                for insight in insights:
+                    if isinstance(insight, dict) and insight.get('type') == 'pattern_analysis':
+                        data = insight.get('data', {})
+                        if isinstance(data, dict):
+                            common_topics = data.get('common_topics', [])
+                            if common_topics and isinstance(common_topics, list):
+                                topics_str = ', '.join([str(t[0]) for t in common_topics[:3] if isinstance(t, (list, tuple))])
+                                if topics_str:
+                                    insight_summaries.append(f"模式: {topics_str}")
+                        break  # 只使用最新的模式分析
+                
+                if insight_summaries:
+                    context_parts.append("用户行为洞察:\n  • " + "\n  • ".join(insight_summaries))
             
             return "\n".join(context_parts) if context_parts else ""
         except Exception as e:
@@ -739,6 +935,12 @@ class TYMemoryAgent(Assistant):
                 await self.integrated_memory.save_conversation(
                     user_id, session_id, user_message, assistant_response
             )
+            
+            # 检查并触发智能洞察分析
+            insight_result = await self.check_and_trigger_insights(user_id)
+            if insight_result.get("triggered") and insight_result.get("message"):
+                logger.info(f"💡 洞察触发成功: {insight_result['message']}")
+                # TODO: 可选择将洞察建议推送给用户
             
             # 分析并更新用户偏好
             self._analyze_user_preferences(user_id, messages, response)
@@ -805,6 +1007,203 @@ class TYMemoryAgent(Assistant):
         except Exception as e:
             logger.error(f"❌ 获取用户摘要失败: {e}")
             return {}
+    
+    async def generate_smart_insights(self, user_id: str) -> Dict[str, Any]:
+        """生成智能洞察
+        
+        基于历史对话洞察，分析用户行为模式，生成个性化建议
+        """
+        try:
+            # 获取最近50条洞察
+            insights = self.integrated_memory.user_manager.get_memory_insights(user_id, limit=50)
+            
+            if not insights:
+                logger.info(f"用户 {user_id} 暂无洞察数据")
+                return {}
+            
+            analysis = {
+                "topic_distribution": {},      # 话题分布
+                "time_patterns": [],           # 时间模式
+                "interaction_style": "",       # 交互风格
+                "entity_frequency": {},        # 实体频率
+                "suggestions": []              # 个性化建议
+            }
+            
+            # 1. 话题分布分析
+            topics = []
+            intents = []
+            entities = []
+            time_hours = []
+            
+            for insight in insights:
+                if not isinstance(insight, dict):
+                    continue
+                    
+                insight_type = insight.get('type')
+                data = insight.get('data', {})
+                
+                if insight_type == 'conversation' and isinstance(data, dict):
+                    # 提取话题
+                    topic = data.get('topic')
+                    if topic and topic != '未分类':
+                        topics.append(topic)
+                    
+                    # 提取意图
+                    intent = data.get('intent')
+                    if intent:
+                        intents.append(intent)
+                    
+                    # 提取实体
+                    insight_entities = data.get('entities', [])
+                    if isinstance(insight_entities, list):
+                        entities.extend(insight_entities)
+                    
+                    # 提取时间
+                    timestamp = data.get('timestamp') or insight.get('created_at')
+                    if timestamp:
+                        try:
+                            dt = datetime.fromisoformat(timestamp)
+                            time_hours.append(dt.hour)
+                        except:
+                            pass
+            
+            # 统计话题分布
+            if topics:
+                from collections import Counter
+                topic_counts = Counter(topics)
+                analysis["topic_distribution"] = dict(topic_counts.most_common(10))
+                logger.debug(f"📊 话题分布: {analysis['topic_distribution']}")
+            
+            # 统计时间模式
+            if time_hours:
+                from collections import Counter
+                hour_counts = Counter(time_hours)
+                peak_hours = hour_counts.most_common(3)
+                analysis["time_patterns"] = [f"{h}:00" for h, _ in peak_hours]
+                logger.debug(f"⏰ 活跃时段: {analysis['time_patterns']}")
+            
+            # 统计交互风格（基于意图）
+            if intents:
+                from collections import Counter
+                intent_counts = Counter(intents)
+                dominant_intent = intent_counts.most_common(1)[0]
+                analysis["interaction_style"] = f"{dominant_intent[0]}({dominant_intent[1]}次)"
+                logger.debug(f"🎯 交互风格: {analysis['interaction_style']}")
+            
+            # 统计实体频率
+            if entities:
+                from collections import Counter
+                entity_counts = Counter(entities)
+                analysis["entity_frequency"] = dict(entity_counts.most_common(10))
+                logger.debug(f"🏷️  实体频率: {analysis['entity_frequency']}")
+            
+            # 4. 生成个性化建议
+            suggestions = []
+            
+            # 建议1: 基于话题偏好
+            if analysis["topic_distribution"]:
+                top_topics = list(analysis["topic_distribution"].items())[:3]
+                topics_str = "、".join([f"{t}({c}次)" for t, c in top_topics])
+                suggestions.append(f"您经常讨论{topics_str}，我可以为您提供这些领域的深度信息")
+            
+            # 建议2: 基于时间模式
+            if analysis["time_patterns"]:
+                peak_time = analysis["time_patterns"][0]
+                suggestions.append(f"您通常在{peak_time}左右活跃，我可以在这个时间主动提醒重要事项")
+            
+            # 建议3: 基于实体频率
+            if analysis["entity_frequency"]:
+                top_entity = list(analysis["entity_frequency"].items())[0]
+                suggestions.append(f"您经常提到'{top_entity[0]}'，可以为您设置相关的快捷操作")
+            
+            # 建议4: 基于对话数量
+            conversation_count = len([i for i in insights if i.get('type') == 'conversation'])
+            if conversation_count >= 20:
+                suggestions.append(f"已记录{conversation_count}次对话，我越来越了解您的需求了")
+            
+            analysis["suggestions"] = suggestions
+            
+            # 5. 保存智能洞察
+            self.integrated_memory.user_manager.save_memory_insight(
+                user_id,
+                "smart_analysis",
+                analysis,
+                confidence=0.9
+            )
+            
+            logger.info(f"🧠 生成智能洞察成功: user={user_id}, 话题数={len(analysis['topic_distribution'])}, 建议数={len(suggestions)}")
+            return analysis
+            
+        except Exception as e:
+            logger.error(f"❌ 生成智能洞察失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return {}
+    
+    async def check_and_trigger_insights(self, user_id: str) -> Dict[str, Any]:
+        """检查并触发洞察分析
+        
+        根据对话数量等条件，自动触发智能洞察分析
+        """
+        try:
+            # 获取对话洞察统计
+            insights = self.integrated_memory.user_manager.get_memory_insights(user_id)
+            conversation_insights = [i for i in insights if i.get('type') == 'conversation']
+            conversation_count = len(conversation_insights)
+            
+            # 检查是否已有智能分析
+            smart_insights = [i for i in insights if i.get('type') == 'smart_analysis']
+            last_analysis_count = 0
+            
+            if smart_insights:
+                # 获取上次分析时的对话数量（从洞察数据推断）
+                last_analysis_count = conversation_count - 10  # 估计值
+            
+            # 触发条件1: 对话数达到10、20、30...的倍数
+            should_trigger = False
+            trigger_reason = ""
+            
+            if conversation_count >= 10 and conversation_count % 10 == 0:
+                # 避免重复触发：检查是否刚刚分析过
+                if not smart_insights or conversation_count > last_analysis_count:
+                    should_trigger = True
+                    trigger_reason = f"对话数达到{conversation_count}次"
+            
+            # 触发条件2: 首次达到5次对话（早期用户）
+            if not smart_insights and conversation_count >= 5:
+                should_trigger = True
+                trigger_reason = "首次洞察分析"
+            
+            if should_trigger:
+                logger.info(f"🔔 触发智能洞察分析: {trigger_reason}")
+                smart_insights_data = await self.generate_smart_insights(user_id)
+                
+                # 返回建议（可选择推送给用户）
+                if smart_insights_data.get("suggestions"):
+                    return {
+                        "triggered": True,
+                        "reason": trigger_reason,
+                        "conversation_count": conversation_count,
+                        "suggestions": smart_insights_data["suggestions"],
+                        "message": "💡 我注意到您的一些使用习惯，有几个建议：\n" + 
+                                  "\n".join([f"  • {s}" for s in smart_insights_data["suggestions"][:3]])
+                    }
+                else:
+                    return {
+                        "triggered": True,
+                        "reason": trigger_reason,
+                        "conversation_count": conversation_count,
+                        "message": f"已分析{conversation_count}次对话，持续学习中..."
+                    }
+            
+            return {
+                "triggered": False,
+                "conversation_count": conversation_count
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ 检查洞察触发失败: {e}")
+            return {"triggered": False, "error": str(e)}
     
     async def cleanup(self):
         """清理资源"""
