@@ -44,6 +44,7 @@ class ToolRegistry:
         await self._init_profile_tools()
         await self._init_location_tools()
         await self._init_eleme_tools()
+        await self._init_feishu_meeting_tools()
         
         # 统计
         total_tools = sum(len(tools) for tools in self.tools_cache.values())
@@ -389,6 +390,42 @@ class ToolRegistry:
             logger.warning(f"⚠️  饿了么外卖工具初始化失败: {e}")
             self.connection_status["eleme"] = False
             self.tools_cache["eleme"] = []
+    
+    async def _init_feishu_meeting_tools(self):
+        """初始化飞书会议工具（使用官方 SDK）"""
+        try:
+            from ty_mem_agent.self_defined_tools.feishu_meeting_sdk import get_feishu_meeting_sdk_tools
+            
+            logger.info("📅 正在初始化飞书会议工具（SDK版本）...")
+            
+            # 检查配置
+            feishu_app_id = getattr(settings, 'FEISHU_APP_ID', None)
+            feishu_app_secret = getattr(settings, 'FEISHU_APP_SECRET', None)
+            
+            if not feishu_app_id or not feishu_app_secret:
+                logger.warning("⚠️  未配置 FEISHU_APP_ID 或 FEISHU_APP_SECRET，跳过飞书会议工具")
+                self.connection_status["feishu_meeting"] = False
+                self.tools_cache["feishu_meeting"] = []
+                return
+            
+            # 获取飞书会议工具（SDK版本）
+            tools = get_feishu_meeting_sdk_tools()
+            
+            if tools:
+                self.tools_cache["feishu_meeting"] = tools
+                self.connection_status["feishu_meeting"] = True
+                logger.info(f"✅ 飞书会议工具（SDK版本）初始化成功，共 {len(tools)} 个工具")
+                for tool in tools:
+                    logger.debug(f"   - {tool.name}: {tool.description[:80]}...")
+            else:
+                self.connection_status["feishu_meeting"] = False
+                self.tools_cache["feishu_meeting"] = []
+                logger.warning("⚠️  飞书会议工具初始化失败")
+                
+        except Exception as e:
+            logger.warning(f"⚠️  飞书会议工具初始化失败: {e}")
+            self.connection_status["feishu_meeting"] = False
+            self.tools_cache["feishu_meeting"] = []
     
     def get_all_tools(self) -> List[BaseTool]:
         """获取所有可用工具"""

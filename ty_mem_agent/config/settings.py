@@ -72,6 +72,10 @@ class Settings(BaseSettings):
     ELEME_APP_SECRET: Optional[str] = Field(default=None, env="ELEME_APP_SECRET")
     ELEME_MODE: str = Field(default="sandbox", env="ELEME_MODE")  # sandbox 或 production
     
+    # === 飞书会议API密钥 ===
+    FEISHU_APP_ID: Optional[str] = Field(default=None, env="FEISHU_APP_ID")
+    FEISHU_APP_SECRET: Optional[str] = Field(default=None, env="FEISHU_APP_SECRET")
+    
     # === MCP服务配置 ===
     @property
     def MCP_SERVICES(self) -> Dict[str, Dict]:

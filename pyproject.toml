@@ -67,6 +67,7 @@ pyjwt = "^2.10.1"
 dateparser = "^1.2.2"
 jionlp = "^1.5.27"
 parsedatetime = "^2.6"
+lark-oapi = "^1.4.23"
 
 [tool.poetry.extras]
 rag = [

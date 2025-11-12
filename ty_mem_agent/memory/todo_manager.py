@@ -43,6 +43,10 @@ class TodoItem:
     created_at: Optional[str] = None   # 创建时间
     updated_at: Optional[str] = None   # 更新时间
     completed_at: Optional[str] = None # 完成时间
+    # 会议相关字段（用于飞书会议管理）
+    reserve_id: Optional[str] = None   # 飞书会议预约ID
+    event_id: Optional[str] = None     # 飞书日历事件ID
+    calendar_id: Optional[str] = None  # 飞书日历ID
     
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
@@ -123,6 +127,25 @@ class TodoManager:
             CREATE INDEX IF NOT EXISTS idx_deadline ON todos (deadline)
         """)
         
+        # 添加会议相关字段（如果不存在）
+        try:
+            cursor.execute("ALTER TABLE todos ADD COLUMN reserve_id TEXT")
+            logger.info("✅ 添加字段: reserve_id")
+        except sqlite3.OperationalError:
+            pass  # 字段已存在
+        
+        try:
+            cursor.execute("ALTER TABLE todos ADD COLUMN event_id TEXT")
+            logger.info("✅ 添加字段: event_id")
+        except sqlite3.OperationalError:
+            pass  # 字段已存在
+        
+        try:
+            cursor.execute("ALTER TABLE todos ADD COLUMN calendar_id TEXT")
+            logger.info("✅ 添加字段: calendar_id")
+        except sqlite3.OperationalError:
+            pass  # 字段已存在
+        
         conn.commit()
         conn.close()
     
@@ -143,7 +166,10 @@ class TodoManager:
             priority=todo_data.get('priority', 0),
             tags=json.dumps(todo_data.get('tags', []), ensure_ascii=False),
             created_at=now,
-            updated_at=now
+            updated_at=now,
+            reserve_id=todo_data.get('reserve_id'),  # 会议预约ID
+            event_id=todo_data.get('event_id'),      # 日历事件ID
+            calendar_id=todo_data.get('calendar_id') # 日历ID
         )
         
         # 保存到数据库
@@ -154,13 +180,14 @@ class TodoManager:
             INSERT INTO todos (
                 user_id, title, description, deadline, reminder_time,
                 location, participants, status, priority, tags,
-                created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                created_at, updated_at, reserve_id, event_id, calendar_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             todo.user_id, todo.title, todo.description, todo.deadline,
             todo.reminder_time, todo.location, todo.participants,
             todo.status, todo.priority, todo.tags,
-            todo.created_at, todo.updated_at
+            todo.created_at, todo.updated_at,
+            todo.reserve_id, todo.event_id, todo.calendar_id
         ))
         
         todo.id = cursor.lastrowid
@@ -406,6 +433,25 @@ class TodoManager:
         conn.close()
         
         return count
+    
+    def get_todo_by_event_id(self, user_id: str, event_id: str) -> Optional[TodoItem]:
+        """根据 event_id 查找待办事项（用于会议更新时同步待办）"""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT * FROM todos 
+            WHERE user_id = ? AND event_id = ? AND status != ?
+            LIMIT 1
+        """, (user_id, event_id, TodoStatus.DELETED))
+        
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row:
+            return TodoItem(**dict(row))
+        return None
 
 
 # 全局单例

@@ -46,6 +46,14 @@ ELEME_APP_KEY=your_eleme_app_key_here
 ELEME_APP_SECRET=your_eleme_app_secret_here
 ELEME_MODE=sandbox  # sandbox（测试环境） 或 production（生产环境）
 
+# 飞书会议 API 配置（可选 - 用于会议管理功能）
+# 申请地址: 飞书开放平台 https://open.feishu.cn/
+# 功能包括: 创建会议、更新会议、删除会议、获取会议详情、设置主持人、邀请参会人
+# 文档: https://feishu.apifox.cn/api-9020884
+# 需要权限: 查看、创建和管理日历和会议
+FEISHU_APP_ID=your_feishu_app_id_here
+FEISHU_APP_SECRET=your_feishu_app_secret_here
+
 # === 数据库配置 ===
 # Redis（可选，用于会话存储）
 REDIS_URL=redis://localhost:6379/0
