@@ -45,6 +45,10 @@ class MCPManager:
                 raise ImportError('Could not import mcp. Please install mcp with `pip install -U mcp`.') from e
 
             load_dotenv()  # Load environment variables from .env file
+            
+            # Monkey patch: Add support for heartbeat notifications
+            self.monkey_patch_mcp_heartbeat_support()
+            
             self.clients: dict = {}
             self.loop = asyncio.new_event_loop()
             self.loop_thread = threading.Thread(target=self.start_loop, daemon=True)
@@ -53,6 +57,56 @@ class MCPManager:
             # A fallback way to terminate MCP tool processes after Qwen-Agent exits
             self.processes = []
             self.monkey_patch_mcp_create_platform_compatible_process()
+
+    def monkey_patch_mcp_heartbeat_support(self):
+        """
+        Monkey patch MCP to support heartbeat notifications.
+        
+        Some MCP servers (e.g., eleme) send heartbeat notifications to keep the connection alive,
+        but the MCP SDK doesn't support this notification type by default, causing validation warnings.
+        This patch adds support for heartbeat notifications to prevent log spam.
+        """
+        try:
+            from mcp import types
+            from pydantic import RootModel, Field
+            from typing import Any, Dict, Optional, Literal, Union
+            
+            # Check if heartbeat support already exists
+            original_fields = types.ServerNotification.model_fields.get('root')
+            if original_fields and 'heartbeat' in str(original_fields):
+                logger.debug("MCP heartbeat support already exists")
+                return
+            
+            # Define custom HeartbeatNotification that doesn't require params
+            class HeartbeatNotification(types.JSONRPCNotification):
+                """Heartbeat notification without required params"""
+                method: Literal['heartbeat'] = 'heartbeat'
+                params: Union[Dict[str, Any], None] = Field(default=None)
+            
+            # Extend ServerNotification to include heartbeat
+            class ExtendedServerNotification(
+                RootModel[
+                    types.CancelledNotification
+                    | types.ProgressNotification
+                    | types.LoggingMessageNotification
+                    | types.ResourceUpdatedNotification
+                    | types.ResourceListChangedNotification
+                    | types.ToolListChangedNotification
+                    | types.PromptListChangedNotification
+                    | HeartbeatNotification  # Add heartbeat support
+                ]
+            ):
+                """Extended ServerNotification with heartbeat support"""
+                pass
+            
+            # Replace types.ServerNotification
+            types.ServerNotification = ExtendedServerNotification
+            
+            logger.info("✅ MCP heartbeat notification support enabled")
+            
+        except Exception as e:
+            logger.warning(f"⚠️  Failed to enable MCP heartbeat support: {e}")
+            logger.debug("Heartbeat warnings may appear in logs, but they can be safely ignored")
 
     def monkey_patch_mcp_create_platform_compatible_process(self):
         try:

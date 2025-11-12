@@ -106,12 +106,17 @@ class ChatServer:
         # WebSocket连接管理
         self.active_connections: Dict[str, WebSocket] = {}
         self.user_agents: Dict[str, TYMemoryAgent] = {}
+        self.agent_last_used: Dict[str, datetime] = {}  # user_id -> 最后使用时间
+        self.agent_creation_locks: Dict[str, asyncio.Lock] = {}  # user_id -> 创建锁，防止并发创建
         
         # 会话管理器
         self.conversation_manager = get_conversation_manager()
         
         # 用户当前会话追踪
         self.user_current_conversation: Dict[str, str] = {}  # user_id -> conversation_id
+        
+        # Agent过期时间（秒）- 30分钟未使用才删除
+        self.agent_idle_timeout = 30 * 60  # 30分钟
         
         # 初始化路由
         self._setup_routes()
@@ -502,14 +507,13 @@ class ChatServer:
         user_id = user.user_id
         self.active_connections[user_id] = websocket
         
-        # 创建或获取用户的Agent
-        if user_id not in self.user_agents:
-            agent = TYMemoryAgent()
-            session = user_manager.get_user_session(user_id)
-            session_id = session.session_id if session else f"ws_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-            
-            await agent.set_user_context(user_id, session_id)
-            self.user_agents[user_id] = agent
+        # 创建或获取用户的Agent（如果不存在或已过期，则创建新的）
+        agent = await self._get_or_create_agent(user_id)
+        if not agent:
+            # Agent创建失败，记录错误但不立即断开连接
+            # 允许用户重试，在发送消息时会再次尝试创建
+            logger.error(f"❌ 用户连接时Agent创建失败: {user.username} ({user_id})")
+            logger.warning("   将在用户发送消息时重试创建Agent")
         
         # 不自动创建会话，让用户主动选择
         # 只有在用户发送消息时才创建会话
@@ -607,15 +611,35 @@ class ChatServer:
                 "message_id": thinking_message_id
             }))
             
-            # 获取用户的Agent
-            agent = self.user_agents.get(user_id)
+            # 获取用户的Agent（如果不存在，自动创建）
+            # 最多重试3次，每次间隔1秒
+            max_retries = 3
+            retry_delay = 1.0
+            agent = None
+            
+            for attempt in range(max_retries):
+                agent = await self._get_or_create_agent(user_id)
+                if agent:
+                    break
+                
+                if attempt < max_retries - 1:
+                    logger.warning(f"⚠️ Agent创建失败，第 {attempt + 1} 次重试（共 {max_retries} 次）: {user_id}")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2  # 指数退避
+            
             if not agent:
+                error_msg = "Agent初始化失败，请稍后重试。如果问题持续，请联系管理员。"
                 await websocket.send_text(json.dumps({
                     "type": "error",
-                    "content": "Agent未初始化，请重新连接",
-                    "timestamp": datetime.now().isoformat()
+                    "content": error_msg,
+                    "timestamp": datetime.now().isoformat(),
+                    "error_code": "AGENT_INIT_FAILED"
                 }))
+                logger.error(f"❌ 无法为用户 {user_id} 创建Agent（已重试 {max_retries} 次）")
                 return
+            
+            # 更新Agent最后使用时间
+            self.agent_last_used[user_id] = datetime.now()
             
             # 🔧 修复：获取会话历史，构建包含上下文的消息列表
             conversation = self.conversation_manager.get_conversation(conversation_id)
@@ -934,10 +958,151 @@ class ChatServer:
             logger.info("🔄 使用简化标题生成作为备选方案")
             return self._generate_simple_title(first_user_message)
     
+    async def _get_or_create_agent(self, user_id: str) -> Optional[TYMemoryAgent]:
+        """获取或创建用户的Agent
+        
+        如果Agent不存在或已过期，自动创建新的Agent
+        这样可以确保Agent始终可用，避免"Agent未初始化"的问题
+        
+        使用锁机制防止并发创建同一个用户的Agent
+        
+        Args:
+            user_id: 用户ID
+            
+        Returns:
+            TYMemoryAgent实例，如果创建失败则返回None
+        """
+        try:
+            # 第一层检查：快速路径，如果Agent存在且未过期，直接返回
+            agent = self.user_agents.get(user_id)
+            
+            if agent:
+                # Agent存在，检查是否过期
+                last_used = self.agent_last_used.get(user_id)
+                if last_used:
+                    idle_time = (datetime.now() - last_used).total_seconds()
+                    if idle_time > self.agent_idle_timeout:
+                        # Agent已过期，需要清理并创建新的
+                        logger.info(f"🔄 Agent已过期（空闲{idle_time//60:.1f}分钟），为用户 {user_id} 创建新Agent")
+                        await self._cleanup_agent(user_id)
+                        agent = None
+                    else:
+                        # Agent未过期，直接返回
+                        logger.debug(f"✅ 使用现有Agent: {user_id}（空闲{idle_time//60:.1f}分钟）")
+                        return agent
+                else:
+                    # 没有记录最后使用时间，更新并返回
+                    self.agent_last_used[user_id] = datetime.now()
+                    return agent
+            
+            # 第二层检查：Agent不存在或已过期，需要创建新的
+            # 使用锁机制防止并发创建
+            if user_id not in self.agent_creation_locks:
+                self.agent_creation_locks[user_id] = asyncio.Lock()
+            
+            async with self.agent_creation_locks[user_id]:
+                # 双重检查：在获取锁后再次检查，防止其他线程已经创建了
+                agent = self.user_agents.get(user_id)
+                if agent:
+                    # 其他线程已经创建了，直接返回
+                    logger.debug(f"✅ 使用其他线程创建的Agent: {user_id}")
+                    self.agent_last_used[user_id] = datetime.now()
+                    return agent
+                
+                # 创建新的Agent
+                logger.info(f"🆕 为用户 {user_id} 创建新Agent")
+                try:
+                    agent = TYMemoryAgent()
+                    session = user_manager.get_user_session(user_id)
+                    session_id = session.session_id if session else f"ws_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+                    
+                    await agent.set_user_context(user_id, session_id)
+                    self.user_agents[user_id] = agent
+                    self.agent_last_used[user_id] = datetime.now()
+                    
+                    logger.info(f"✅ Agent创建成功: {user_id}")
+                    return agent
+                    
+                except Exception as create_error:
+                    logger.error(f"❌ 创建Agent实例失败: {create_error}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+                    # 清理可能的部分创建状态
+                    if user_id in self.user_agents:
+                        del self.user_agents[user_id]
+                    if user_id in self.agent_last_used:
+                        del self.agent_last_used[user_id]
+                    return None
+            
+        except Exception as e:
+            logger.error(f"❌ 获取或创建Agent失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None
+    
+    async def _cleanup_agent(self, user_id: str):
+        """清理用户的Agent
+        
+        注意：清理时使用锁，防止与创建操作冲突
+        """
+        try:
+            # 获取锁，防止在清理时其他线程正在创建
+            if user_id not in self.agent_creation_locks:
+                self.agent_creation_locks[user_id] = asyncio.Lock()
+            
+            async with self.agent_creation_locks[user_id]:
+                if user_id in self.user_agents:
+                    agent = self.user_agents[user_id]
+                    try:
+                        await agent.cleanup()
+                    except Exception as cleanup_error:
+                        logger.warning(f"⚠️ Agent清理时出错（继续删除）: {cleanup_error}")
+                    finally:
+                        del self.user_agents[user_id]
+                    logger.info(f"🧹 已清理Agent: {user_id}")
+                
+                if user_id in self.agent_last_used:
+                    del self.agent_last_used[user_id]
+                
+                # 清理锁（延迟清理，避免频繁创建锁）
+                # 注意：不立即删除锁，因为用户可能很快重新连接
+                
+        except Exception as e:
+            logger.error(f"❌ 清理Agent失败: {e}")
+    
+    async def _cleanup_idle_agents(self):
+        """定期清理长时间未使用的Agent
+        
+        这是一个后台任务，定期检查并清理长时间未使用的Agent
+        """
+        try:
+            current_time = datetime.now()
+            expired_users = []
+            
+            for user_id, last_used in list(self.agent_last_used.items()):
+                if user_id in self.active_connections:
+                    # 用户还在线，跳过
+                    continue
+                
+                idle_time = (current_time - last_used).total_seconds()
+                if idle_time > self.agent_idle_timeout:
+                    expired_users.append((user_id, idle_time))
+            
+            # 清理过期的Agent
+            for user_id, idle_time in expired_users:
+                logger.info(f"🧹 清理长时间未使用的Agent: {user_id}（空闲{idle_time//60:.1f}分钟）")
+                await self._cleanup_agent(user_id)
+                
+            if expired_users:
+                logger.info(f"✅ 清理完成，共清理 {len(expired_users)} 个过期Agent")
+                
+        except Exception as e:
+            logger.error(f"❌ 清理空闲Agent失败: {e}")
+    
     async def _get_user_memory_summary(self, user_id: str) -> Dict:
         """获取用户记忆摘要"""
         try:
-            agent = self.user_agents.get(user_id)
+            agent = await self._get_or_create_agent(user_id)
             if agent:
                 return await agent.get_user_summary(user_id)
             else:
@@ -954,19 +1119,25 @@ class ChatServer:
             return {}
     
     async def _disconnect_user(self, user_id: str):
-        """断开用户连接"""
+        """断开用户连接
+        
+        注意：不断开连接时不立即删除Agent，而是保留一段时间
+        这样可以避免用户重新连接时Agent未初始化的问题
+        """
         try:
             # 移除连接
             if user_id in self.active_connections:
                 del self.active_connections[user_id]
             
-            # 清理Agent
+            # 更新Agent最后使用时间（不断开连接时也更新，用于后续清理）
             if user_id in self.user_agents:
-                agent = self.user_agents[user_id]
-                await agent.cleanup()
-                del self.user_agents[user_id]
+                self.agent_last_used[user_id] = datetime.now()
+                logger.info(f"🔌 用户断开连接: {user_id}，Agent保留（将在{self.agent_idle_timeout//60}分钟后自动清理）")
+            else:
+                logger.info(f"🔌 用户断开连接: {user_id}")
             
-            logger.info(f"🔌 用户断开: {user_id}")
+            # 不立即删除Agent，而是通过定期清理任务来删除长时间未使用的Agent
+            # 这样可以支持用户快速重连，避免Agent未初始化的问题
             
         except Exception as e:
             logger.error(f"❌ 断开用户连接失败: {e}")
@@ -993,6 +1164,9 @@ class ChatServer:
         """启动服务器"""
         import uvicorn
         
+        # 启动定期清理任务
+        asyncio.create_task(self._periodic_cleanup_task())
+        
         logger.info(f"🚀 启动Chat Server: {settings.HOST}:{settings.PORT}")
         
         config = uvicorn.Config(
@@ -1006,12 +1180,31 @@ class ChatServer:
         server = uvicorn.Server(config)
         await server.serve()
     
+    async def _periodic_cleanup_task(self):
+        """定期清理任务
+        
+        每5分钟检查一次，清理长时间未使用的Agent
+        """
+        while True:
+            try:
+                await asyncio.sleep(5 * 60)  # 每5分钟执行一次
+                await self._cleanup_idle_agents()
+            except asyncio.CancelledError:
+                logger.info("🛑 定期清理任务已取消")
+                break
+            except Exception as e:
+                logger.error(f"❌ 定期清理任务出错: {e}")
+    
     async def cleanup(self):
         """清理资源"""
         try:
             # 断开所有连接
             for user_id in list(self.active_connections.keys()):
                 await self._disconnect_user(user_id)
+            
+            # 清理所有Agent
+            for user_id in list(self.user_agents.keys()):
+                await self._cleanup_agent(user_id)
             
             logger.info("🧹 Chat Server 资源清理完成")
             
