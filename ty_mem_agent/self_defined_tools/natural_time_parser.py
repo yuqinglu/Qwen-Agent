@@ -152,10 +152,17 @@ def extract_time_info_from_text(text: str, language: str = "auto") -> Dict[str, 
                     break  # 找到第一个有效的时间点就停止
         
         # 处理时间段修饰（如"早上"、"下午"、"晚上"）
-        for period, hour in PERIOD_MAP.items():
-            if period in text and period in ["凌晨", "早上", "上午", "中午", "下午", "傍晚", "晚上", "夜里"]:
-                period_hour = hour
-                break
+        # 先处理复合词（如"明晚"、"今晚"、"明早"、"今早"）
+        if "明晚" in text or "今晚" in text:
+            period_hour = PERIOD_MAP.get("晚上", 20)  # 晚上对应20点
+        elif "明早" in text or "今早" in text:
+            period_hour = PERIOD_MAP.get("早上", 8)  # 早上对应8点
+        else:
+            # 检查完整的时间段词
+            for period, hour in PERIOD_MAP.items():
+                if period in text and period in ["凌晨", "早上", "上午", "中午", "下午", "傍晚", "晚上", "夜里"]:
+                    period_hour = hour
+                    break
         
         # 如果既有具体时间又有时间段修饰，需要结合处理
         # 修复：先提取具体时间点（如"两点"=2），然后根据时间段转换为24小时制
@@ -300,7 +307,7 @@ def parse_time_with_jionlp(text: str, reference_time: Optional[datetime.datetime
                         time_info_jio = extract_time_info_from_text(text, "zh")
                         has_time_point = time_info_jio.get("hour_guess") is not None
                         has_time_period = bool(
-                            re.search(r'(早上|上午|中午|下午|傍晚|晚上|夜里|凌晨|morning|afternoon|evening|night|noon)', text, re.IGNORECASE)
+                            re.search(r'(明晚|今晚|明早|今早|早上|上午|中午|下午|傍晚|晚上|夜里|凌晨|morning|afternoon|evening|night|noon)', text, re.IGNORECASE)
                         )
                         
                         if parsed_time.hour == 0 and parsed_time.minute == 0 and parsed_time.second == 0:
@@ -376,7 +383,7 @@ def parse_time_with_parsedatetime(text: str, reference_time: Optional[datetime.d
                 time_info_en = extract_time_info_from_text(text, "en")
                 has_time_point = time_info_en.get("hour_guess") is not None
                 has_time_period = bool(
-                    re.search(r'(morning|afternoon|evening|night|noon|早上|上午|中午|下午|傍晚|晚上|夜里|凌晨)', text, re.IGNORECASE)
+                    re.search(r'(morning|afternoon|evening|night|noon|明晚|今晚|明早|今早|早上|上午|中午|下午|傍晚|晚上|夜里|凌晨)', text, re.IGNORECASE)
                 )
                 
                 if has_time_point:
@@ -433,7 +440,7 @@ def parse_time_with_dateparser(text: str, reference_time: Optional[datetime.date
                 re.search(r'\d{1,2}:\d{2}', text)
             )
             has_time_period = bool(
-                re.search(r'(早上|上午|中午|下午|傍晚|晚上|夜里|凌晨|morning|afternoon|evening|night|noon)', text, re.IGNORECASE)
+                re.search(r'(明晚|今晚|明早|今早|早上|上午|中午|下午|傍晚|晚上|夜里|凌晨|morning|afternoon|evening|night|noon)', text, re.IGNORECASE)
             )
             
             if parsed_dt.hour == 0 and parsed_dt.minute == 0 and parsed_dt.second == 0:
@@ -898,7 +905,7 @@ def parse_chinese_english_datetime(
             else:
                 # 没有明确时间点，检查是否有时间段描述来决定是否保留时间
                 has_time_period = bool(
-                    re.search(r'(早上|上午|中午|下午|傍晚|晚上|夜里|凌晨)', text)
+                    re.search(r'(明晚|今晚|明早|今早|早上|上午|中午|下午|傍晚|晚上|夜里|凌晨)', text)
                 )
                 if not has_time_period and parsed_dt.hour == 0 and parsed_dt.minute == 0:
                     # 既没有时间点也没有时间段描述，确保时间为00:00:00
@@ -1079,7 +1086,19 @@ class NaturalTimeParserTool(BaseTool):
                 llm=self.llm
             )
             
+            # 添加 Unix 时间戳字段（便于直接用于 create_meeting_reserve 等工具）
+            if 'parsed_datetime' in result and result.get('parsed_datetime'):
+                try:
+                    from datetime import datetime
+                    parsed_dt = datetime.fromisoformat(result['parsed_datetime'].replace('Z', '+00:00'))
+                    # 转换为 Unix 时间戳（秒级）
+                    result['timestamp'] = int(parsed_dt.timestamp())
+                except Exception as e:
+                    logger.debug(f"⚠️ 无法转换时间戳: {e}")
+            
             logger.info(f"🕐 时间解析成功: '{text}' → {result.get('parsed_datetime')} (方法: {result.get('method', 'unknown')})")
+            if 'timestamp' in result:
+                logger.debug(f"   Unix时间戳: {result.get('timestamp')}")
             return json.dumps(result, ensure_ascii=False, indent=2)
             
         except Exception as e:
