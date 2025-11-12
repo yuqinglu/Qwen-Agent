@@ -515,8 +515,12 @@ class IntegratedMemorySystem:
             # 使用LLM从对话中提取用户画像信息
             await self._extract_user_profile_from_conversation(user_id, message, response)
             
-            # 8. 保存对话洞察（用于用户模式分析）
-            # 即使context为空也保存基础洞察
+            # ==================== 步骤6: 智能保存对话洞察（避免冗余） ====================
+            # 优化：不是每次对话都保存洞察，而是基于条件智能保存
+            should_save_insight = False
+            save_reason = ""
+            
+            # 构建洞察数据
             insight_data = {
                 "topic": context.get("topic", "未分类") if context else "未分类",
                 "intent": context.get("intent", "") if context else "",
@@ -525,13 +529,50 @@ class IntegratedMemorySystem:
                 "timestamp": datetime.now().isoformat()
             }
             
-            self.user_manager.save_memory_insight(
-                user_id,
-                "conversation",
-                insight_data,
-                confidence=0.8 if context and context.get("topic") else 0.3
-            )
-            logger.debug(f"💡 保存对话洞察: {insight_data.get('topic', '未知话题')}")
+            # 条件1: 话题有效且不是"未分类"
+            if context and context.get("topic") and context.get("topic") != "未分类":
+                # 检查最近的洞察，避免连续保存相同话题
+                recent_insights = self.user_manager.get_memory_insights(user_id, insight_type="conversation", limit=1)
+                if recent_insights:
+                    last_topic = recent_insights[0].get('data', {}).get('topic', '')
+                    if last_topic != context.get("topic"):
+                        should_save_insight = True
+                        save_reason = "话题变化"
+                else:
+                    # 第一条洞察
+                    should_save_insight = True
+                    save_reason = "首次洞察"
+            
+            # 条件2: 实体数量较多（说明对话信息丰富）
+            if not should_save_insight and context and len(context.get("entities", [])) >= 3:
+                should_save_insight = True
+                save_reason = "信息丰富"
+            
+            # 条件3: 包含重要关键词（用户信息相关）
+            important_keywords = ['我是', '我叫', '我的', '我想', '帮我', '提醒我']
+            if not should_save_insight and any(keyword in message for keyword in important_keywords):
+                should_save_insight = True
+                save_reason = "重要对话"
+            
+            # 条件4: 每10次对话至少保存一次（防止完全不保存）
+            if not should_save_insight:
+                conversation_count = len(conv_context.conversation_history) if conv_context else 0
+                if conversation_count % 10 == 0 and conversation_count > 0:
+                    should_save_insight = True
+                    save_reason = "定期保存"
+            
+            # 执行保存
+            if should_save_insight:
+                confidence = 0.8 if context and context.get("topic") and context.get("topic") != "未分类" else 0.5
+                self.user_manager.save_memory_insight(
+                    user_id,
+                    "conversation",
+                    insight_data,
+                    confidence=confidence
+                )
+                logger.debug(f"💡 保存对话洞察: {insight_data.get('topic', '未知话题')} (原因: {save_reason})")
+            else:
+                logger.debug(f"⏭️  跳过洞察保存: {insight_data.get('topic', '未知话题')} (避免冗余)")
             
             logger.debug(f"💬 保存对话: {user_id} - {session_id}")
             return True
