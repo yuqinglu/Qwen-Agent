@@ -59,6 +59,15 @@ from .railway_12306_mcp_server import (
     shutdown_railway_12306_mcp
 )
 
+# 股票查询 - Streamable HTTP Endpoint
+from .stock_mcp_server import (
+    StockMCPServerManager,
+    get_stock_mcp_server_config,
+    get_stock_mcp_manager,
+    register_stock_tools,
+    shutdown_stock_mcp
+)
+
 # 通用工具包装器
 from .tool_wrapper import (
     LoggingToolWrapper,
@@ -124,6 +133,13 @@ __all__ = [
     'get_railway_12306_mcp_server_config',
     'get_railway_12306_mcp_manager',
     'shutdown_railway_12306_mcp',
+    
+    # 股票查询 MCP Server（Streamable HTTP Endpoint）
+    'StockMCPServerManager',
+    'get_stock_mcp_server_config',
+    'get_stock_mcp_manager',
+    'register_stock_tools',
+    'shutdown_stock_mcp',
     
     # 通用工具包装器
     'LoggingToolWrapper',

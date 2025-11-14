@@ -27,6 +27,56 @@ class LoggingToolWrapper(BaseTool):
         self.name = original_tool.name
         self.description = getattr(original_tool, 'description', '')
         self.parameters = getattr(original_tool, 'parameters', {})
+        
+        # 增强K线工具的描述，让LLM知道如何根据用户意图选择正确的type参数
+        self._enhance_kline_tool_description()
+    
+    def _enhance_kline_tool_description(self):
+        """
+        增强K线工具的描述，让LLM知道如何根据用户意图选择正确的type参数
+        
+        增强规则：
+        - 查询"本周"、"周涨幅" → 使用type=1200（周K）
+        - 查询"本月"、"上月"、"月涨幅" → 使用type=7200（月K）
+        - 查询"今年"、"去年"、"年涨幅" → 使用type=86400（年K）
+        - 查询"今天"、"今日"、"日涨幅" → 使用type=240（日K）或直接使用报价工具
+        """
+        # 检查是否是K线查询工具
+        if 'K线' not in self.name and 'kline' not in self.name.lower():
+            return
+        
+        # 增强工具描述
+        enhanced_description = f"""{self.description}
+
+【重要提示】根据用户查询的时间范围，选择合适的type参数：
+- 查询"本周"、"周涨幅"、"这周"、"上周"等周级别数据 → 使用 type="1200"（周K线）
+- 查询"本月"、"上月"、"月涨幅"、"这个月"等月级别数据 → 使用 type="7200"（月K线）
+- 查询"今年"、"去年"、"年涨幅"、"本年度"等年级别数据 → 使用 type="86400"（年K线）
+- 查询"今天"、"今日"、"日涨幅"等日级别数据 → 使用 type="240"（日K线）或直接使用报价工具
+- 查询分钟级别数据 → 使用 type="1"（1分钟）、"5"（5分钟）、"15"（15分钟）、"30"（30分钟）、"60"（60分钟）、"120"（120分钟）
+
+注意：周K线会直接返回本周的涨跌幅数据，不需要手动计算。月K线和年K线同理。"""
+        
+        self.description = enhanced_description
+        
+        # 增强type参数的描述
+        if isinstance(self.parameters, dict) and 'properties' in self.parameters:
+            if 'type' in self.parameters['properties']:
+                type_prop = self.parameters['properties']['type']
+                original_desc = type_prop.get('description', '')
+                
+                enhanced_type_desc = f"""{original_desc}
+
+【智能选择指南】根据用户查询意图自动选择：
+- 用户问"本周"、"周涨幅"、"这周"、"上周" → 使用 "1200"（周K线）
+- 用户问"本月"、"上月"、"月涨幅"、"这个月" → 使用 "7200"（月K线）
+- 用户问"今年"、"去年"、"年涨幅"、"本年度" → 使用 "86400"（年K线）
+- 用户问"今天"、"今日"、"日涨幅" → 使用 "240"（日K线）
+- 用户问分钟级别数据 → 使用 "1"、"5"、"15"、"30"、"60"、"120"（分钟K线）
+
+有效值：1(1分钟), 5(5分钟), 15(15分钟), 30(30分钟), 60(60分钟), 120(120分钟), 240(日K), 1200(周K), 7200(月K), 21600(季K), 43200(半年K), 86400(年K)"""
+                
+                type_prop['description'] = enhanced_type_desc
     
     def _generate_fallback_cities(self, original_city: str) -> List[str]:
         """
@@ -136,6 +186,101 @@ class LoggingToolWrapper(BaseTool):
         
         return None
     
+    def _fix_stock_kline_type(self, params_dict: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        修正股票K线查询工具的type参数
+        
+        标准K线工具的type参数定义：
+        - 1: 1分钟
+        - 5: 5分钟
+        - 15: 15分钟
+        - 30: 30分钟
+        - 60: 60分钟
+        - 120: 120分钟
+        - 240: 日K
+        - 1200: 周K
+        - 7200: 月K
+        - 21600: 季K
+        - 43200: 半年K
+        - 86400: 年K
+        
+        修正逻辑：
+        1. 只修正明显错误的值（如101-106这种复权工具的值），转换为标准值
+        2. 不基于limit参数做自动修正，完全依赖LLM根据用户意图选择正确的type
+        3. 如果用户明确说"某一天"、"某月某日"，应该用日K（240），即使limit较大
+        4. 如果用户说"本周"、"本月"、"今年"，LLM应该根据工具描述选择对应的周K/月K/年K
+        
+        注意：A股K线复权工具已被排除，不再需要处理复权工具的特殊情况
+        
+        Args:
+            params_dict: 参数字典
+            
+        Returns:
+            修正后的参数字典
+        """
+        # 检查是否是K线查询工具
+        if 'K线' not in self.name and 'kline' not in self.name.lower():
+            return params_dict
+        
+        # 检查是否有type参数
+        if 'type' not in params_dict:
+            return params_dict
+        
+        original_type = params_dict.get('type')
+        type_str = str(original_type)
+        
+        # 标准K线工具的有效type值
+        valid_types = ['1', '5', '15', '30', '60', '120', '240', '1200', '7200', '86400', '21600', '43200']
+        
+        # 只修正明显错误的值（如101-106这种复权工具的值），不基于limit做自动修正
+        # 因为limit参数有多种用途：
+        # - 查询"本周"时，LLM应该自己选择type=1200（周K），limit可以是1
+        # - 查询"2025年10月9日那天"时，应该用type=240（日K），limit可能需要较大值来包含历史数据
+        # 所以应该完全依赖LLM根据用户意图选择正确的type，而不是用规则判断
+        
+        if type_str not in valid_types:
+            logger.warning(f"⚠️ [{self.name}] 检测到无效的type参数: {type_str}，尝试智能修正...")
+            
+            # 如果传入了101（原复权工具的日K），转换为240（标准日K）
+            if type_str == '101':
+                logger.info(f"🔧 将type从 {type_str} 修正为 240 (日K)")
+                params_dict['type'] = '240'
+            # 如果传入了102（原复权工具的周K），转换为1200（标准周K）
+            elif type_str == '102':
+                logger.info(f"🔧 将type从 {type_str} 修正为 1200 (周K)")
+                params_dict['type'] = '1200'
+            # 如果传入了103（原复权工具的月K），转换为7200（标准月K）
+            elif type_str == '103':
+                logger.info(f"🔧 将type从 {type_str} 修正为 7200 (月K)")
+                params_dict['type'] = '7200'
+            # 如果传入了104（原复权工具的季K），转换为21600（标准季K）
+            elif type_str == '104':
+                logger.info(f"🔧 将type从 {type_str} 修正为 21600 (季K)")
+                params_dict['type'] = '21600'
+            # 如果传入了105（原复权工具的半年K），转换为43200（标准半年K）
+            elif type_str == '105':
+                logger.info(f"🔧 将type从 {type_str} 修正为 43200 (半年K)")
+                params_dict['type'] = '43200'
+            # 如果传入了106（原复权工具的年K），转换为86400（标准年K）
+            elif type_str == '106':
+                logger.info(f"🔧 将type从 {type_str} 修正为 86400 (年K)")
+                params_dict['type'] = '86400'
+            # 如果查询"本周"，应该使用周K（1200）
+            elif type_str.startswith('10') and len(type_str) == 3:
+                # 可能是想查询周K（用户问"本周"时）
+                logger.info(f"🔧 将type从 {type_str} 修正为 1200 (周K，推测用户想查询本周数据)")
+                params_dict['type'] = '1200'
+            # 其他情况，默认使用240（日K）
+            else:
+                logger.info(f"🔧 将type从 {type_str} 修正为 240 (日K，默认值)")
+                params_dict['type'] = '240'
+        
+        # 不再基于limit参数做自动修正，完全依赖LLM根据用户意图选择正确的type
+        # 如果LLM选择了正确的type（如240、1200、7200、86400等），就使用它
+        # 如果LLM选择了错误的值（如101-106），上面的逻辑已经修正了
+        
+        return params_dict
+    
     def call(self, params: Any, **kwargs) -> str:
         """
         带日志的工具调用
@@ -156,6 +301,18 @@ class LoggingToolWrapper(BaseTool):
         else:
             params_dict = params
         
+        # 修正股票K线查询的参数
+        params_dict = self._fix_stock_kline_type(params_dict)
+        
+        # 如果参数被修正了，需要重新序列化为字符串
+        if isinstance(params, str):
+            try:
+                # 尝试解析原始参数，如果成功则使用修正后的参数
+                json.loads(params)
+                params = json.dumps(params_dict, ensure_ascii=False)
+            except:
+                pass
+        
         # 记录调用开始
         logger.info("=" * 80)
         logger.info(f"🔧 MCP 工具调用: {self.name}")
@@ -165,7 +322,7 @@ class LoggingToolWrapper(BaseTool):
         logger.info("-" * 80)
         
         try:
-            # 调用原始工具
+            # 使用修正后的参数调用原始工具
             result = self.original_tool.call(params, **kwargs)
             
             # 检查结果是否为空，如果为空则尝试降级策略

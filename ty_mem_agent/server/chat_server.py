@@ -525,19 +525,84 @@ class ChatServer:
             
             # 处理消息循环
             while True:
-                # 接收消息
-                data = await websocket.receive_text()
-                message_data = json.loads(data)
+                try:
+                    # 接收消息
+                    data = await websocket.receive_text()
+                    message_data = json.loads(data)
+                    
+                    # 处理聊天消息
+                    await self._handle_chat_message(websocket, user_id, message_data)
+                except WebSocketDisconnect as e:
+                    # 客户端主动断开连接
+                    disconnect_code = getattr(e, 'code', 'unknown')
+                    logger.info(f"🔌 用户断开连接: {user.username} (code: {disconnect_code})")
+                    raise  # 重新抛出，让外层处理
+                except Exception as e:
+                    # 检查是否是连接相关的错误
+                    error_msg = str(e).lower()
+                    if "close" in error_msg or "disconnect" in error_msg:
+                        logger.warning(f"⚠️ WebSocket连接异常: {e}")
+                        logger.debug(f"   连接状态: {websocket.client_state}")
+                        # 转换为WebSocketDisconnect，让外层统一处理
+                        raise WebSocketDisconnect(code=1006)
+                    else:
+                        # 其他错误，记录但不中断连接
+                        logger.error(f"❌ 处理消息时出错: {e}")
+                        import traceback
+                        logger.debug(f"详细错误: {traceback.format_exc()}")
                 
-                # 处理聊天消息
-                await self._handle_chat_message(websocket, user_id, message_data)
-                
-        except WebSocketDisconnect:
-            logger.info(f"🔌 用户断开连接: {user.username}")
+        except WebSocketDisconnect as e:
+            disconnect_code = getattr(e, 'code', 'unknown')
+            logger.info(f"🔌 用户断开连接: {user.username} (code: {disconnect_code})")
+            # WebSocket断开连接的常见原因：
+            # 1000: 正常关闭
+            # 1001: 端点离开（如服务器关闭或浏览器导航）
+            # 1006: 异常关闭（连接丢失，没有关闭帧）
+            # 1008: 策略违规（如认证失败）
+            if disconnect_code == 1006:
+                logger.warning("⚠️ 连接异常关闭（1006），可能是网络问题或客户端崩溃")
+            elif disconnect_code == 1001:
+                logger.info("ℹ️ 客户端端点离开（1001），可能是页面刷新或导航")
         except Exception as e:
             logger.error(f"❌ WebSocket错误: {e}")
+            import traceback
+            logger.error(f"详细错误信息: {traceback.format_exc()}")
         finally:
             await self._disconnect_user(user_id)
+    
+    async def _safe_send_websocket(self, websocket: WebSocket, message: Dict) -> bool:
+        """
+        安全地发送WebSocket消息，检查连接状态
+        
+        Args:
+            websocket: WebSocket连接对象
+            message: 要发送的消息字典
+            
+        Returns:
+            bool: 是否成功发送
+        """
+        try:
+            # 检查WebSocket连接状态
+            client_state = websocket.client_state.name if hasattr(websocket.client_state, 'name') else str(websocket.client_state)
+            if client_state != 'CONNECTED':
+                logger.warning(f"⚠️ WebSocket连接已关闭，无法发送消息: {client_state}")
+                logger.debug(f"   连接状态详情: {websocket.client_state}")
+                return False
+            
+            await websocket.send_text(json.dumps(message))
+            return True
+        except Exception as e:
+            # 记录更详细的错误信息，帮助排查连接关闭的原因
+            error_type = type(e).__name__
+            error_msg = str(e)
+            logger.warning(f"⚠️ 发送WebSocket消息失败: {error_type}: {error_msg}")
+            
+            # 如果是连接已关闭的错误，记录更多信息
+            if "close" in error_msg.lower() or "disconnect" in error_msg.lower():
+                logger.debug(f"   WebSocket连接状态: {websocket.client_state}")
+                logger.debug(f"   尝试发送的消息类型: {message.get('type', 'unknown')}")
+            
+            return False
     
     async def _send_welcome_message(self, websocket: WebSocket, user):
         """发送欢迎消息"""
@@ -569,7 +634,7 @@ class ChatServer:
                 "metadata": {"type": "welcome", "memory_summary": memory_summary}
             }
             
-            await websocket.send_text(json.dumps(response))
+            await self._safe_send_websocket(websocket, response)
             
         except Exception as e:
             logger.error(f"❌ 发送欢迎消息失败: {e}")
@@ -603,13 +668,13 @@ class ChatServer:
             
             # 发送正在处理消息（使用thinking类型）
             thinking_message_id = f"thinking_{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
-            await websocket.send_text(json.dumps({
+            await self._safe_send_websocket(websocket, {
                 "type": "thinking",
                 "subtype": "processing",
                 "content": "💭 正在思考...",
                 "timestamp": datetime.now().isoformat(),
                 "message_id": thinking_message_id
-            }))
+            })
             
             # 获取用户的Agent（如果不存在，自动创建）
             # 最多重试3次，每次间隔1秒
@@ -629,12 +694,12 @@ class ChatServer:
             
             if not agent:
                 error_msg = "Agent初始化失败，请稍后重试。如果问题持续，请联系管理员。"
-                await websocket.send_text(json.dumps({
+                await self._safe_send_websocket(websocket, {
                     "type": "error",
                     "content": error_msg,
                     "timestamp": datetime.now().isoformat(),
                     "error_code": "AGENT_INIT_FAILED"
-                }))
+                })
                 logger.error(f"❌ 无法为用户 {user_id} 创建Agent（已重试 {max_retries} 次）")
                 return
             
@@ -709,25 +774,25 @@ class ChatServer:
                             
                             if thinking_text.strip():
                                 logger.info(f"💭 显示思考过程: {thinking_text[:50]}...")
-                                await websocket.send_text(json.dumps({
+                                await self._safe_send_websocket(websocket, {
                                     "type": "thinking",
                                     "subtype": "intermediate",
                                     "content": thinking_text,
                                     "timestamp": datetime.now().isoformat(),
                                     "message_id": f"thinking_{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
-                                }))
+                                })
                                 displayed_content = response_content
                         
                         # 🔧 立即显示工具调用提示（小字）
                         logger.info(f"🔧 工具调用: {tool_name}")
-                        await websocket.send_text(json.dumps({
+                        await self._safe_send_websocket(websocket, {
                             "type": "thinking",
                             "subtype": "tool_call",
                             "content": f"🔧 正在调用工具 {tool_name} 进行处理...",
                             "tool_name": tool_name,
                             "timestamp": datetime.now().isoformat(),
                             "message_id": f"tool_{tool_name}_{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
-                        }))
+                        })
                         
                         continue
                     
@@ -787,13 +852,13 @@ class ChatServer:
                 # 没有工具调用：直接显示回答（正常字体）
                 logger.info(f"✅ 纯文本回答，显示最终结果")
                 if response_content:
-                    await websocket.send_text(json.dumps({
+                    await self._safe_send_websocket(websocket, {
                         "type": "message_chunk",
                         "content": response_content,
                         "full_content": response_content,
                         "timestamp": datetime.now().isoformat(),
                         "message_id": message_id
-                    }))
+                    })
             
             # 保存assistant的回复到会话
             if response_content:
@@ -804,6 +869,7 @@ class ChatServer:
                 )
                 
                 # 检查是否需要生成标题（在保存assistant消息后检查）
+                # 使用后台任务生成标题，不阻塞主流程，避免连接超时
                 conversation = self.conversation_manager.get_conversation(conversation_id)
                 
                 if conversation and conversation.title == "新对话":
@@ -812,51 +878,30 @@ class ChatServer:
                     assistant_messages = [msg for msg in conversation.messages if msg.role == 'assistant']
                     
                     if len(user_messages) == 1 and len(assistant_messages) == 1:
-                        try:
-                            logger.info(f"🎯 开始为会话 {conversation_id} 生成标题，用户消息: {content[:50]}...")
-                            
-                            # 异步生成标题，不阻塞消息发送
-                            title = await self._generate_title_with_llm(content)
-                            self.conversation_manager.update_conversation_title(conversation_id, title)
-                            
-                            logger.info(f"✅ 标题生成成功: {title}")
-                            
-                            # 通知前端标题已更新
-                            await websocket.send_text(json.dumps({
-                                "type": "title_updated",
-                                "conversation_id": conversation_id,
-                                "title": title,
-                                "timestamp": datetime.now().isoformat()
-                            }))
-                        except Exception as e:
-                            logger.error(f"❌ 自动生成标题失败: {e}")
-                            # 如果AI生成失败，使用简化标题生成
-                            fallback_title = self._generate_simple_title(content)
-                            self.conversation_manager.update_conversation_title(conversation_id, fallback_title)
-                            
-                            # 通知前端使用备用标题
-                            await websocket.send_text(json.dumps({
-                                "type": "title_updated",
-                                "conversation_id": conversation_id,
-                                "title": fallback_title,
-                                "timestamp": datetime.now().isoformat()
-                            }))
+                        # 使用后台任务生成标题，不阻塞主流程
+                        # 这样可以避免在标题生成期间连接超时或断开
+                        asyncio.create_task(self._generate_title_background(
+                            websocket, conversation_id, content, user_id
+                        ))
             
             # 发送完成状态
-            await websocket.send_text(json.dumps({
+            await self._safe_send_websocket(websocket, {
                 "type": "status",
                 "content": "完成",
                 "timestamp": datetime.now().isoformat(),
                 "message_id": message_id
-            }))
+            })
             
         except Exception as e:
             logger.error(f"❌ 处理聊天消息失败: {e}")
-            await websocket.send_text(json.dumps({
+            import traceback
+            logger.error(f"详细错误信息: {traceback.format_exc()}")
+            # 安全地发送错误消息，如果连接已关闭则忽略
+            await self._safe_send_websocket(websocket, {
                 "type": "error",
                 "content": f"处理消息时出错：{str(e)}",
                 "timestamp": datetime.now().isoformat()
-            }))
+            })
     
     def _generate_simple_title(self, user_message: str) -> str:
         """
@@ -890,6 +935,58 @@ class ChatServer:
             message = message[:20] + '...'
         
         return message if message else '新对话'
+    
+    async def _generate_title_background(self, websocket: WebSocket, conversation_id: str, 
+                                         content: str, user_id: str):
+        """
+        后台任务：生成会话标题
+        
+        这个方法在后台异步执行，不会阻塞主消息处理流程
+        即使连接已断开，也不会影响主流程
+        
+        Args:
+            websocket: WebSocket连接（可能已断开）
+            conversation_id: 会话ID
+            content: 用户消息内容
+            user_id: 用户ID
+        """
+        try:
+            logger.info(f"🎯 [后台任务] 开始为会话 {conversation_id} 生成标题，用户消息: {content[:50]}...")
+            
+            # 生成标题（可能需要几秒钟）
+            title = await self._generate_title_with_llm(content)
+            self.conversation_manager.update_conversation_title(conversation_id, title)
+            
+            logger.info(f"✅ [后台任务] 标题生成成功: {title}")
+            
+            # 尝试发送标题更新（如果连接仍然打开）
+            # 如果连接已关闭，_safe_send_websocket会安全处理
+            await self._safe_send_websocket(websocket, {
+                "type": "title_updated",
+                "conversation_id": conversation_id,
+                "title": title,
+                "timestamp": datetime.now().isoformat()
+            })
+            
+        except Exception as e:
+            logger.error(f"❌ [后台任务] 自动生成标题失败: {e}")
+            import traceback
+            logger.error(f"详细错误: {traceback.format_exc()}")
+            
+            # 如果AI生成失败，使用简化标题生成
+            try:
+                fallback_title = self._generate_simple_title(content)
+                self.conversation_manager.update_conversation_title(conversation_id, fallback_title)
+                
+                # 尝试发送备用标题（如果连接仍然打开）
+                await self._safe_send_websocket(websocket, {
+                    "type": "title_updated",
+                    "conversation_id": conversation_id,
+                    "title": fallback_title,
+                    "timestamp": datetime.now().isoformat()
+                })
+            except Exception as e2:
+                logger.error(f"❌ [后台任务] 生成备用标题也失败: {e2}")
     
     async def _generate_title_with_llm(self, first_user_message: str) -> str:
         """

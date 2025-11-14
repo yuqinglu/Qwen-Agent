@@ -39,6 +39,7 @@ class ToolRegistry:
         await self._init_bocha_search_tools()
         await self._init_variflight_tools()
         await self._init_railway_12306_tools()
+        await self._init_stock_tools()
         await self._init_natural_time_tools()
         await self._init_todo_tools()
         await self._init_profile_tools()
@@ -250,6 +251,42 @@ class ToolRegistry:
             logger.warning(f"⚠️  12306工具初始化失败: {e}")
             self.connection_status['railway_12306'] = False
             self.tools_cache['railway_12306'] = []
+    
+    async def _init_stock_tools(self):
+        """初始化股票查询工具"""
+        try:
+            from ty_mem_agent.mcp_integrations import get_stock_mcp_manager
+            
+            logger.info("📈 正在初始化股票查询工具...")
+            
+            # 检查配置
+            dashscope_api_key = getattr(settings, 'DASHSCOPE_API_KEY', None)
+            if not dashscope_api_key:
+                logger.warning("⚠️  未配置 DASHSCOPE_API_KEY，跳过股票查询工具")
+                self.connection_status['stock'] = False
+                self.tools_cache['stock'] = []
+                return
+            
+            # 初始化股票查询 MCP Manager
+            manager = get_stock_mcp_manager()
+            manager.initialize(api_key=dashscope_api_key)
+            
+            # 获取工具
+            tools = manager.get_tools()
+            
+            if tools:
+                self.tools_cache['stock'] = tools
+                self.connection_status['stock'] = True
+                logger.info(f"✅ 股票查询工具初始化成功，共 {len(tools)} 个工具")
+            else:
+                self.connection_status['stock'] = False
+                self.tools_cache['stock'] = []
+                logger.warning("⚠️  股票查询工具初始化失败")
+                
+        except Exception as e:
+            logger.warning(f"⚠️  股票查询工具初始化失败: {e}")
+            self.connection_status['stock'] = False
+            self.tools_cache['stock'] = []
     
     async def _init_natural_time_tools(self):
         """初始化自然语言时间解析工具"""
@@ -473,7 +510,8 @@ class ToolRegistry:
                 get_amap_mcp_manager,
                 get_bocha_search_mcp_manager,
                 get_variflight_mcp_manager,
-                get_railway_12306_mcp_manager
+                get_railway_12306_mcp_manager,
+                get_stock_mcp_manager
             )
             
             if self.connection_status.get('amap'):
@@ -520,6 +558,17 @@ class ToolRegistry:
                         logger.debug("12306工具无需关闭或已关闭")
                 except Exception as e:
                     logger.warning(f"⚠️  关闭12306工具失败: {e}")
+            
+            if self.connection_status.get('stock'):
+                try:
+                    manager = get_stock_mcp_manager()
+                    if manager and hasattr(manager, 'cleanup'):
+                        manager.cleanup()
+                        logger.info("✅ 股票查询工具已关闭")
+                    else:
+                        logger.debug("股票查询工具无需关闭或已关闭")
+                except Exception as e:
+                    logger.warning(f"⚠️  关闭股票查询工具失败: {e}")
             
             logger.info("✅ 工具注册中心已关闭")
             

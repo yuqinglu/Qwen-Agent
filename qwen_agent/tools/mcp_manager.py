@@ -396,13 +396,26 @@ class MCPClient:
                     {"mcpServers": {
                             "streamable-mcp-server": {
                             "type": "streamable-http",
-                            "url":"http://0.0.0.0:8000/mcp"
+                            "url":"http://0.0.0.0:8000/mcp",
+                            "headers": {"Authorization": "Bearer token"}
                             }
                         }
                     }
                     """
-                    self._streams_context = streamablehttp_client(
-                        url=url, sse_read_timeout=datetime.timedelta(seconds=sse_read_timeout))
+                    # 获取 headers，如果配置了的话
+                    headers = mcp_server.get('headers', {})
+                    # 尝试传递 headers 给 streamablehttp_client（如果支持的话）
+                    try:
+                        # 尝试使用 headers 参数（如果新版本的 mcp 包支持）
+                        self._streams_context = streamablehttp_client(
+                            url=url, 
+                            sse_read_timeout=datetime.timedelta(seconds=sse_read_timeout),
+                            headers=headers if headers else None
+                        )
+                    except TypeError:
+                        # 如果不支持 headers 参数，则只传递 url 和 timeout
+                        self._streams_context = streamablehttp_client(
+                            url=url, sse_read_timeout=datetime.timedelta(seconds=sse_read_timeout))
                     read_stream, write_stream, get_session_id = await self.exit_stack.enter_async_context(
                         self._streams_context)
                     self._session_context = ClientSession(read_stream, write_stream)

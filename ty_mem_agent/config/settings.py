@@ -120,6 +120,11 @@ class Settings(BaseSettings):
                 "args": ["-y", "12306-mcp"],
                 "description": "12306铁路票务查询服务"
             },
+            "stock": {
+                "enabled": True,
+                "api_key": self.DASHSCOPE_API_KEY,
+                "description": "股票查询服务（阿里云百炼）"
+            },
             "eleme": {
                 "enabled": False,
                 "app_key": self.ELEME_APP_KEY,
