@@ -41,7 +41,8 @@ class ToolRegistry:
         await self._init_railway_12306_tools()
         await self._init_stock_tools()
         await self._init_natural_time_tools()
-        await self._init_todo_tools()
+        await self._init_todo_extractor_tool()
+        await self._init_calendar_tools()
         await self._init_profile_tools()
         await self._init_location_tools()
         await self._init_eleme_tools()
@@ -307,32 +308,66 @@ class ToolRegistry:
             self.connection_status['natural_time'] = False
             self.tools_cache['natural_time'] = []
     
-    async def _init_todo_tools(self):
-        """初始化待办管理工具"""
+    
+    async def _init_todo_extractor_tool(self):
+        """初始化待办信息提取工具（仅提取，不创建）"""
         try:
-            from ty_mem_agent.self_defined_tools.todo_tools import (
-                TodoExtractorTool,
-                TodoQueryTool,
-                TodoUpdateTool
-            )
+            from ty_mem_agent.self_defined_tools.todo_tools import TodoExtractorTool
             
-            logger.info("📝 正在初始化待办管理工具...")
+            logger.info("📝 正在初始化待办信息提取工具...")
             
-            # 创建待办工具实例
-            tools = [
-                TodoExtractorTool(),
-                TodoQueryTool(),
-                TodoUpdateTool()
-            ]
+            # 只注册提取工具，不注册查询和更新工具（使用日历MCP工具替代）
+            tools = [TodoExtractorTool()]
             
-            self.tools_cache['todo'] = tools
-            self.connection_status['todo'] = True
-            logger.info(f"✅ 待办管理工具初始化成功，共 {len(tools)} 个工具")
+            self.tools_cache['todo_extractor'] = tools
+            self.connection_status['todo_extractor'] = True
+            logger.info(f"✅ 待办信息提取工具初始化成功，共 {len(tools)} 个工具")
+            logger.info("   💡 注意：此工具只提取信息，创建待办请使用日历MCP工具")
             
         except Exception as e:
-            logger.error(f"❌ 待办管理工具初始化失败: {e}")
-            self.connection_status['todo'] = False
-            self.tools_cache['todo'] = []
+            logger.error(f"❌ 待办信息提取工具初始化失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            self.connection_status['todo_extractor'] = False
+            self.tools_cache['todo_extractor'] = []
+    
+    async def _init_calendar_tools(self):
+        """初始化日历MCP工具（替代待办工具）"""
+        try:
+            from ty_mem_agent.mcp_integrations import get_calendar_mcp_manager
+            from ty_mem_agent.mcp_integrations.calendar_tool_wrapper import wrap_calendar_tools
+            
+            logger.info("📅 正在初始化日历MCP工具...")
+            
+            # 初始化日历MCP Manager
+            manager = get_calendar_mcp_manager()
+            manager.initialize()
+            
+            # 获取原始工具
+            original_tools = manager.get_tools()
+            
+            if original_tools:
+                # 包装工具以自动处理user_id转换
+                wrapped_tools = wrap_calendar_tools(original_tools)
+                
+                self.tools_cache['calendar'] = wrapped_tools
+                self.connection_status['calendar'] = True
+                logger.info(f"✅ 日历MCP工具初始化成功，共 {len(wrapped_tools)} 个工具")
+                
+                # 记录可用工具
+                for tool in wrapped_tools:
+                    logger.debug(f"   📋 工具: {tool.name}")
+            else:
+                self.connection_status['calendar'] = False
+                self.tools_cache['calendar'] = []
+                logger.warning("⚠️  日历MCP连接成功，但未获取到工具")
+                
+        except Exception as e:
+            logger.warning(f"⚠️  日历MCP工具初始化失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            self.connection_status['calendar'] = False
+            self.tools_cache['calendar'] = []
     
     async def _init_profile_tools(self):
         """初始化用户画像管理工具"""

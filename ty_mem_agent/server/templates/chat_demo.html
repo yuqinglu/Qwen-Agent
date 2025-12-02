@@ -1395,14 +1395,42 @@
             userInfo.style.display = 'flex';
         }
 
-        // 新标签页打开待办管理
-        function openTodoPage() {
-            // 在新标签页中打开待办管理页面
-            const todoWindow = window.open('/todos', '_blank');
-            
-            // 检查是否成功打开新窗口
-            if (!todoWindow || todoWindow.closed || typeof todoWindow.closed == 'undefined') {
-                alert('无法打开新窗口，请检查浏览器弹窗设置');
+        // 新标签页打开日历管理（外部日历前端）
+        async function openTodoPage() {
+            try {
+                // 先获取用户的calendar_user_id
+                const response = await fetch('/user/calendar-id', {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                
+                // 检查认证错误
+                if (handleAuthError(response)) {
+                    return;
+                }
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    // 确保calendar_user_id作为字符串使用，避免JavaScript精度丢失
+                    // JavaScript的Number类型只能安全表示到Number.MAX_SAFE_INTEGER (9007199254740991)
+                    const calendarUserId = String(data.calendar_user_id);
+                    
+                    console.log('📅 打开日历页面，userId:', calendarUserId, '类型:', typeof calendarUserId);
+                    
+                    // 直接打开外部日历前端
+                    const calendarUrl = `http://tyqy.duckdns.org:8980/?userId=${calendarUserId}`;
+                    const calendarWindow = window.open(calendarUrl, '_blank');
+                    
+                    // 检查是否成功打开新窗口
+                    if (!calendarWindow || calendarWindow.closed || typeof calendarWindow.closed == 'undefined') {
+                        alert('无法打开新窗口，请检查浏览器弹窗设置');
+                    }
+                } else {
+                    const errorData = await response.json();
+                    alert('获取日历用户ID失败: ' + (errorData.detail || '未知错误'));
+                }
+            } catch (error) {
+                console.error('打开日历页面失败:', error);
+                alert('打开日历页面失败: ' + error.message);
             }
         }
 

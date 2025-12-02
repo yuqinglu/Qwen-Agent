@@ -1391,13 +1391,18 @@ class CreateMeetingReserveTool(FeishuMeetingBaseTool):
             }
             
             # 添加日历事件创建结果
+            feishu_calendar_id = None  # 保存飞书日历ID
+            feishu_event_id = None  # 保存飞书事件ID
             if calendar_result.get("success"):
                 result_data["calendar_event_created"] = True
-                result_data["calendar_event_id"] = calendar_result.get("event_id")
-                result_data["calendar_id"] = calendar_result.get("calendar_id")
+                feishu_event_id = calendar_result.get("event_id")
+                feishu_calendar_id = calendar_result.get("calendar_id")
+                result_data["calendar_event_id"] = feishu_event_id
+                result_data["calendar_id"] = feishu_calendar_id
                 result_data["participants_added_via_calendar"] = calendar_result.get("attendees_added", False)
                 result_data["invitations_sent"] = calendar_result.get("invitations_sent", False)
                 result_data["note"] = calendar_result.get("note", "✅ 会议已创建并添加到用户日历中，参会人已收到通知")
+                logger.info(f"📋 飞书日历事件创建成功: event_id={feishu_event_id}, calendar_id={feishu_calendar_id}")
             else:
                 result_data["calendar_event_created"] = False
                 result_data["calendar_event_id"] = None
@@ -1406,9 +1411,10 @@ class CreateMeetingReserveTool(FeishuMeetingBaseTool):
                 result_data["invitations_sent"] = False
                 result_data["note"] = f"⚠️ 会议预约创建成功，但日历事件创建失败: {calendar_result.get('error_msg')}。会议链接仍然可用。"
             
-            # 自动创建待办事项
+            # 自动创建日历事件（使用日历MCP服务）
+            # 传入飞书日历的event_id和calendar_id，这样可以在MCP事件中保存这些信息
             try:
-                todo_created = self._create_todo_for_meeting(
+                calendar_event_created = self._create_calendar_event_for_meeting_mcp(
                     topic=topic,
                     start_time=start_time,
                     end_time=end_time,
@@ -1416,17 +1422,17 @@ class CreateMeetingReserveTool(FeishuMeetingBaseTool):
                     participant_names=participant_names,
                     user_id=user_id,
                     reserve_id=result.get("reserve_id"),
-                    event_id=result_data.get("calendar_event_id"),
-                    calendar_id=result_data.get("calendar_id")
+                    event_id=feishu_event_id,  # 使用飞书事件ID
+                    calendar_id=feishu_calendar_id  # 使用飞书日历ID
                 )
-                if todo_created:
-                    result_data["todo_created"] = True
-                    result_data["todo_message"] = f"✅ 已自动为您创建会议待办：{datetime.fromtimestamp(start_time).strftime('%Y-%m-%d %H:%M')}-{datetime.fromtimestamp(end_time).strftime('%H:%M')} {topic}"
+                if calendar_event_created:
+                    result_data["calendar_event_mcp_created"] = True
+                    result_data["calendar_event_mcp_message"] = f"✅ 已自动为您创建会议日历事件：{datetime.fromtimestamp(start_time).strftime('%Y-%m-%d %H:%M')}-{datetime.fromtimestamp(end_time).strftime('%H:%M')} {topic}"
                 else:
-                    result_data["todo_created"] = False
+                    result_data["calendar_event_mcp_created"] = False
             except Exception as e:
-                logger.warning(f"⚠️ 自动创建待办失败: {e}")
-                result_data["todo_created"] = False
+                logger.warning(f"⚠️ 自动创建日历事件失败: {e}")
+                result_data["calendar_event_mcp_created"] = False
             
             return json.dumps(result_data, ensure_ascii=False, indent=2)
         else:
@@ -1437,7 +1443,7 @@ class CreateMeetingReserveTool(FeishuMeetingBaseTool):
                 "log_id": result.get("log_id")
             }, ensure_ascii=False)
     
-    def _create_todo_for_meeting(
+    def _create_calendar_event_for_meeting_mcp(
         self,
         topic: str,
         start_time: int,
@@ -1450,7 +1456,7 @@ class CreateMeetingReserveTool(FeishuMeetingBaseTool):
         calendar_id: str = None
     ) -> bool:
         """
-        为会议自动创建待办事项
+        为会议自动创建日历事件（使用日历MCP服务）
         
         Args:
             topic: 会议主题
@@ -1458,66 +1464,64 @@ class CreateMeetingReserveTool(FeishuMeetingBaseTool):
             end_time: 结束时间（Unix时间戳）
             meeting_url: 会议链接
             participant_names: 参会人姓名列表
-            user_id: 用户ID
-            reserve_id: 会议预约ID（保存到待办中，用于后续查询和删除会议）
-            event_id: 日历事件ID（保存到待办中，用于后续删除日历事件）
-            calendar_id: 日历ID（保存到待办中，用于后续删除日历事件）
-        
-        Args:
-            topic: 会议主题
-            start_time: 会议开始时间（Unix时间戳）
-            end_time: 会议结束时间（Unix时间戳）
-            meeting_url: 会议链接
-            participant_names: 参会人姓名列表（可选）
-            user_id: 用户ID（可选，如果未提供则跳过创建）
+            user_id: 用户ID（字符串格式）
+            reserve_id: 会议预约ID（保存到事件description中）
+            event_id: 日历事件ID（保存到事件description中）
+            calendar_id: 日历ID（保存到事件description中）
         
         Returns:
-            bool: 是否成功创建待办
+            bool: 是否成功创建日历事件
         """
         if not user_id:
-            logger.debug("⚠️ 未提供 user_id，跳过自动创建待办")
+            logger.debug("⚠️ 未提供 user_id，跳过自动创建日历事件")
             return False
         
         try:
-            from ty_mem_agent.memory.todo_manager import get_todo_manager
+            from ty_mem_agent.server.user_manager import user_manager
+            from ty_mem_agent.mcp_integrations.calendar_mcp_server import CalendarEventManager
             
             # 验证 user_id 是字符串类型
             if not isinstance(user_id, str):
-                logger.warning(f"⚠️ user_id 类型错误: {type(user_id)}, 值: {user_id}，跳过创建待办")
+                logger.warning(f"⚠️ user_id 类型错误: {type(user_id)}, 值: {user_id}，跳过创建日历事件")
                 return False
             
-            todo_manager = get_todo_manager()
+            # 获取用户的calendar_user_id
+            user = user_manager.get_user(user_id)
+            if not user:
+                logger.warning(f"⚠️ 用户不存在: {user_id}，跳过创建日历事件")
+                return False
             
-            # 构建待办描述
-            description_parts = [f"会议链接: {meeting_url}"]
-            if participant_names:
-                description_parts.append(f"参会人: {', '.join(participant_names)}")
-            description = "\n".join(description_parts)
+            calendar_user_id = user.calendar_user_id
+            if not calendar_user_id:
+                logger.warning(f"⚠️ 用户没有calendar_user_id: {user_id}，跳过创建日历事件")
+                return False
             
-            # 创建待办（deadline 使用 ISO 格式字符串）
-            # 注意：使用文件顶部导入的 datetime，不是重新导入
-            deadline_str = datetime.fromtimestamp(start_time).isoformat()
+            # 创建日历事件管理器
+            calendar_manager = CalendarEventManager(calendar_user_id)
             
-            todo_data = {
-                "title": topic,
-                "description": description,
-                "deadline": deadline_str,
-                "location": "线上会议",
-                "participants": participant_names if participant_names else [],
-                "priority": 1,  # 会议待办优先级设为1（高优先级）
-                "tags": ["会议", "飞书会议"],
-                # 保存会议相关ID，用于后续查询和删除
-                "reserve_id": reserve_id if reserve_id else None,
-                "event_id": event_id if event_id else None,
-                "calendar_id": calendar_id if calendar_id else None
-            }
+            # 创建会议事件
+            result = calendar_manager.create_meeting_event(
+                topic=topic,
+                start_time=start_time,
+                end_time=end_time,
+                meeting_url=meeting_url,
+                participant_names=participant_names,
+                reserve_id=reserve_id,
+                event_id=event_id,
+                calendar_id=calendar_id,
+                location="线上会议"
+            )
             
-            todo = todo_manager.create_todo(user_id, todo_data)
-            logger.info(f"✅ 自动创建会议待办成功: {todo.id} - {topic}")
+            logger.info(f"✅ 自动创建会议日历事件成功: {topic}")
             return True
             
+        except TimeoutError as e:
+            logger.warning(f"⚠️ 创建会议日历事件超时: {e}")
+            logger.warning("   会议已在飞书中创建，但日历同步失败，用户可手动查看飞书日历")
+            # 超时不影响会议创建结果，只记录警告
+            return False
         except Exception as e:
-            logger.error(f"❌ 自动创建会议待办失败: {e}")
+            logger.error(f"❌ 自动创建会议日历事件失败: {e}")
             import traceback
             logger.error(traceback.format_exc())
             return False
@@ -2038,8 +2042,26 @@ class UpdateMeetingReserveTool(FeishuMeetingBaseTool):
     """更新会议工具（使用官方 SDK）"""
     
     name = "update_meeting_reserve"
-    description = """更新会议信息（通过应用日历事件）。
-    
+    description = """更新会议信息（通过应用日历事件）
+
+💡 **更新流程（必须遵守）**：
+1. **第一步（必需）**：获取会议信息
+   - **如果对话历史中已经有 list_meeting_reserve 的查询结果**：直接从之前的查询结果中获取会议信息，**不要重新查询**
+   - **如果对话历史中没有查询结果**：使用 list_meeting_reserve 查询会议
+     - 如果用户说"修改后天的会议"，查询后天的会议列表
+     - 如果用户说"修改XX会议"，查询包含该关键词的会议
+2. **第二步（必需）**：从查询结果中找到要更新的会议
+   - 查看返回结果中的 meetings 列表
+   - 确认会议的标题、时间与用户描述匹配
+   - 获取该会议的 reserve_id、event_id_feishu、calendar_id、event_id（日历MCP事件ID）
+3. **第三步**：使用本工具更新会议，传入查询到的所有ID和要更新的字段
+
+⚠️ **重要提示**：
+- ✅ **优先使用对话历史中的查询结果**：如果用户刚刚查询过会议（例如"帮我查一下后天的会议"），然后说"修改这个会议的时间"，应该直接使用之前的查询结果，**不要重新查询**
+- ❌ **禁止重复查询**：如果对话历史中已经有相关的查询结果，禁止再次调用 list_meeting_reserve
+- ❌ 禁止在不确认会议信息的情况下更新
+- ❌ **绝对禁止创建新会议来"更新"现有会议**
+
 支持功能：
 - 更新会议主题（topic）
 - 更新会议时间（start_time、end_time）
@@ -2050,15 +2072,23 @@ class UpdateMeetingReserveTool(FeishuMeetingBaseTool):
 
 ⚠️ 重要参数说明：
 - calendar_id：应用日历ID（必需）
-  - 来源：创建会议时（create_meeting_reserve）返回的calendar_id字段
-- event_id：日历事件ID（必需）
-  - 来源：创建会议时（create_meeting_reserve）返回的calendar_event_id字段
+  - 来源：从 list_meeting_reserve 返回结果的 meetings[].calendar_id 获取
+  - **如果对话历史中已有查询结果，直接使用，不要重新查询**
+- event_id：飞书日历事件ID（必需）
+  - 来源：从 list_meeting_reserve 返回结果的 meetings[].event_id_feishu 获取（注意：这是飞书事件ID）
+  - **如果对话历史中已有查询结果，直接使用，不要重新查询**
+- calendar_event_id：日历MCP事件ID（可选，推荐提供）
+  - 来源：从 list_meeting_reserve 返回结果的 meetings[].event_id 获取（这是日历MCP事件ID）
+  - **如果提供此参数，将直接使用，避免重新查询日历MCP，提高效率**
+  - **如果对话历史中已有查询结果，强烈建议提供此参数**
 - topic：会议主题（可选）
 - start_time：会议开始时间（可选）
   - 格式：Unix时间戳（秒级），字符串或数字
+  - 推荐使用 natural_time_parser 工具解析时间
   - 如果更新开始时间，建议同时更新end_time
 - end_time：会议结束时间（可选）
   - 格式：Unix时间戳（秒级），字符串或数字
+  - 推荐使用 natural_time_parser 工具解析时间
   - 如果更新开始时间，建议同时更新end_time
 - description：会议描述（可选）
 - meeting_url：会议链接（可选）
@@ -2069,10 +2099,18 @@ class UpdateMeetingReserveTool(FeishuMeetingBaseTool):
 - need_notification：是否发送通知，默认True
 
 💡 使用建议：
-1. 至少提供一个要更新的字段（topic/start_time/end_time/description/meeting_url/participant_ids）
-2. 如果更新会议时间，建议同时更新start_time和end_time
-3. 添加参会人员时，系统会自动发送邀请通知
-4. 更新操作会自动发送通知给所有与会人
+1. **推荐流程（优先使用对话历史）**：
+   - **如果对话历史中已经有 list_meeting_reserve 的查询结果**：直接从之前的查询结果中获取所有ID（calendar_id、event_id_feishu、event_id），**不要重新查询**
+   - **如果对话历史中没有查询结果**：先使用 list_meeting_reserve 查询会议，从返回结果中获取所有ID
+2. 如果用户说"修改第一个会议的时间"、"更新后天的会议"等，应该：
+   - **优先**：从对话历史中最近一次 list_meeting_reserve 的返回结果中获取对应的会议信息
+   - 使用该会议的所有ID（calendar_id、event_id_feishu、event_id作为calendar_event_id）调用本工具
+   - **不要重新调用 list_meeting_reserve**
+3. **强烈建议提供 calendar_event_id**：如果从 list_meeting_reserve 结果中获取了 event_id（日历MCP事件ID），请作为 calendar_event_id 参数传入，这样可以避免重新查询日历MCP，提高效率
+4. 至少提供一个要更新的字段（topic/start_time/end_time/description/meeting_url/participant_ids）
+5. 如果更新会议时间，建议同时更新start_time和end_time
+6. 添加参会人员时，系统会自动发送邀请通知
+7. 更新操作会自动发送通知给所有与会人
 
 📋 返回值说明：
 - success：是否成功
@@ -2082,7 +2120,7 @@ class UpdateMeetingReserveTool(FeishuMeetingBaseTool):
 
 适用场景：
 - 用户说"修改会议时间"、"更新会议主题"、"更改会议地点"
-- 用户说"把会议改到明天下午4点"
+- 用户说"把第一个会议改到明天下午4点" → 从查询结果中获取第一个会议的ID
 - 用户说"会议主题改成XX"
 - **用户说"添加参会人员"、"把XX加入会议"** ⭐
 
@@ -2101,7 +2139,11 @@ class UpdateMeetingReserveTool(FeishuMeetingBaseTool):
             },
             "event_id": {
                 "type": "string",
-                "description": "日历事件ID（必需）。从create_meeting_reserve创建会议时返回的calendar_event_id字段获取"
+                "description": "飞书日历事件ID（必需）。从 list_meeting_reserve 返回结果的 meetings[].event_id_feishu 字段获取"
+            },
+            "calendar_event_id": {
+                "type": ["string", "integer"],
+                "description": "日历MCP事件ID（可选，推荐提供）。从 list_meeting_reserve 返回结果的 meetings[].event_id 字段获取。如果提供，将直接使用此ID更新日历MCP事件，避免重新查询"
             },
             "topic": {
                 "type": "string",
@@ -2160,6 +2202,7 @@ class UpdateMeetingReserveTool(FeishuMeetingBaseTool):
         
         calendar_id = params_dict.get("calendar_id")
         event_id = params_dict.get("event_id")
+        calendar_event_id = params_dict.get("calendar_event_id")  # 日历MCP事件ID
         topic = params_dict.get("topic")
         start_time_str = params_dict.get("start_time")
         end_time_str = params_dict.get("end_time")
@@ -2230,54 +2273,122 @@ class UpdateMeetingReserveTool(FeishuMeetingBaseTool):
                     "log_id": result.get("log_id")
                 }, ensure_ascii=False)
             
-            # 同步更新待办事项（如果更新了时间或主题）
+            # 同步更新日历MCP事件（如果更新了时间或主题）
             user_id = kwargs.get("user_id")
-            if user_id and (start_time or end_time or topic):
+            if user_id and (start_time or end_time or topic or meeting_url):
                 try:
-                    from ty_mem_agent.memory.todo_manager import get_todo_manager
-                    from datetime import datetime
+                    from ty_mem_agent.server.user_manager import user_manager
+                    from ty_mem_agent.mcp_integrations.calendar_mcp_server import CalendarEventManager, CalendarEventManager as CEM
                     
-                    todo_manager = get_todo_manager()
-                    todo = todo_manager.get_todo_by_event_id(user_id, event_id)
-                    
-                    if todo:
-                        updates = {}
+                    # 获取用户的calendar_user_id
+                    user = user_manager.get_user(user_id)
+                    if user and user.calendar_user_id:
+                        calendar_manager = CalendarEventManager(user.calendar_user_id)
                         
-                        # 如果更新了时间，同步更新待办的 deadline
-                        if start_time:
-                            deadline_str = datetime.fromtimestamp(start_time).isoformat()
-                            updates['deadline'] = deadline_str
-                            logger.info(f"📅 同步更新待办时间: {deadline_str}")
-                        
-                        # 如果更新了主题，同步更新待办的 title
-                        if topic:
-                            updates['title'] = topic
-                            logger.info(f"📝 同步更新待办标题: {topic}")
-                        
-                        # 如果更新了会议链接，同步更新待办的 description
-                        if meeting_url:
-                            # 更新描述中的会议链接
-                            description_parts = []
-                            if todo.description:
-                                # 保留原有的参会人信息
-                                for line in todo.description.split('\n'):
-                                    if not line.startswith('会议链接:'):
-                                        description_parts.append(line)
-                            description_parts.insert(0, f"会议链接: {meeting_url}")
-                            updates['description'] = '\n'.join(description_parts)
-                            logger.info(f"🔗 同步更新待办会议链接")
-                        
-                        if updates:
-                            success = todo_manager.update_todo(todo.id, user_id, updates)
-                            if success:
-                                logger.info(f"✅ 待办事项同步更新成功: todo_id={todo.id}")
+                        # 优先使用提供的 calendar_event_id，避免重新查询
+                        meeting_events = None  # 初始化变量
+                        if calendar_event_id:
+                            # 直接使用提供的日历MCP事件ID
+                            try:
+                                event_id_int = int(calendar_event_id) if isinstance(calendar_event_id, str) else calendar_event_id
+                                logger.info(f"✅ 使用提供的 calendar_event_id: {event_id_int}，跳过查询")
+                            except (ValueError, TypeError):
+                                logger.warning(f"⚠️ calendar_event_id 无法转换为整数: {calendar_event_id}，将尝试查询")
+                                event_id_int = None
+                        else:
+                            # 如果没有提供 calendar_event_id，才查询日历事件
+                            logger.debug(f"📅 未提供 calendar_event_id，查询日历事件以获取ID")
+                            range_start = datetime.fromtimestamp(start_time - 86400).isoformat() if start_time else None
+                            range_end = datetime.fromtimestamp(end_time + 86400).isoformat() if end_time else None
+                            
+                            meeting_events = calendar_manager.find_meeting_events(
+                                event_id=event_id,
+                                range_start=range_start,
+                                range_end=range_end
+                            )
+                            
+                            if meeting_events:
+                                # 找到对应的日历事件，进行更新
+                                calendar_event = meeting_events[0]
+                                # 事件ID可能是 "id" 或 "eventId" 字段
+                                event_id_int = calendar_event.get("id") or calendar_event.get("eventId")
                             else:
-                                logger.warning(f"⚠️ 待办事项同步更新失败: todo_id={todo.id}")
-                    else:
-                        logger.debug(f"📋 未找到关联的待办事项: event_id={event_id}")
+                                event_id_int = None
+                                logger.warning(f"⚠️ 未找到关联的日历MCP事件: event_id={event_id}")
+                        
+                        if event_id_int:
+                                # 更新事件内容
+                                if topic or meeting_url:
+                                    # 重新构建description
+                                    # 如果之前查询过 meeting_events，使用查询结果；否则创建新的metadata
+                                    original_meeting_url = meeting_url
+                                    original_metadata = None
+                                    
+                                    if meeting_events and len(meeting_events) > 0:
+                                        # 如果查询过 meeting_events，使用查询结果
+                                        original_desc = meeting_events[0].get("description", "")
+                                        original_metadata = CEM.parse_meeting_metadata(original_desc)
+                                        if not original_meeting_url and '会议链接:' in original_desc:
+                                            original_meeting_url = original_desc.split('会议链接:')[1].split('\n')[0].strip()
+                                    
+                                    description_parts = [f"会议链接: {original_meeting_url or meeting_url or ''}"]
+                                    
+                                    # 解析原有的metadata
+                                    if original_metadata:
+                                        metadata = original_metadata
+                                    else:
+                                        # 如果没有原始metadata，创建新的
+                                        metadata = {
+                                            'type': 'meeting',
+                                            'reserve_id': None,  # 无法从当前信息获取
+                                            'event_id': event_id,
+                                            'calendar_id': calendar_id
+                                        }
+                                    if metadata:
+                                        participant_names = metadata.get("participants", [])
+                                        if participant_names:
+                                            description_parts.append(f"参会人: {', '.join(participant_names)}")
+                                        
+                                        # 更新metadata
+                                        if meeting_url:
+                                            metadata["meeting_url"] = meeting_url
+                                        if event_id:
+                                            metadata["event_id"] = event_id
+                                        if calendar_id:
+                                            metadata["calendar_id"] = calendar_id
+                                        
+                                        description_parts.append(f"\n[Metadata: {json.dumps(metadata, ensure_ascii=False)}]")
+                                    
+                                    new_description = "\n".join(description_parts)
+                                    
+                                    calendar_manager.modify_one_time_event_content(
+                                        event_id=event_id_int,
+                                        title=topic if topic else None,
+                                        description=new_description
+                                    )
+                                    logger.info(f"✅ 日历MCP事件内容同步更新成功: event_id={event_id_int}")
+                                
+                                # 更新事件时间
+                                if start_time or end_time:
+                                    # 使用 ISO8601 格式：YYYY-MM-DDTHH:MM:SS（不包含时区）
+                                    if start_time:
+                                        start_dt = datetime.fromtimestamp(start_time)
+                                        event_date_time = start_dt.strftime('%Y-%m-%dT%H:%M:%S')
+                                    else:
+                                        event_date_time = None
+                                    duration = (end_time - start_time) if (start_time and end_time) else None
+                                    
+                                    calendar_manager.modify_one_time_event_time(
+                                        event_id=event_id_int,
+                                        event_date_time=event_date_time,
+                                        duration=duration
+                                    )
+                                    logger.info(f"✅ 日历MCP事件时间同步更新成功: event_id={event_id_int}")
+                        else:
+                            logger.debug(f"📅 未找到关联的日历MCP事件: event_id={event_id}")
                         
                 except Exception as e:
-                    logger.warning(f"⚠️ 同步更新待办事项失败: {e}")
+                    logger.warning(f"⚠️ 同步更新日历MCP事件失败: {e}")
                     # 不影响会议更新结果，只记录警告
         
         # 2. 添加参会人员（如果有）
@@ -2363,64 +2474,78 @@ class DeleteMeetingReserveTool(FeishuMeetingBaseTool):
     """删除会议工具（使用官方 SDK）"""
     
     name = "delete_meeting_reserve"
-    description = """完整删除飞书会议（会议预约+日历事件+待办）
+    description = """完整删除飞书会议（会议预约+日历事件+日历MCP事件）
 
-💡 **标准删除流程（必须遵循）**：
-1. 先使用 list_meeting_reserve 查询会议，获取 todo_id
-2. 再使用本工具删除会议，传入 todo_id 参数
-3. 系统会自动完整删除：会议预约 + 日历事件 + 待办
+💡 **删除流程（必须遵守）**：
+1. **第一步（必需）**：获取会议信息
+   - **如果对话历史中已经有 list_meeting_reserve 的查询结果**：直接从之前的查询结果中获取会议信息，**不要重新查询**
+   - **如果对话历史中没有查询结果**：使用 list_meeting_reserve 查询会议
+     - 如果用户说"后天的会议"，查询后天的会议列表
+     - 如果用户说"XX会议"，查询包含该关键词的会议
+2. **第二步（必需）**：从查询结果中找到要删除的会议
+   - 查看返回结果中的 meetings 列表
+   - 确认会议的标题、时间与用户描述匹配
+   - 获取该会议的 reserve_id、event_id_feishu、calendar_id、event_id（日历MCP事件ID）
+3. **第三步**：使用本工具删除会议，传入查询到的所有ID
 
-⚠️ **关键提示**：
-- **必须传入 todo_id 参数**，否则待办事项不会被删除
-- 从 list_meeting_reserve 的返回结果中获取 todo_id
-- todo_id 在返回结果的每个会议对象中都有
+⚠️ **重要提示**：
+- ✅ **优先使用对话历史中的查询结果**：如果用户刚刚查询过会议（例如"帮我查一下后天的会议"），然后说"删除这个会议"，应该直接使用之前的查询结果，**不要重新查询**
+- ❌ **禁止重复查询**：如果对话历史中已经有相关的查询结果，禁止再次调用 list_meeting_reserve
+- ❌ 禁止在不确认会议信息的情况下删除
 
 本工具会完整删除会议的所有相关信息：
 1. 会议预约（reserve_id）- 删除飞书会议预约
 2. 日历事件（event_id + calendar_id）- 从飞书日历中移除并通知参会人
-3. 待办事项（todo_id）- 删除关联的待办任务
+3. 日历MCP事件 - 从日历MCP中删除事件
 
 💡 正确使用方式：
-**标准方式（必须使用）：**
+**推荐方式（必须使用）：**
 ```json
-{"todo_id": "123"}
+{"reserve_id": "7574268837129453570", "event_id": "c39269e6-15c5-4e85-93d9-b71c48854e05_0", "calendar_id": "feishu.cn_xxx@group.calendar.feishu.cn", "calendar_event_id": "19"}
 ```
-- todo_id：从 list_meeting_reserve 返回结果中的 todo_id 字段获取
-- 系统会自动从待办中提取 reserve_id、event_id、calendar_id
-- 完整删除会议预约、日历事件和待办
+- reserve_id：从 list_meeting_reserve 返回结果的 meetings[].reserve_id 获取
+- event_id：从 list_meeting_reserve 返回结果的 meetings[].event_id_feishu 获取（注意：这是飞书事件ID，不是日历MCP事件ID）
+- calendar_id：从 list_meeting_reserve 返回结果的 meetings[].calendar_id 获取
+- calendar_event_id：从 list_meeting_reserve 返回结果的 meetings[].event_id 获取（这是日历MCP事件ID，用于删除日历MCP中的事件）
 
-**备用方式（不推荐，不会删除待办）：**
-```json
-{"reserve_id": "xxx", "event_id": "xxx", "calendar_id": "xxx"}
-```
-- 仅在特殊情况下使用
-- ⚠️ 此方式不会删除待办事项
+⚠️ **关键提示**：
+- **如果对话历史中已经有 list_meeting_reserve 的查询结果，直接使用，不要重新查询**
+- 系统不会自动查询日历MCP，必须从 list_meeting_reserve 的返回结果中获取所有必需的ID
+- 从 list_meeting_reserve 返回的 meetings 列表中，每个会议都包含完整的ID信息，可以直接用于删除
 
 参数说明：
-- **todo_id**：会议待办ID（必须使用）
-  - 从 list_meeting_reserve 的 meetings[].todo_id 获取
-  - 使用此参数会完整删除所有相关信息
-- reserve_id：会议预约ID（仅在不使用todo_id时需要）
-- event_id：日历事件ID（可选）
-- calendar_id：日历ID（可选）
+- **reserve_id**：会议预约ID（推荐提供）
+  - 从 list_meeting_reserve 返回结果的 meetings[].reserve_id 获取
+- **event_id**：飞书日历事件ID（推荐提供）
+  - 从 list_meeting_reserve 返回结果的 meetings[].event_id_feishu 获取
+  - 注意：这是飞书事件ID，不是日历MCP事件ID
+- calendar_id：日历ID（如果提供 event_id 则需要）
+  - 从 list_meeting_reserve 返回结果的 meetings[].calendar_id 获取
 - need_notification：是否通知参会人（默认True）
 
+💡 使用建议：
+- **如果对话历史中已经有查询结果**（例如用户刚刚查询过"后天的会议"）：
+  - 直接使用之前的查询结果，从 meetings 列表中找到对应的会议
+  - 使用该会议的 reserve_id、event_id_feishu、calendar_id、event_id（日历MCP事件ID）调用本工具删除
+  - **不要重新调用 list_meeting_reserve**
+- **如果对话历史中没有查询结果**：
+  1. 先调用 list_meeting_reserve 查询会议
+  2. 从返回结果的 meetings 列表中找到对应的会议（第一个会议 = meetings[0]，后天的会议 = 根据时间筛选）
+  3. 使用该会议的所有ID调用本工具删除
+
 适用场景及标准流程：
-- "取消明天上午的会议" → 1. 查询会议获取todo_id → 2. 传入todo_id删除
-- "删除关于产品讨论的会议" → 1. 查询会议获取todo_id → 2. 传入todo_id删除
-- "把XX会议取消了" → 1. 查询会议获取todo_id → 2. 传入todo_id删除
+- "取消第一个会议"（已有查询结果） → 1. 从对话历史中的查询结果获取第一个会议的ID → 2. 传入所有ID删除
+- "删除后天的会议"（已有查询结果） → 1. 从对话历史中的查询结果获取会议ID → 2. 传入所有ID删除
+- "删除后天的会议"（没有查询结果） → 1. 查询后天的会议 → 2. 从返回结果中获取ID → 3. 传入所有ID删除
+- "把XX会议取消了"（没有查询结果） → 1. 查询会议找到匹配的 → 2. 传入所有ID删除
 """
     
     parameters = {
         "type": "object",
         "properties": {
-            "todo_id": {
-                "type": "string",
-                "description": "会议待办ID（必须使用）。从 list_meeting_reserve 返回结果的 meetings[].todo_id 字段获取。使用此参数会完整删除会议预约、日历事件和待办"
-            },
             "reserve_id": {
                 "type": "string",
-                "description": "会议预约ID。如果不提供 todo_id，则必需提供此参数"
+                "description": "会议预约ID（必需）。从 list_meeting_reserve 返回结果的 meetings[].reserve_id 字段获取"
             },
             "event_id": {
                 "type": "string",
@@ -2430,13 +2555,17 @@ class DeleteMeetingReserveTool(FeishuMeetingBaseTool):
                 "type": "string",
                 "description": "日历ID（可选）。如果提供 event_id 则需要此参数"
             },
+            "calendar_event_id": {
+                "type": "string",
+                "description": "日历MCP事件ID（可选）。从 list_meeting_reserve 返回结果的 meetings[].event_id 字段获取。用于删除日历MCP中的事件"
+            },
             "need_notification": {
                 "type": "boolean",
                 "description": "是否发送通知（默认True）。删除日历事件时是否通知参会人",
                 "default": True
             }
         },
-        "required": []  # todo_id 和 reserve_id 二选一，但不强制要求
+        "required": []
     }
     
     def call(self, params: Union[str, Dict], **kwargs) -> str:
@@ -2459,53 +2588,28 @@ class DeleteMeetingReserveTool(FeishuMeetingBaseTool):
             }, ensure_ascii=False)
         
         # 获取参数
-        todo_id = params_dict.get("todo_id")
         reserve_id = params_dict.get("reserve_id")
-        event_id = params_dict.get("event_id")
+        event_id = params_dict.get("event_id")  # 飞书事件ID
         calendar_id = params_dict.get("calendar_id")
+        calendar_event_id = params_dict.get("calendar_event_id")  # 日历MCP事件ID
         need_notification = params_dict.get("need_notification", True)
         user_id = kwargs.get("user_id")
-        
-        # 如果提供了 todo_id，从待办中获取会议信息
-        if todo_id:
-            try:
-                from ty_mem_agent.memory.todo_manager import get_todo_manager
-                todo_manager = get_todo_manager()
-                
-                if not user_id:
-                    return json.dumps({
-                        "success": False,
-                        "error": "使用 todo_id 删除会议时需要提供 user_id"
-                    }, ensure_ascii=False)
-                
-                # 获取待办信息
-                todo = todo_manager.get_todo(int(todo_id), user_id)
-                if not todo:
-                    return json.dumps({
-                        "success": False,
-                        "error": f"未找到待办 ID: {todo_id}"
-                    }, ensure_ascii=False)
-                
-                # 从待办中提取会议信息
-                reserve_id = getattr(todo, 'reserve_id', None) or reserve_id
-                event_id = getattr(todo, 'event_id', None) or event_id
-                calendar_id = getattr(todo, 'calendar_id', None) or calendar_id
-                
-                logger.info(f"📋 从待办中获取会议信息: reserve_id={reserve_id}, event_id={event_id}, calendar_id={calendar_id}")
-                
-            except Exception as e:
-                logger.error(f"❌ 从待办获取会议信息失败: {e}")
-                return json.dumps({
-                    "success": False,
-                    "error": f"从待办获取会议信息失败: {str(e)}"
-                }, ensure_ascii=False)
         
         # 验证必需参数
         if not reserve_id and not event_id:
             return json.dumps({
                 "success": False,
-                "error": "缺少必需参数：请提供 todo_id 或 reserve_id/event_id"
+                "error": "⚠️ 无法删除会议：缺少必需参数（reserve_id 或 event_id）。\n\n💡 正确流程：\n1. 先使用 list_meeting_reserve 查询会议\n2. 从返回结果中找到要删除的会议\n3. 使用该会议的 reserve_id、event_id_feishu、calendar_id 调用本工具"
             }, ensure_ascii=False)
+        
+        # 检查 calendar_id 是否有效（不能是占位符或空字符串）
+        if calendar_id:
+            if "xxx" in calendar_id or calendar_id == "":
+                logger.warning(f"⚠️ 检测到无效的 calendar_id: {calendar_id}")
+                return json.dumps({
+                    "success": False,
+                    "error": f"⚠️ 无法删除会议：提供的 calendar_id 无效（{calendar_id}）。\n\n💡 正确流程：\n1. 先使用 list_meeting_reserve 查询会议\n2. 从返回结果中找到要删除的会议\n3. 使用该会议的真实 calendar_id（不是占位符）\n\n❌ 请勿使用缓存中的旧数据，必须重新查询确认会议信息。"
+                }, ensure_ascii=False)
         
         # 执行删除操作
         deleted_items = []
@@ -2537,18 +2641,30 @@ class DeleteMeetingReserveTool(FeishuMeetingBaseTool):
                 errors.append(f"日历事件删除失败: {calendar_result.get('error_msg')}")
                 logger.warning(f"⚠️ 日历事件删除失败: {calendar_result.get('error_msg')}")
         
-        # 3. 删除待办事项
-        if todo_id and user_id:
+        # 3. 删除日历MCP事件
+        if calendar_event_id and user_id:
             try:
-                from ty_mem_agent.memory.todo_manager import get_todo_manager
-                todo_manager = get_todo_manager()
-                logger.info(f"🗑️ 开始删除待办事项: {todo_id}")
-                todo_manager.delete_todo(int(todo_id), user_id)
-                deleted_items.append("待办事项")
-                logger.info(f"✅ 待办事项删除成功")
+                from ty_mem_agent.server.user_manager import user_manager
+                from ty_mem_agent.mcp_integrations.calendar_mcp_server import CalendarEventManager
+                
+                # 获取用户的calendar_user_id
+                user = user_manager.get_user(user_id)
+                if user and user.calendar_user_id:
+                    calendar_manager = CalendarEventManager(user.calendar_user_id)
+                    # calendar_event_id 需要转换为整数
+                    try:
+                        event_id_int = int(calendar_event_id) if isinstance(calendar_event_id, str) else calendar_event_id
+                    except (ValueError, TypeError):
+                        logger.warning(f"⚠️ calendar_event_id 无法转换为整数: {calendar_event_id}")
+                        errors.append(f"日历MCP事件删除失败: calendar_event_id 格式错误")
+                    else:
+                        logger.info(f"🗑️ 开始删除日历MCP事件: {event_id_int}")
+                        calendar_manager.cancel_one_time_event(event_id_int)
+                        deleted_items.append("日历MCP事件")
+                        logger.info(f"✅ 日历MCP事件删除成功")
             except Exception as e:
-                errors.append(f"待办事项删除失败: {str(e)}")
-                logger.warning(f"⚠️ 待办事项删除失败: {str(e)}")
+                errors.append(f"日历MCP事件删除失败: {str(e)}")
+                logger.warning(f"⚠️ 日历MCP事件删除失败: {str(e)}")
         
         # 返回结果
         if deleted_items:
@@ -2576,116 +2692,89 @@ class ListMeetingReserveTool(FeishuMeetingBaseTool):
     """查询会议列表工具（通过待办事项）"""
     
     name = "list_meeting_reserve"
-    description = """查询飞书会议列表（通过待办事项）
+    description = """查询飞书会议列表（通过日历MCP）
 
 💡 查询方式：
-本工具通过查询待办事项来获取会议列表。创建会议时会自动创建待办，待办中保存了完整的会议信息（reserve_id、event_id、calendar_id等）。
+本工具通过查询日历MCP来获取会议列表。创建会议时会自动在日历MCP中创建事件，事件中保存了完整的会议信息（reserve_id、event_id、calendar_id等）。
 
 ⚠️ 技术说明：
-由于飞书API的限制，使用应用权限（tenant_access_token）无法直接查询用户个人日历中的会议，因此采用待办事项作为会议管理的中介。
+本工具通过日历MCP服务查询会议事件，所有会议事件都包含完整的metadata信息，可以直接用于后续的删除和更新操作。
 
 支持的查询条件：
 - start_time：查询开始时间（Unix时间戳，秒级）
   - 用于筛选该时间之后的会议
+  - 推荐使用 natural_time_parser 工具解析时间，使用返回结果中的 timestamp 字段
 - end_time：查询结束时间（Unix时间戳，秒级）
   - 与start_time配合，筛选时间范围内的会议
+  - 推荐使用 natural_time_parser 工具解析时间，使用返回结果中的 timestamp 字段
 - topic_keyword：会议主题关键词
-  - 在待办标题中搜索包含该关键词的会议
+  - 在会议标题中搜索包含该关键词的会议
 
-返回值：
+返回值（JSON格式）：
+- success：是否成功
 - meetings：会议列表，每个会议包含：
   - title：会议主题
-  - deadline：会议时间
+  - deadline：会议时间（可读格式）
+  - deadline_timestamp：会议时间（Unix时间戳）
   - description：会议描述（包含会议链接）
-  - reserve_id：会议预约ID
-  - event_id：日历事件ID  
-  - calendar_id：日历ID
-  - todo_id：待办ID（用于删除会议）
+  - **reserve_id**：会议预约ID（用于删除会议）⭐
+  - **event_id_feishu**：飞书日历事件ID（用于删除/更新会议）⭐
+  - **calendar_id**：日历ID（用于删除/更新会议）⭐
+  - **event_id**：日历MCP事件ID（用于删除日历MCP事件）⭐
+  - meeting_url：会议链接
+  - participants：参会人列表
 - count：找到的会议数量
+- summary：会议ID摘要（文本格式，便于从对话历史中提取，包含所有会议的ID信息）
+- note：使用提示
+
+💡 **如何从返回结果中提取ID**：
+返回结果是一个JSON字符串，包含 `meetings` 数组。每个会议对象都包含完整的ID信息：
+- `meetings[0].reserve_id` - 第一个会议的预约ID
+- `meetings[0].event_id_feishu` - 第一个会议的飞书事件ID
+- `meetings[0].calendar_id` - 第一个会议的日历ID
+- `meetings[0].event_id` - 第一个会议的日历MCP事件ID
+
+返回结果中还包含 `summary` 字段，以文本格式列出所有会议的ID信息，便于从对话历史中快速查找和提取。
+
+💡 **重要提示**：
+- **返回结果包含完整的会议信息**，可以直接用于删除和更新操作
+- **返回结果中的字段说明**（每个会议都包含以下字段）：
+  - `reserve_id`：会议预约ID，用于删除会议预约
+  - `event_id_feishu`：飞书日历事件ID，用于删除/更新飞书日历事件（注意：这是飞书事件ID，不是日历MCP事件ID）
+  - `calendar_id`：日历ID，用于删除/更新飞书日历事件
+  - `event_id`：日历MCP事件ID，用于删除日历MCP事件
+  - `title`：会议主题
+  - `deadline`：会议时间（可读格式）
+  - `deadline_timestamp`：会议时间（Unix时间戳）
+- **使用建议**：
+  - 如果用户说"第一个会议"、"后天的会议"等，可以直接从返回结果中获取对应的所有ID
+  - **如果用户后续说"删除这个会议"**，应该直接使用本次查询返回的结果，**不要重新查询**
 
 使用建议：
 1. 推荐先使用 natural_time_parser 解析时间
-2. 返回的会议包含完整ID信息，可直接用于删除
-3. 会议信息来源于待办，与飞书日历完全同步
+2. 返回的会议包含完整ID信息，可直接用于删除和更新
+3. 如果用户说"第一个会议"、"后天的会议"等，从返回结果的 meetings 列表中选择对应的会议
 
 示例场景：
-- "明天有什么会议？" → 使用start_time和end_time查询明天的会议
-- "下周的产品讨论会" → 使用topic_keyword="产品讨论"筛选
+- "明天有什么会议？" → 使用start_time和end_time查询明天的会议，返回结果包含所有ID
+- "后天的会议" → 查询后天的会议，返回结果可以直接用于删除/更新
 - "本周所有会议" → 使用本周的start_time和end_time
 
 ⚠️ 重要参数说明：
-- calendar_id：应用日历ID（可选）
-  - 如果不提供，会自动获取或创建应用日历
-  - 格式：字符串，例如："feishu.cn_xxx@group.calendar.feishu.cn"
 - start_time：查询开始时间（可选）
-  - 格式：Unix时间戳（秒级），可以是字符串或数字
-  - 示例：1762561800 或 "1762561800"
-  - 推荐：使用 natural_time_parser 工具解析时间，使用返回结果中的 timestamp 字段
+  - 格式：Unix时间戳（秒级），字符串格式
+  - 推荐：使用 natural_time_parser 工具解析时间，使用返回结果中的 timestamp 字段转换为字符串
 - end_time：查询结束时间（可选）
-  - 格式：Unix时间戳（秒级），可以是字符串或数字
+  - 格式：Unix时间戳（秒级），字符串格式
   - 如果只提供 start_time，默认查询 start_time 之后24小时内的会议
 - topic_keyword：主题关键词（可选）
   - 用于在返回结果中筛选包含该关键词的会议
   - 注意：这是客户端筛选，不是API筛选
-- owner_id：会议所有者用户ID（可选）
-  - 用于在返回结果中筛选该用户创建的会议
-  - 格式：open_id 或 user_id
-  - 注意：这是客户端筛选，需要检查事件的参会人列表
-
-📋 返回值说明：
-- events：匹配的会议列表，每个会议包含：
-  - event_id：事件ID（用于后续的更新、删除操作）
-  - calendar_id：日历ID（用于后续的更新、删除操作）
-  - summary：会议主题
-  - start_time：开始时间（Unix时间戳）
-  - end_time：结束时间（Unix时间戳）
-  - start_time_display：开始时间（可读格式）
-  - end_time_display：结束时间（可读格式）
-  - meeting_url：会议链接
-  - attendees：参会人列表
-  - attendees_count：参会人数量
-- count：匹配的会议数量
-
-💡 使用流程建议：
-1. 如果用户说"取消后天上午的会议"或"删除后天上午的会议"，应该：
-   - 第一步：使用 natural_time_parser 解析"后天上午"的时间，获取 timestamp 字段（例如：1762909200）
-   - 第二步：使用 find_user_by_department 查找用户的 open_id（因为需要筛选"我的会议"）
-   - 第三步：调用此工具查询会议，参数：
-     * start_time：从 natural_time_parser 获取的 timestamp（字符串格式，例如："1762909200"）
-     * end_time：start_time + 4小时（例如："1762923600"，覆盖整个上午）
-     * owner_id：从 find_user_by_department 获取的 open_id（用于筛选用户的会议）
-   - 第四步：根据返回的 events 列表，找到匹配的会议（检查 start_time_display 是否在"上午"时间段）
-   - 第五步：使用返回的 calendar_id 和 event_id 调用 delete_meeting_reserve 删除会议
-2. 如果用户说"查看明天的会议"，可以：
-   - 使用 natural_time_parser 解析"明天"的时间范围，获取 timestamp
-   - 调用此工具查询该时间范围内的所有会议（可以传入 owner_id 筛选用户的会议）
-   - 返回会议列表给用户
-
-⚠️ 重要提示：
-- 如果用户说"我的会议"、"我创建的会议"或"我的会议预约"，必须使用 find_user_by_department 查找用户的 open_id，然后传入 owner_id 参数
-- 时间范围建议：
-  * 如果用户说"后天上午"，设置 start_time 为后天上午的开始时间（例如 9:00），end_time 为后天中午的时间（例如 13:00，即 +4小时）
-  * 如果用户说"明天"，设置 start_time 为明天的 00:00，end_time 为明天的 23:59:59
-- 此工具返回的 events 列表中，每个事件都包含 calendar_id 和 event_id，可以直接用于 delete_meeting_reserve 或 update_meeting_reserve
-
-适用场景：
-- 用户说"取消明天的会议"、"删除后天上午的会议"
-- 用户说"查看我的会议"、"列出明天的会议"
-- 用户说"修改明天下午的会议时间"
-
-示例输入：
-- "查询会议列表，start_time=1762561800, end_time=1762648200"
-- "查询明天的会议，start_time=1762561800, end_time=1762648200"
-- "查询会议列表，topic_keyword=硬件需求"
 """
     
     parameters = {
         "type": "object",
         "properties": {
-            "calendar_id": {
-                "type": "string",
-                "description": "应用日历ID（可选）。如果不提供，会自动获取或创建应用日历"
-            },
             "start_time": {
                 "type": "string",
                 "description": "查询开始时间（可选）。Unix时间戳（秒级），字符串格式。推荐使用 natural_time_parser 的 timestamp 字段转换为字符串"
@@ -2697,10 +2786,6 @@ class ListMeetingReserveTool(FeishuMeetingBaseTool):
             "topic_keyword": {
                 "type": "string",
                 "description": "主题关键词（可选）。用于筛选包含该关键词的会议"
-            },
-            "owner_id": {
-                "type": "string",
-                "description": "会议所有者用户ID（可选）。用于筛选该用户创建的会议（open_id 或 user_id）"
             }
         },
         "required": []
@@ -2731,127 +2816,186 @@ class ListMeetingReserveTool(FeishuMeetingBaseTool):
                 "error": "飞书 SDK 客户端未初始化，请检查配置和SDK安装"
             }, ensure_ascii=False)
         
-        calendar_id = params_dict.get("calendar_id")
         start_time_str = params_dict.get("start_time")
         end_time_str = params_dict.get("end_time")
         topic_keyword = params_dict.get("topic_keyword")
-        owner_id = params_dict.get("owner_id")
         
-        # 如果没有提供 owner_id，尝试从 kwargs 获取 user_id（用于查找用户的 open_id）
-        # 注意：这里只是记录，实际筛选时需要使用 open_id
         user_id = kwargs.get("user_id")
-        if user_id and not owner_id:
-            logger.debug(f"📝 检测到 user_id={user_id}，但需要 open_id 才能筛选，建议先使用 find_user_by_department 查找 open_id")
         
-        # ⚠️  改进方案：通过待办事项查询会议
-        # 由于飞书API限制，无法直接查询用户个人日历，因此从待办中获取会议信息
-        
-        logger.info("💡 通过待办事项查询会议列表")
+        logger.info("💡 通过日历MCP查询会议列表")
         
         if not user_id:
-            logger.warning("⚠️  未提供 user_id，无法查询待办中的会议")
+            logger.warning("⚠️  未提供 user_id，无法查询日历中的会议")
             return json.dumps({
                 "success": False,
                 "error": "需要 user_id 才能查询会议列表"
             }, ensure_ascii=False)
         
         try:
-            from ty_mem_agent.memory.todo_manager import get_todo_manager
+            from ty_mem_agent.server.user_manager import user_manager
+            from ty_mem_agent.mcp_integrations.calendar_mcp_server import CalendarEventManager
             from datetime import datetime
             
-            todo_manager = get_todo_manager()
+            # 获取用户的calendar_user_id
+            user = user_manager.get_user(user_id)
+            if not user or not user.calendar_user_id:
+                logger.warning(f"⚠️  用户没有calendar_user_id: {user_id}")
+                return json.dumps({
+                    "success": False,
+                    "error": "用户没有配置日历用户ID"
+                }, ensure_ascii=False)
             
-            # 获取所有待办（不限时间范围）
-            all_todos = todo_manager.get_todos_by_range(
-                user_id=user_id,
-                start_date=None,
-                end_date=None,
-                status=None  # 不筛选状态，获取所有未删除的待办
-            )
+            calendar_manager = CalendarEventManager(user.calendar_user_id)
             
-            # 筛选会议待办（包含 reserve_id 的待办）
-            meeting_todos = [
-                todo for todo in all_todos
-                if hasattr(todo, 'reserve_id') and getattr(todo, 'reserve_id', None)
-            ]
-            
-            logger.info(f"📋 找到 {len(meeting_todos)} 个会议待办")
-            
-            # 解析时间参数
-            start_time = None
-            end_time = None
+            # 解析时间参数（转换为RFC3339格式，带时区）
+            range_start = None
+            range_end = None
             
             if start_time_str:
                 try:
                     start_time = int(start_time_str) if isinstance(start_time_str, str) else start_time_str
-                except (ValueError, TypeError):
-                    logger.warning(f"⚠️  start_time 格式错误: {start_time_str}")
+                    # 检查时间戳是否合理（如果小于当前时间戳，可能是年份错误，需要调整）
+                    start_dt = datetime.fromtimestamp(start_time)
+                    current_year = datetime.now().year
+                    original_year = start_dt.year
+                    
+                    # 如果时间戳对应的年份小于当前年份，自动调整为当前年份
+                    if start_dt.year < current_year:
+                        # 调整年份
+                        start_dt = start_dt.replace(year=current_year)
+                        start_time = int(start_dt.timestamp())
+                        logger.warning(f"⚠️  检测到时间戳年份错误（{original_year} -> {current_year}），已自动修正: 原时间戳={start_time_str}, 新时间戳={start_time}, 新时间={start_dt.strftime('%Y-%m-%d %H:%M:%S')}")
+                    
+                    # 转换为RFC3339格式（带时区 +08:00）
+                    # 使用修正后的 start_dt，而不是重新从时间戳创建（避免时区问题）
+                    range_start = start_dt.strftime('%Y-%m-%dT%H:%M:%S+08:00')
+                    logger.debug(f"📅 解析开始时间: {start_time} -> {range_start}")
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"⚠️  start_time 格式错误: {start_time_str}, 错误: {e}")
             
             if end_time_str:
                 try:
                     end_time = int(end_time_str) if isinstance(end_time_str, str) else end_time_str
-                except (ValueError, TypeError):
-                    logger.warning(f"⚠️  end_time 格式错误: {end_time_str}")
+                    # 检查时间戳是否合理（如果小于当前时间戳，可能是年份错误，需要调整）
+                    end_dt = datetime.fromtimestamp(end_time)
+                    current_year = datetime.now().year
+                    original_year = end_dt.year
+                    
+                    # 如果时间戳对应的年份小于当前年份，自动调整为当前年份
+                    if end_dt.year < current_year:
+                        # 调整年份
+                        end_dt = end_dt.replace(year=current_year)
+                        end_time = int(end_dt.timestamp())
+                        logger.warning(f"⚠️  检测到时间戳年份错误（{original_year} -> {current_year}），已自动修正: 原时间戳={end_time_str}, 新时间戳={end_time}, 新时间={end_dt.strftime('%Y-%m-%d %H:%M:%S')}")
+                    
+                    # 转换为RFC3339格式（带时区 +08:00）
+                    # 使用修正后的 end_dt，而不是重新从时间戳创建（避免时区问题）
+                    range_end = end_dt.strftime('%Y-%m-%dT%H:%M:%S+08:00')
+                    logger.debug(f"📅 解析结束时间: {end_time} -> {range_end}")
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"⚠️  end_time 格式错误: {end_time_str}, 错误: {e}")
+            
+            # 如果没有提供时间范围，设置一个合理的默认范围（从7天前到30天后）
+            if not range_start or not range_end:
+                now = datetime.now()
+                if not range_start:
+                    range_start = (now - timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%S+08:00')
+                if not range_end:
+                    range_end = (now + timedelta(days=30)).strftime('%Y-%m-%dT%H:%M:%S+08:00')
+                logger.debug(f"📅 使用默认时间范围: {range_start} 到 {range_end}")
+            
+            # 查询所有会议事件
+            meeting_events = calendar_manager.find_meeting_events(
+                range_start=range_start,
+                range_end=range_end
+            )
+            
+            logger.info(f"📅 从日历MCP中找到 {len(meeting_events)} 个会议事件")
             
             # 应用筛选条件
             filtered_meetings = []
             
-            for todo in meeting_todos:
-                # 解析deadline
-                deadline_str = getattr(todo, 'deadline', None)
-                if not deadline_str:
+            for event in meeting_events:
+                # 主题关键词筛选
+                if topic_keyword:
+                    title = event.get("title", "")
+                    if topic_keyword not in title:
+                        continue
+                
+                # 解析时间
+                start_time_display = None
+                deadline_timestamp = None
+                try:
+                    # 从事件中提取时间信息（需要根据实际返回格式解析）
+                    # 假设事件有startTime或类似字段
+                    if "startTime" in event:
+                        deadline_timestamp = int(event["startTime"])
+                        start_time_display = datetime.fromtimestamp(deadline_timestamp).strftime('%Y-%m-%d %H:%M:%S')
+                    elif "eventDateTime" in event:
+                        # 解析ISO格式时间
+                        event_dt = datetime.fromisoformat(event["eventDateTime"].replace('Z', '+00:00'))
+                        deadline_timestamp = int(event_dt.timestamp())
+                        start_time_display = event_dt.strftime('%Y-%m-%d %H:%M:%S')
+                except Exception as e:
+                    logger.warning(f"⚠️  解析事件时间失败: {e}")
                     continue
                 
-                try:
-                    if isinstance(deadline_str, str):
-                        deadline_dt = datetime.fromisoformat(deadline_str.replace('Z', '+00:00'))
-                    else:
-                        deadline_dt = deadline_str
-                    
-                    deadline_timestamp = int(deadline_dt.timestamp())
-                    
-                    # 时间范围筛选
-                    if start_time and deadline_timestamp < start_time:
-                        continue
-                    if end_time and deadline_timestamp > end_time:
+                # 时间范围筛选（如果提供了时间参数）
+                if start_time_str and deadline_timestamp:
+                    start_time = int(start_time_str) if isinstance(start_time_str, str) else start_time_str
+                    if deadline_timestamp < start_time:
                         continue
                     
-                    # 主题关键词筛选
-                    if topic_keyword:
-                        title = getattr(todo, 'title', '')
-                        if topic_keyword not in title:
-                            continue
-                    
-                    # 构建会议信息
-                    meeting_info = {
-                        "todo_id": getattr(todo, 'id', None),
-                        "title": getattr(todo, 'title', ''),
-                        "deadline": deadline_str,
-                        "deadline_timestamp": deadline_timestamp,
-                        "deadline_display": deadline_dt.strftime('%Y-%m-%d %H:%M:%S'),
-                        "description": getattr(todo, 'description', ''),
-                        "reserve_id": getattr(todo, 'reserve_id', None),
-                        "event_id": getattr(todo, 'event_id', None),
-                        "calendar_id": getattr(todo, 'calendar_id', None),
-                        "status": getattr(todo, 'status', 'pending')
-                    }
-                    
-                    filtered_meetings.append(meeting_info)
-                    
-                except Exception as e:
-                    logger.warning(f"⚠️  解析待办时间失败: {e}")
-                    continue
+                if end_time_str and deadline_timestamp:
+                    end_time = int(end_time_str) if isinstance(end_time_str, str) else end_time_str
+                    if deadline_timestamp > end_time:
+                        continue
+                
+                # 构建会议信息
+                metadata = event.get("meeting_metadata", {})
+                # 事件ID可能是 "id" 或 "eventId" 字段
+                calendar_event_id = event.get("id") or event.get("eventId")
+                meeting_info = {
+                    "event_id": calendar_event_id,  # 日历MCP事件ID
+                    "title": event.get("title", ""),
+                    "deadline": start_time_display,
+                    "deadline_timestamp": deadline_timestamp,
+                    "deadline_display": start_time_display,
+                    "description": event.get("description", ""),
+                    "reserve_id": metadata.get("reserve_id"),
+                    "event_id_feishu": metadata.get("event_id"),  # 飞书事件ID
+                    "calendar_id": metadata.get("calendar_id"),
+                    "meeting_url": metadata.get("meeting_url"),
+                    "participants": metadata.get("participants", [])
+                }
+                
+                filtered_meetings.append(meeting_info)
             
             # 按时间排序
-            filtered_meetings.sort(key=lambda x: x['deadline_timestamp'])
+            filtered_meetings.sort(key=lambda x: x.get('deadline_timestamp', 0))
             
             logger.info(f"✅ 查询完成，找到 {len(filtered_meetings)} 个匹配的会议")
+            
+            # 构建便于LLM提取的摘要信息
+            summary_parts = [f"找到 {len(filtered_meetings)} 个会议。"]
+            if filtered_meetings:
+                summary_parts.append("\n📋 会议ID信息（可直接用于删除/更新操作）：")
+                for i, meeting in enumerate(filtered_meetings, 1):
+                    summary_parts.append(
+                        f"\n会议 {i}: {meeting.get('title', '未知')} ({meeting.get('deadline', '未知时间')})"
+                    )
+                    summary_parts.append(f"  - reserve_id: {meeting.get('reserve_id', 'N/A')}")
+                    summary_parts.append(f"  - event_id_feishu: {meeting.get('event_id_feishu', 'N/A')}")
+                    summary_parts.append(f"  - calendar_id: {meeting.get('calendar_id', 'N/A')}")
+                    summary_parts.append(f"  - event_id (日历MCP): {meeting.get('event_id', 'N/A')}")
+                summary_parts.append("\n💡 提示：如果用户后续说'删除这个会议'或'删除第一个会议'，请直接使用上述ID，不要重新查询。")
             
             return json.dumps({
                 "success": True,
                 "meetings": filtered_meetings,
                 "count": len(filtered_meetings),
-                "note": f"从待办事项中找到 {len(filtered_meetings)} 个会议"
+                "summary": "\n".join(summary_parts),
+                "note": f"从日历MCP中找到 {len(filtered_meetings)} 个会议。💡 提示：如果用户说'第一个会议'、'后天的会议'等，可以直接使用返回结果中的 reserve_id、event_id_feishu、calendar_id、event_id 进行删除或更新操作，无需再次查询。"
             }, ensure_ascii=False, indent=2)
             
         except Exception as e:
@@ -2862,93 +3006,6 @@ class ListMeetingReserveTool(FeishuMeetingBaseTool):
                 "success": False,
                 "error": f"查询会议失败: {str(e)}"
             }, ensure_ascii=False)
-        
-        # 解析时间参数
-        start_time = None
-        end_time = None
-        
-        if start_time_str:
-            try:
-                # 支持字符串和数字格式
-                start_time = int(start_time_str) if isinstance(start_time_str, str) else start_time_str
-            except (ValueError, TypeError):
-                return json.dumps({
-                    "success": False,
-                    "error": f"start_time 格式错误: {start_time_str}"
-                }, ensure_ascii=False)
-        
-        if end_time_str:
-            try:
-                # 支持字符串和数字格式
-                end_time = int(end_time_str) if isinstance(end_time_str, str) else end_time_str
-            except (ValueError, TypeError):
-                return json.dumps({
-                    "success": False,
-                    "error": f"end_time 格式错误: {end_time_str}"
-                }, ensure_ascii=False)
-        
-        # 如果只提供了 start_time，默认查询之后24小时
-        if start_time and not end_time:
-            end_time = start_time + 24 * 3600
-        
-        # 调用 SDK 查询日历事件列表
-        logger.info(f"📅 查询日历事件: calendar_id={calendar_id}, start_time={start_time}, end_time={end_time}")
-        result = self.sdk_client.list_calendar_events(
-            calendar_id=calendar_id,
-            start_time=start_time,
-            end_time=end_time
-        )
-        
-        if not result.get("success"):
-            error_msg = result.get("error_msg", "未知错误")
-            logger.error(f"❌ 查询日历事件列表失败: {error_msg}")
-            return json.dumps(result, ensure_ascii=False, indent=2)
-        
-        logger.info(f"✅ SDK 查询成功，找到 {result.get('count', 0)} 个事件")
-        
-        # 客户端筛选
-        events = result.get("events", [])
-        filtered_events = []
-        
-        for event in events:
-            # 根据主题关键词筛选
-            if topic_keyword:
-                summary = event.get("summary", "")
-                if topic_keyword not in summary:
-                    continue
-            
-            # 根据 owner_id 筛选（检查参会人列表中是否包含 owner_id）
-            # 注意：如果未提供 owner_id，则不过滤，返回所有事件
-            if owner_id:
-                attendees = event.get("attendees", [])
-                found_owner = False
-                for attendee in attendees:
-                    attendee_open_id = attendee.get("open_id")
-                    attendee_user_id = attendee.get("user_id")
-                    # 检查是否匹配 owner_id（支持 open_id 或 user_id）
-                    if attendee_open_id == owner_id or attendee_user_id == owner_id:
-                        found_owner = True
-                        break
-                if not found_owner:
-                    continue
-            
-            # 添加 calendar_id 到每个事件（用于后续操作）
-            event["calendar_id"] = calendar_id
-            filtered_events.append(event)
-        
-        result["events"] = filtered_events
-        result["count"] = len(filtered_events)
-        result["filtered"] = len(events) != len(filtered_events)
-        
-        if topic_keyword or owner_id:
-            result["note"] = f"已根据条件筛选，从 {len(events)} 个事件中筛选出 {len(filtered_events)} 个匹配的会议"
-        
-        logger.info(f"✅ 查询完成，最终返回 {len(filtered_events)} 个匹配的会议")
-        if len(filtered_events) > 0:
-            for i, event in enumerate(filtered_events[:3]):  # 只记录前3个
-                logger.debug(f"  会议 {i+1}: {event.get('summary')} ({event.get('start_time_display')})")
-        
-        return json.dumps(result, ensure_ascii=False, indent=2)
 
 
 def get_feishu_meeting_sdk_tools() -> List[BaseTool]:

@@ -22,7 +22,7 @@ from ty_mem_agent.agents.ty_memory_agent import TYMemoryAgent
 from ty_mem_agent.memory.user_memory import get_integrated_memory
 from ty_mem_agent.server.user_manager import user_manager, init_default_users
 from ty_mem_agent.server.conversation_manager import get_conversation_manager
-from qwen_agent.llm.schema import Message, USER, ASSISTANT
+from qwen_agent.llm.schema import Message, USER, ASSISTANT, FUNCTION
 
 
 # Pydantic模型
@@ -122,7 +122,7 @@ class ChatServer:
         self._setup_routes()
         
         # 注册待办API路由
-        self._register_todo_routes()
+        self._register_calendar_routes()
         
         # 初始化默认用户
         init_default_users()
@@ -209,13 +209,62 @@ class ChatServer:
             # 获取用户记忆摘要
             memory_summary = await self._get_user_memory_summary(current_user.user_id)
             
+            # 确保有calendar_user_id
+            if not current_user.calendar_user_id:
+                from ty_mem_agent.server.user_id_mapper import UserIdMapper
+                calendar_user_id = UserIdMapper.get_calendar_user_id(current_user.user_id)
+                # 更新用户信息
+                user_manager.db.update_user(current_user.user_id, {
+                    'calendar_user_id': calendar_user_id
+                })
+                # 更新内存中的用户对象
+                current_user.calendar_user_id = calendar_user_id
+            
             return {
                 "user_id": current_user.user_id,
                 "username": current_user.username,
                 "email": current_user.email,
                 "created_at": current_user.created_at,
                 "last_login": current_user.last_login,
+                "calendar_user_id": current_user.calendar_user_id,
                 "memory_summary": memory_summary
+            }
+        
+        @self.app.get("/user/calendar-id")
+        async def get_calendar_user_id(current_user = Depends(get_current_user)):
+            """获取用户的日历用户ID"""
+            from ty_mem_agent.server.user_id_mapper import UserIdMapper
+            
+            # 先从数据库重新加载用户，确保获取最新的calendar_user_id
+            user_data = user_manager.db.get_user(current_user.user_id)
+            if user_data:
+                # 如果数据库中有calendar_user_id，使用数据库的值
+                calendar_user_id = user_data.get('calendar_user_id')
+                if calendar_user_id:
+                    # 更新内存中的用户对象
+                    current_user.calendar_user_id = calendar_user_id
+                    logger.debug(f"✅ 从数据库加载calendar_user_id: {current_user.user_id} -> {calendar_user_id}")
+                else:
+                    # 如果数据库中没有，生成一个并保存
+                    calendar_user_id = UserIdMapper.get_calendar_user_id(current_user.user_id)
+                    # 更新数据库
+                    user_manager.db.update_user(current_user.user_id, {
+                        'calendar_user_id': calendar_user_id
+                    })
+                    # 更新内存中的用户对象
+                    current_user.calendar_user_id = calendar_user_id
+                    logger.info(f"🔧 生成并保存calendar_user_id: {current_user.user_id} -> {calendar_user_id}")
+            else:
+                # 如果数据库中没有用户数据，生成一个
+                calendar_user_id = UserIdMapper.get_calendar_user_id(current_user.user_id)
+                current_user.calendar_user_id = calendar_user_id
+                logger.warning(f"⚠️ 数据库中没有用户数据，使用生成的calendar_user_id: {calendar_user_id}")
+            
+            # 将calendar_user_id转换为字符串，避免JavaScript精度丢失
+            # JavaScript的Number类型只能安全表示到Number.MAX_SAFE_INTEGER (9007199254740991)
+            # 我们的calendar_user_id都超过了这个范围，必须作为字符串传递
+            return {
+                "calendar_user_id": str(current_user.calendar_user_id)
             }
         
         @self.app.get("/user/stats")
@@ -715,14 +764,50 @@ class ChatServer:
                 max_context_messages = 10  # 可以在settings中配置
                 recent_messages = conversation.messages[-max_context_messages:]
                 
-                # 构建消息列表
+                # 构建消息列表（包含工具调用和返回结果）
                 for msg in recent_messages:
-                    messages.append(Message(
-                        role=msg.role,
-                        content=msg.content
-                    ))
+                    if msg.role == 'user':
+                        # 添加 user 消息
+                        messages.append(Message(
+                            role=msg.role,
+                            content=msg.content
+                        ))
+                    elif msg.role == 'assistant':
+                        # 检查是否有工具调用信息
+                        if msg.metadata and 'tool_calls' in msg.metadata:
+                            # 为每个工具调用创建 ASSISTANT 消息（包含 function_call）和对应的 FUNCTION 消息
+                            from qwen_agent.llm.schema import FunctionCall
+                            for tool_call in msg.metadata['tool_calls']:
+                                # 创建包含 function_call 的 ASSISTANT 消息
+                                messages.append(Message(
+                                    role=ASSISTANT,
+                                    content='',  # 工具调用时 content 通常为空
+                                    function_call=FunctionCall(
+                                        name=tool_call.get('name', 'unknown'),
+                                        arguments=tool_call.get('arguments', '{}')
+                                    )
+                                ))
+                                # 创建对应的 FUNCTION 消息（工具返回结果）
+                                if tool_call.get('result'):
+                                    messages.append(Message(
+                                        role=FUNCTION,
+                                        name=tool_call.get('name', 'unknown'),
+                                        content=tool_call.get('result', '')
+                                    ))
+                            # 最后添加最终的 ASSISTANT 回复消息（如果有 content）
+                            if msg.content and msg.content.strip():
+                                messages.append(Message(
+                                    role=ASSISTANT,
+                                    content=msg.content
+                                ))
+                        else:
+                            # 没有工具调用，直接添加 assistant 消息
+                            messages.append(Message(
+                                role=msg.role,
+                                content=msg.content
+                            ))
                 
-                logger.debug(f"📜 传递会话历史: {len(messages)} 条消息")
+                logger.debug(f"📜 传递会话历史: {len(messages)} 条消息（包含工具返回结果）")
             else:
                 # 如果没有历史，就只传当前消息
                 messages = [Message(role=USER, content=content)]
@@ -734,6 +819,7 @@ class ChatServer:
             message_id = f"msg_{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
             has_tool_call = False  # 是否有工具调用
             tool_call_history = set()  # 工具调用去重
+            final_response = None  # 保存最终的完整response，用于提取工具返回结果
             
             # 使用run_with_memory进行带记忆的对话
             async for response in agent.run_with_memory(
@@ -741,6 +827,9 @@ class ChatServer:
                 user_id=user_id, 
                 session_id=agent.current_session_id
             ):
+                # 保存最终的完整response
+                final_response = response
+                
                 if response and response[-1]:
                     assistant_message = response[-1]
                     new_content = assistant_message.content
@@ -860,12 +949,54 @@ class ChatServer:
                         "message_id": message_id
                     })
             
-            # 保存assistant的回复到会话
+            # 从最终的完整response中收集工具调用和返回结果（合并入参和出参）
+            tool_calls = []  # 存储工具调用信息（包含入参和出参）
+            if final_response:
+                # 收集所有工具调用和返回结果
+                # 注意：response 中可能包含多个 ASSISTANT 消息（每个工具调用一个）和对应的 FUNCTION 消息
+                i = 0
+                while i < len(final_response):
+                    msg = final_response[i]
+                    if isinstance(msg, Message) and msg.function_call:
+                        # 找到工具调用（ASSISTANT 消息包含 function_call）
+                        tool_call_info = {
+                            'name': msg.function_call.name,
+                            'arguments': msg.function_call.arguments,
+                            'result': None  # 将在后面填充
+                        }
+                        # 查找对应的工具返回结果（下一个 FUNCTION 消息）
+                        if i + 1 < len(final_response):
+                            next_msg = final_response[i + 1]
+                            if isinstance(next_msg, Message) and next_msg.role == FUNCTION:
+                                tool_content = next_msg.content
+                                if isinstance(tool_content, list):
+                                    # 如果是列表，提取文本内容
+                                    tool_content = ' '.join([item.text for item in tool_content if hasattr(item, 'text') and item.text])
+                                elif not isinstance(tool_content, str):
+                                    tool_content = str(tool_content)
+                                tool_call_info['result'] = tool_content
+                                i += 2  # 跳过 ASSISTANT 和 FUNCTION 消息
+                            else:
+                                i += 1  # 只跳过 ASSISTANT 消息
+                        else:
+                            i += 1  # 只跳过 ASSISTANT 消息
+                        tool_calls.append(tool_call_info)
+                    else:
+                        i += 1
+            
+            # 保存assistant的回复到会话（包含工具调用信息）
             if response_content:
+                # 将工具调用信息（入参+出参）保存到 metadata 中
+                metadata = {}
+                if tool_calls:
+                    metadata['tool_calls'] = tool_calls
+                    logger.debug(f"💾 保存工具调用信息: {len(tool_calls)} 个工具调用（包含入参和出参）")
+                
                 self.conversation_manager.add_message(
                     conversation_id=conversation_id,
                     role='assistant',
-                    content=response_content
+                    content=response_content,
+                    metadata=metadata if metadata else None
                 )
                 
                 # 检查是否需要生成标题（在保存assistant消息后检查）
@@ -1240,22 +1371,46 @@ class ChatServer:
             logger.error(f"❌ 断开用户连接失败: {e}")
     
     
-    def _register_todo_routes(self):
-        """注册待办管理路由"""
-        from ty_mem_agent.server.todo_api import router as todo_router
-        self.app.include_router(todo_router)
+    def _register_calendar_routes(self):
+        """注册日历相关路由（重定向到外部日历前端）"""
+        from fastapi.responses import RedirectResponse
         
-        # 添加待办管理页面路由
         @self.app.get("/todos")
-        async def todos_page():
-            """待办管理页面"""
-            template_path = Path(__file__).parent / "templates" / "todos.html"
-            if template_path.exists():
-                return FileResponse(template_path)
+        async def calendar_page(current_user = Depends(get_current_user)):
+            """日历页面 - 重定向到外部日历前端"""
+            from ty_mem_agent.server.user_id_mapper import UserIdMapper
+            
+            # 先从数据库重新加载用户，确保获取最新的calendar_user_id
+            user_data = user_manager.db.get_user(current_user.user_id)
+            if user_data:
+                # 如果数据库中有calendar_user_id，使用数据库的值
+                calendar_user_id = user_data.get('calendar_user_id')
+                if calendar_user_id:
+                    # 更新内存中的用户对象
+                    current_user.calendar_user_id = calendar_user_id
+                    logger.debug(f"✅ 从数据库加载calendar_user_id: {current_user.user_id} -> {calendar_user_id}")
+                else:
+                    # 如果数据库中没有，生成一个并保存
+                    calendar_user_id = UserIdMapper.get_calendar_user_id(current_user.user_id)
+                    # 更新数据库
+                    user_manager.db.update_user(current_user.user_id, {
+                        'calendar_user_id': calendar_user_id
+                    })
+                    # 更新内存中的用户对象
+                    current_user.calendar_user_id = calendar_user_id
+                    logger.info(f"🔧 生成并保存calendar_user_id: {current_user.user_id} -> {calendar_user_id}")
             else:
-                return HTMLResponse(content="<h1>待办管理页面未找到</h1>", status_code=404)
+                # 如果数据库中没有用户数据，生成一个
+                calendar_user_id = UserIdMapper.get_calendar_user_id(current_user.user_id)
+                current_user.calendar_user_id = calendar_user_id
+                logger.warning(f"⚠️ 数据库中没有用户数据，使用生成的calendar_user_id: {calendar_user_id}")
+            
+            # 重定向到外部日历前端
+            calendar_url = f"http://tyqy.duckdns.org:8980/?userId={current_user.calendar_user_id}"
+            logger.debug(f"🔗 重定向到日历页面: {calendar_url}")
+            return RedirectResponse(url=calendar_url)
         
-        logger.info("✅ 待办管理路由已注册")
+        logger.info("✅ 日历路由已注册（重定向到外部日历前端）")
     
     async def start_server(self):
         """启动服务器"""

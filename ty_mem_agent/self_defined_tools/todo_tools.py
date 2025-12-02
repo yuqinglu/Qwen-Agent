@@ -74,7 +74,11 @@ class TodoExtractorTool(BaseTool):
         return self.llm
     
     def call(self, params: Union[str, Dict], **kwargs) -> str:
-        """执行待办提取"""
+        """执行待办提取（仅提取信息，不创建待办）
+        
+        注意：此工具只负责从自然语言中提取待办的结构化信息。
+        创建待办需要使用日历MCP工具（如createOneTimeEvent）。
+        """
         # 解析参数
         if isinstance(params, str):
             try:
@@ -85,7 +89,7 @@ class TodoExtractorTool(BaseTool):
             params_dict = params
         
         text = params_dict.get("text", "")
-        user_id = params_dict.get("user_id", "default_user")
+        user_id = params_dict.get("user_id", kwargs.get("user_id", "default_user"))
         
         logger.info(f"🔍 提取待办信息: {text}")
         
@@ -94,39 +98,126 @@ class TodoExtractorTool(BaseTool):
             extracted_info = self._extract_with_llm(text)
             logger.debug(f"提取后的信息: {extracted_info}")
             
-            # 创建待办
-            todo_manager = get_todo_manager()
-            todo = todo_manager.create_todo(user_id, extracted_info)
-            logger.debug(f"创建的待办: {todo}")
+            # 转换为日历MCP工具所需的格式
+            # 优先使用start_time，如果没有则使用deadline
+            from datetime import datetime, timedelta
             
-            # 检查时间冲突
-            conflicts = []
-            if extracted_info.get('deadline'):
-                conflicts = todo_manager.check_conflicts(
-                    user_id, 
-                    extracted_info['deadline'],
-                    duration_minutes=60,
-                    exclude_todo_id=todo.id  # 排除当前待办，避免自己与自己冲突
-                )
+            duration = extracted_info.get('duration', 60)  # 默认0小时
             
-            # 转换为字典
-            try:
-                todo_dict = todo.to_dict()
-                logger.debug(f"待办字典: {todo_dict}")
-            except Exception as dict_error:
-                logger.error(f"to_dict() 失败: {dict_error}")
-                logger.error(f"待办对象: {todo}")
-                raise
+            # 确定开始时间
+            start_dt = None
+            if extracted_info.get('start_time'):
+                start_str = extracted_info['start_time']
+                try:
+                    start_dt = datetime.fromisoformat(start_str.replace('Z', '+00:00').split('+')[0])
+                except Exception as e:
+                    logger.warning(f"解析start_time失败: {e}")
             
-            result = {
-                "success": True,
-                "todo": todo_dict,
-                "message": f"✅ 已创建待办: {todo.title}",
-                "conflicts": [c.to_dict() for c in conflicts] if conflicts else []
+            if not start_dt and extracted_info.get('deadline'):
+                deadline_str = extracted_info['deadline']
+                try:
+                    start_dt = datetime.fromisoformat(deadline_str.replace('Z', '+00:00').split('+')[0])
+                except Exception as e:
+                    logger.warning(f"解析deadline失败: {e}")
+            
+            if start_dt:
+                # eventDateTime: ISO8601格式字符串（如 '2024-01-01T12:00:00'）
+                # 格式：YYYY-MM-DDTHH:MM:SS
+                event_date_time = start_dt.strftime('%Y-%m-%dT%H:%M:%S')
+                
+                logger.debug(f"📅 时间格式转换: {start_dt.isoformat()} -> eventDateTime={event_date_time}")
+                
+                # 计算duration：优先使用end_time，如果没有则使用提供的duration
+                # 注意：MCP服务要求duration为秒数，不是分钟数
+                if extracted_info.get('end_time'):
+                    end_str = extracted_info['end_time']
+                    try:
+                        end_dt = datetime.fromisoformat(end_str.replace('Z', '+00:00').split('+')[0])
+                        duration_seconds = (end_dt - start_dt).total_seconds()
+                        duration = max(900, int(duration_seconds))  # 至少15分钟（900秒）
+                        logger.debug(f"⏱️ Duration计算（基于end_time）: {duration}秒 ({duration/60:.1f}分钟)")
+                    except Exception as e:
+                        logger.warning(f"解析end_time失败: {e}，使用提供的duration")
+                elif extracted_info.get('duration'):
+                    # 使用提供的duration（假设LLM返回的是分钟数，需要转换为秒）
+                    duration_minutes = int(extracted_info['duration'])
+                    duration = duration_minutes * 60  # 转换为秒
+                    logger.debug(f"⏱️ Duration转换: {duration_minutes}分钟 -> {duration}秒")
+                else:
+                    # 默认1小时（3600秒）
+                    duration = 3600
+                    logger.debug(f"⏱️ Duration使用默认值: {duration}秒 (1小时)")
+            else:
+                logger.warning("无法确定开始时间，使用当前时间")
+                now = datetime.now()
+                event_date_time = now.strftime('%Y-%m-%dT%H:%M:%S')
+                duration = 3600  # 默认1小时（3600秒）
+                logger.debug(f"📅 使用当前时间: eventDateTime={event_date_time}, duration={duration}秒")
+            
+            # 构建描述信息
+            description_parts = []
+            if extracted_info.get('description'):
+                description_parts.append(extracted_info['description'])
+            if extracted_info.get('participants'):
+                participants = extracted_info['participants']
+                if isinstance(participants, list):
+                    description_parts.append(f"参与人: {', '.join(participants)}")
+                elif isinstance(participants, str):
+                    description_parts.append(f"参与人: {participants}")
+            if extracted_info.get('tags'):
+                tags = extracted_info['tags']
+                if isinstance(tags, list):
+                    description_parts.append(f"标签: {', '.join(tags)}")
+            
+            description = "\n".join(description_parts) if description_parts else None
+            
+            # 判断是否为重复事件
+            is_recurring = extracted_info.get('is_recurring', False)
+            rrule = extracted_info.get('rrule')
+            
+            # 构建基础参数
+            base_params = {
+                "title": extracted_info.get('title', '未命名事件'),
+                "description": description,
+                "location": extracted_info.get('location'),
+                "timezone": "Asia/Shanghai"
             }
             
-            if conflicts:
-                result["message"] += f"\n⚠️ 发现 {len(conflicts)} 个时间冲突"
+            # 根据是否为重复事件，构建不同的参数
+            if is_recurring and rrule:
+                # 重复事件参数
+                calendar_event_params = {
+                    **base_params,
+                    "rrule": rrule,
+                    "duration": duration
+                }
+                if event_date_time:
+                    calendar_event_params["eventDateTime"] = event_date_time
+                
+                tool_name = "calendar-service-createRecurringEvent"
+                instruction = "请使用日历MCP工具（calendar-service-createRecurringEvent）创建此重复事件"
+            else:
+                # 一次性事件参数
+                calendar_event_params = {
+                    **base_params,
+                    "duration": duration
+                }
+                if event_date_time:
+                    calendar_event_params["eventDateTime"] = event_date_time
+                
+                tool_name = "calendar-service-createOneTimeEvent"
+                instruction = "请使用日历MCP工具（calendar-service-createOneTimeEvent）创建此事件"
+            
+            # 返回提取的信息，格式化为日历MCP工具可用的格式
+            result = {
+                "success": True,
+                "extracted_info": extracted_info,
+                "calendar_event_params": calendar_event_params,
+                "is_recurring": is_recurring,
+                "recommended_tool": tool_name,
+                "message": f"✅ 已提取待办信息: {extracted_info.get('title', '未命名事件')}",
+                "instruction": instruction
+            }
             
             return json.dumps(result, ensure_ascii=False, indent=2)
             
@@ -137,7 +228,7 @@ class TodoExtractorTool(BaseTool):
             return json.dumps({
                 "success": False,
                 "error": str(e),
-                "message": f"❌ 创建待办失败: {e}"
+                "message": f"❌ 提取待办信息失败: {e}"
             }, ensure_ascii=False)
     
     def _extract_with_llm(self, text: str) -> Dict[str, Any]:
@@ -151,28 +242,71 @@ class TodoExtractorTool(BaseTool):
 请以JSON格式返回，包含以下字段：
 - title: 待办标题（简短概括，如"与张总讨论技术升级"）
 - description: 详细描述（可选）
-- deadline: 截止时间（ISO 8601格式，如"2025-10-15T08:30:00"）
+- start_time: 开始时间（ISO 8601格式，如"2025-10-15T08:30:00"）
+- end_time: 结束时间（ISO 8601格式，如"2025-10-15T10:00:00"）
+- deadline: 截止时间（ISO 8601格式，如"2025-10-15T08:30:00"，如果没有start_time则使用此字段）
+- duration: 持续时间（整数，单位：分钟，如60表示1小时，可选）【注意：此字段仅用于辅助，实际会被转换为秒数】
 - reminder_time: 提醒时间（ISO 8601格式，可选）
 - location: 地点（可选）
 - participants: 参与人列表（数组，如["张总"]）
 - priority: 优先级（0-低，1-中，2-高）
 - tags: 标签列表（数组，如["会议", "技术"]）
+- is_recurring: 是否重复事件（布尔值，默认false）
+- rrule: 重复规则（字符串，仅当is_recurring为true时需要，遵循RFC 5545标准）
+
+**rrule格式说明（重要！）：**
+- 每天重复: "FREQ=DAILY;INTERVAL=1"
+- 每周重复（指定星期几）: "FREQ=WEEKLY;BYDAY=MO,WE,FR" （周一、三、五）
+- 每周重复（所有星期）: "FREQ=WEEKLY;INTERVAL=1"
+- 每月重复: "FREQ=MONTHLY;INTERVAL=1"
+- 每年重复: "FREQ=YEARLY;INTERVAL=1"
+- 每N天重复: "FREQ=DAILY;INTERVAL=N" （N为数字）
+- 每N周重复: "FREQ=WEEKLY;INTERVAL=N"
+- 每N月重复: "FREQ=MONTHLY;INTERVAL=N"
+
+**星期几代码：**
+- MO=周一, TU=周二, WE=周三, TH=周四, FR=周五, SA=周六, SU=周日
+
+**示例rrule：**
+- "每周一三五" → "FREQ=WEEKLY;BYDAY=MO,WE,FR"
+- "每天" → "FREQ=DAILY;INTERVAL=1"
+- "每周一" → "FREQ=WEEKLY;BYDAY=MO"
+- "每两周" → "FREQ=WEEKLY;INTERVAL=2"
+- "每月1号" → "FREQ=MONTHLY;BYMONTHDAY=1"
 
 注意：
 1. 时间解析要准确，"明天"、"下周"等相对时间要转换为绝对时间
-2. 如果没有明确的截止时间，可以根据事件性质设置合理的时间，如果无法确定，可以设置为None
-3. 只返回JSON，不要其他解释
+2. 优先使用start_time和end_time，如果没有则使用deadline
+3. 如果提供了start_time和end_time，duration会自动计算；如果只提供了start_time或deadline，duration默认为60分钟（1小时）
+4. 对于重复事件，必须提供rrule字段，且格式必须符合RFC 5545标准
+5. 如果没有明确的截止时间，可以根据事件性质设置合理的时间，如果无法确定，可以设置为None
+6. 只返回JSON，不要其他解释
 
-示例：
+示例1（一次性事件）：
 输入: "明天上午8点半与张总进行技术升级讨论"
 输出:
 {{
   "title": "与张总讨论技术升级",
   "description": "技术升级讨论会议",
-  "deadline": "2025-10-15T08:30:00",
+  "start_time": "2025-10-15T08:30:00",
+  "end_time": "2025-10-15T09:30:00",
+  "duration": 60,
   "participants": ["张总"],
   "priority": 1,
-  "tags": ["会议", "技术"]
+  "tags": ["会议", "技术"],
+  "is_recurring": false
+}}
+
+示例2（重复事件）：
+输入: "每周一三五上午9点晨跑"
+输出:
+{{
+  "title": "晨跑",
+  "start_time": "2025-10-15T09:00:00",
+  "end_time": "2025-10-15T10:00:00",
+  "duration": 60,
+  "is_recurring": true,
+  "rrule": "FREQ=WEEKLY;BYDAY=MO,WE,FR"
 }}
 """
         
@@ -290,6 +424,27 @@ class TodoExtractorTool(BaseTool):
                 cleaned['priority'] = int(cleaned['priority'])
             except:
                 cleaned['priority'] = 0
+        
+        # 确保is_recurring是布尔值
+        if 'is_recurring' in cleaned:
+            if isinstance(cleaned['is_recurring'], bool):
+                pass  # 已经是布尔值
+            elif isinstance(cleaned['is_recurring'], str):
+                cleaned['is_recurring'] = cleaned['is_recurring'].lower() in ('true', '1', 'yes', '是')
+            else:
+                cleaned['is_recurring'] = bool(cleaned['is_recurring'])
+        else:
+            cleaned['is_recurring'] = False
+        
+        # 验证rrule格式（如果是重复事件）
+        if cleaned.get('is_recurring') and cleaned.get('rrule'):
+            rrule = cleaned['rrule']
+            # 基本验证：应该包含FREQ=
+            if 'FREQ=' not in rrule:
+                logger.warning(f"rrule格式可能不正确: {rrule}")
+        elif cleaned.get('is_recurring') and not cleaned.get('rrule'):
+            logger.warning("重复事件缺少rrule字段，将作为一次性事件处理")
+            cleaned['is_recurring'] = False
         
         return cleaned
 

@@ -15,6 +15,7 @@ from loguru import logger
 
 from ty_mem_agent.config.settings import settings
 from ty_mem_agent.server.user_database import UserDatabase
+from ty_mem_agent.server.user_id_mapper import UserIdMapper
 
 
 @dataclass
@@ -27,10 +28,14 @@ class User:
     is_active: bool = True
     created_at: datetime = None
     last_login: datetime = None
+    calendar_user_id: Optional[int] = None  # 用于日历MCP服务的整数用户ID
     
     def __post_init__(self):
         if self.created_at is None:
             self.created_at = datetime.now()
+        # 如果没有calendar_user_id，自动生成
+        if self.calendar_user_id is None:
+            self.calendar_user_id = UserIdMapper.get_calendar_user_id(self.user_id)
 
 
 @dataclass
@@ -79,7 +84,8 @@ class UserManager:
                     hashed_password=user_data['hashed_password'],
                     is_active=user_data.get('is_active', True),
                     created_at=datetime.fromisoformat(user_data['created_at']) if user_data.get('created_at') else None,
-                    last_login=datetime.fromisoformat(user_data['last_login']) if user_data.get('last_login') else None
+                    last_login=datetime.fromisoformat(user_data['last_login']) if user_data.get('last_login') else None,
+                    calendar_user_id=user_data.get('calendar_user_id')
                 )
                 self.users[user.user_id] = user
             
@@ -106,12 +112,16 @@ class UserManager:
             # 生成用户ID
             user_id = self._generate_user_id(username)
             
+            # 生成日历用户ID
+            calendar_user_id = UserIdMapper.get_calendar_user_id(user_id)
+            
             # 创建用户
             user = User(
                 user_id=user_id,
                 username=username,
                 email=email,
-                hashed_password=self.hash_password(password)
+                hashed_password=self.hash_password(password),
+                calendar_user_id=calendar_user_id
             )
             
             # 保存到内存
@@ -125,7 +135,8 @@ class UserManager:
                 'hashed_password': user.hashed_password,
                 'is_active': user.is_active,
                 'created_at': user.created_at.isoformat() if user.created_at else datetime.now().isoformat(),
-                'last_login': user.last_login.isoformat() if user.last_login else None
+                'last_login': user.last_login.isoformat() if user.last_login else None,
+                'calendar_user_id': user.calendar_user_id
             }
             self.db.save_user(user_data)
             

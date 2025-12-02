@@ -116,12 +116,42 @@ class MemOSClient:
                     pass
             logger.info(f"🔍 检索记忆: user={user_id}, conv={conversation_id}, 找到 {len(memories)} 条")
             return memories
-        except Exception as e:
+        except httpx.TimeoutException as e:
+            logger.error(f"❌ 检索记忆失败: 请求超时 ({self.api_base}/search/memory)")
+            logger.debug(f"   超时详情: {e}")
+            return []
+        except httpx.ConnectError as e:
+            logger.error(f"❌ 检索记忆失败: 无法连接到MemOS服务 ({self.api_base})")
+            logger.debug(f"   连接错误: {e}")
+            return []
+        except httpx.HTTPStatusError as e:
             try:
-                body = response.text  # type: ignore
+                body = e.response.text if hasattr(e, 'response') and e.response else ""
             except Exception:
                 body = ""
-            logger.error(f"❌ 检索记忆失败: {e}; body={body}")
+            status_code = e.response.status_code if hasattr(e, 'response') and e.response else "unknown"
+            logger.error(f"❌ 检索记忆失败: HTTP错误 {status_code}")
+            logger.debug(f"   错误详情: {e}; body={body[:500]}")
+            return []
+        except Exception as e:
+            # 尝试获取响应体（如果存在）
+            body = ""
+            response_obj = None
+            try:
+                # 检查是否有response变量
+                if 'response' in locals():
+                    response_obj = response
+                elif hasattr(e, 'response'):
+                    response_obj = e.response
+                if response_obj and hasattr(response_obj, 'text'):
+                    body = response_obj.text[:500]
+            except Exception:
+                pass
+            error_type = type(e).__name__
+            logger.error(f"❌ 检索记忆失败: {error_type}: {e}")
+            logger.debug(f"   错误详情: {e}; body={body}")
+            logger.debug(f"   API地址: {self.api_base}/search/memory")
+            logger.debug(f"   用户ID: {user_id}, 会话ID: {conversation_id}")
             return []
     
     async def get_messages(self,

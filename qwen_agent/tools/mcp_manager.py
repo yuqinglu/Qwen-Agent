@@ -202,6 +202,55 @@ class MCPManager:
             logger.info(f'Failed in initializing MCP tools: {e}')
             raise e
 
+    def _clean_schema_properties(self, properties: dict) -> dict:
+        """
+        Recursively clean schema properties to only keep OpenAI-compatible fields.
+        
+        Args:
+            properties: The properties dict from JSON schema
+            
+        Returns:
+            Cleaned properties dict with only standard fields
+        """
+        if not isinstance(properties, dict):
+            return properties
+        
+        cleaned = {}
+        for key, value in properties.items():
+            if not isinstance(value, dict):
+                cleaned[key] = value
+                continue
+            
+            # Standard OpenAI-compatible fields for each property
+            allowed_fields = {'type', 'description', 'enum', 'items', 'properties', 'required', 'default'}
+            cleaned_value = {}
+            
+            for field, field_value in value.items():
+                if field in allowed_fields:
+                    if field == 'properties' and isinstance(field_value, dict):
+                        # Recursively clean nested properties
+                        cleaned_value[field] = self._clean_schema_properties(field_value)
+                    elif field == 'items' and isinstance(field_value, dict):
+                        # Clean items schema for arrays
+                        items_cleaned = {}
+                        for item_field, item_value in field_value.items():
+                            if item_field in allowed_fields or item_field in {'type', 'description', 'enum'}:
+                                if item_field == 'properties' and isinstance(item_value, dict):
+                                    items_cleaned[item_field] = self._clean_schema_properties(item_value)
+                                else:
+                                    items_cleaned[item_field] = item_value
+                        cleaned_value[field] = items_cleaned
+                    else:
+                        cleaned_value[field] = field_value
+            
+            # Ensure 'type' field exists
+            if 'type' not in cleaned_value:
+                cleaned_value['type'] = 'string'  # Default to string if type is missing
+            
+            cleaned[key] = cleaned_value
+        
+        return cleaned
+
     async def init_config_async(self, config: Dict):
         tools: list = []
         mcp_servers = config['mcpServers']
@@ -231,30 +280,54 @@ class MCPManager:
                     "required": ["query"]
                 }
                 """
-                parameters = tool.inputSchema
-                # The required field in inputSchema may be empty and needs to be initialized.
-                if 'required' not in parameters:
-                    parameters['required'] = []
-                # Remove keys from parameters that do not conform to the standard OpenAI schema
-                # Check if the required fields exist
-                required_fields = {'type', 'properties', 'required'}
-                missing_fields = required_fields - parameters.keys()
-                if missing_fields:
-                    raise ValueError(f'Missing required fields in schema: {missing_fields}')
+                try:
+                    parameters = tool.inputSchema
+                    # The required field in inputSchema may be empty and needs to be initialized.
+                    if 'required' not in parameters:
+                        parameters['required'] = []
+                    # Ensure 'properties' field exists
+                    if 'properties' not in parameters:
+                        parameters['properties'] = {}
+                    # Ensure 'type' field exists and is 'object'
+                    if 'type' not in parameters:
+                        parameters['type'] = 'object'
+                    
+                    # Remove keys from parameters that do not conform to the standard OpenAI schema
+                    # Check if the required fields exist
+                    required_fields = {'type', 'properties', 'required'}
+                    missing_fields = required_fields - parameters.keys()
+                    if missing_fields:
+                        logger.warning(f'Tool {tool.name}: Missing required fields in schema: {missing_fields}, adding defaults')
+                        for field in missing_fields:
+                            if field == 'type':
+                                parameters['type'] = 'object'
+                            elif field == 'properties':
+                                parameters['properties'] = {}
+                            elif field == 'required':
+                                parameters['required'] = []
 
-                # Keep only the necessary fields
-                cleaned_parameters = {
-                    'type': parameters['type'],
-                    'properties': parameters['properties'],
-                    'required': parameters['required']
-                }
-                register_name = server_name + '-' + tool.name
-                agent_tool = self.create_tool_class(register_name=register_name,
-                                                    register_client_id=client_id,
-                                                    tool_name=tool.name,
-                                                    tool_desc=tool.description,
-                                                    tool_parameters=cleaned_parameters)
-                tools.append(agent_tool)
+                    # Clean properties to remove non-standard fields
+                    cleaned_properties = self._clean_schema_properties(parameters['properties'])
+                    
+                    # Ensure required fields are subset of properties
+                    valid_required = [r for r in parameters['required'] if r in cleaned_properties]
+
+                    # Keep only the necessary fields
+                    cleaned_parameters = {
+                        'type': parameters['type'],
+                        'properties': cleaned_properties,
+                        'required': valid_required
+                    }
+                    register_name = server_name + '-' + tool.name
+                    agent_tool = self.create_tool_class(register_name=register_name,
+                                                        register_client_id=client_id,
+                                                        tool_name=tool.name,
+                                                        tool_desc=tool.description or f'MCP tool: {tool.name}',
+                                                        tool_parameters=cleaned_parameters)
+                    tools.append(agent_tool)
+                except Exception as e:
+                    logger.warning(f'Failed to register MCP tool {tool.name}: {e}, skipping this tool')
+                    continue
 
             if client.resources:
                 """MCP resource example:

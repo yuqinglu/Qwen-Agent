@@ -76,6 +76,9 @@ class Settings(BaseSettings):
     FEISHU_APP_ID: Optional[str] = Field(default=None, env="FEISHU_APP_ID")
     FEISHU_APP_SECRET: Optional[str] = Field(default=None, env="FEISHU_APP_SECRET")
     
+    # === 日历MCP服务配置 ===
+    CALENDAR_MCP_SERVER_URL: Optional[str] = Field(default=None, env="CALENDAR_MCP_SERVER_URL")
+    
     # === MCP服务配置 ===
     @property
     def MCP_SERVICES(self) -> Dict[str, Dict]:

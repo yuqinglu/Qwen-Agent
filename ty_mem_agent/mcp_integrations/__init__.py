@@ -68,6 +68,22 @@ from .stock_mcp_server import (
     shutdown_stock_mcp
 )
 
+ # 日历服务 - Streamable HTTP Endpoint
+from .calendar_mcp_server import (
+    CalendarMCPServerManager,
+    get_calendar_mcp_server_config,
+    get_calendar_mcp_manager,
+    register_calendar_tools,
+    shutdown_calendar_mcp,
+    CalendarEventManager
+)
+
+# 日历工具包装器
+from .calendar_tool_wrapper import (
+    CalendarToolWrapper,
+    wrap_calendar_tools
+)
+
 # 通用工具包装器
 from .tool_wrapper import (
     LoggingToolWrapper,
@@ -140,6 +156,17 @@ __all__ = [
     'get_stock_mcp_manager',
     'register_stock_tools',
     'shutdown_stock_mcp',
+    
+    # 日历服务 MCP Server（Streamable HTTP Endpoint）
+    'CalendarMCPServerManager',
+    'get_calendar_mcp_server_config',
+    'get_calendar_mcp_manager',
+    'register_calendar_tools',
+    'shutdown_calendar_mcp',
+    'CalendarEventManager',
+    # 日历工具包装器
+    'CalendarToolWrapper',
+    'wrap_calendar_tools',
     
     # 通用工具包装器
     'LoggingToolWrapper',

@@ -49,9 +49,17 @@ class UserDatabase:
                     hashed_password TEXT NOT NULL,
                     is_active INTEGER DEFAULT 1,
                     created_at TEXT NOT NULL,
-                    last_login TEXT
+                    last_login TEXT,
+                    calendar_user_id INTEGER
                 )
             ''')
+            
+            # 添加calendar_user_id字段（如果不存在）
+            try:
+                cursor.execute('ALTER TABLE users ADD COLUMN calendar_user_id INTEGER')
+                logger.info("✅ 添加字段: calendar_user_id")
+            except sqlite3.OperationalError:
+                pass  # 字段已存在
             
             # 创建会话表
             cursor.execute('''
@@ -92,8 +100,8 @@ class UserDatabase:
             
             cursor.execute('''
                 INSERT OR REPLACE INTO users 
-                (user_id, username, email, hashed_password, is_active, created_at, last_login)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                (user_id, username, email, hashed_password, is_active, created_at, last_login, calendar_user_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 user_data['user_id'],
                 user_data['username'],
@@ -101,7 +109,8 @@ class UserDatabase:
                 user_data['hashed_password'],
                 1 if user_data.get('is_active', True) else 0,
                 user_data.get('created_at', datetime.now().isoformat()),
-                user_data.get('last_login')
+                user_data.get('last_login'),
+                user_data.get('calendar_user_id')
             ))
             
             conn.commit()
@@ -132,7 +141,8 @@ class UserDatabase:
                     'hashed_password': row[3],
                     'is_active': bool(row[4]),
                     'created_at': row[5],
-                    'last_login': row[6]
+                    'last_login': row[6],
+                    'calendar_user_id': row[7] if len(row) > 7 else None
                 }
             
             return None
@@ -159,7 +169,8 @@ class UserDatabase:
                     'hashed_password': row[3],
                     'is_active': bool(row[4]),
                     'created_at': row[5],
-                    'last_login': row[6]
+                    'last_login': row[6],
+                    'calendar_user_id': row[7] if len(row) > 7 else None
                 }
             
             return None
@@ -187,7 +198,8 @@ class UserDatabase:
                     'hashed_password': row[3],
                     'is_active': bool(row[4]),
                     'created_at': row[5],
-                    'last_login': row[6]
+                    'last_login': row[6],
+                    'calendar_user_id': row[7] if len(row) > 7 else None
                 })
             
             return users
@@ -206,7 +218,7 @@ class UserDatabase:
             fields = []
             values = []
             
-            allowed_fields = ['email', 'is_active', 'last_login']
+            allowed_fields = ['email', 'is_active', 'last_login', 'calendar_user_id']
             for field, value in updates.items():
                 if field in allowed_fields:
                     fields.append(f"{field} = ?")
