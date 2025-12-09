@@ -11,7 +11,10 @@ ENV PYTHONUNBUFFERED=1 \
     POETRY_NO_INTERACTION=1 \
     POETRY_VIRTUALENVS_CREATE=false
 
-# 安装系统依赖和 Node.js
+# 安装系统依赖
+# - gcc, g++: Python包编译
+# - git: 代码版本控制
+# - curl: 健康检查和网络请求
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \

@@ -394,6 +394,52 @@ async def custom_memory_handler(self, user_message: str, context: Dict):
 - [FastAPI](https://fastapi.tiangolo.com/) - 现代高性能Web框架
 - [MCP](https://modelcontextprotocol.io/) - 模型上下文协议
 
+## 📱 APP 接入指南
+
+TY Memory Agent 支持外部APP或服务器调用。所有API接口都在 `/api/v1` 路径下。
+
+### 快速开始
+
+1. **部署服务**: 使用 Docker 部署（参见上方部署说明）
+2. **测试连接**: 运行测试脚本验证外部访问
+   ```bash
+   ./test-external-access.sh <服务器IP> 10081
+   ```
+3. **获取用户ID**: 通过注册/登录接口获取 calendar_user_id
+4. **调用API**: 使用 X-USER-ID Header 进行身份认证
+
+### API 示例
+
+```bash
+# 一句话创建待办
+curl -X POST "http://your-server:10081/api/v1/todo/quick-create" \
+  -H "Content-Type: application/json" \
+  -H "X-USER-ID: 1" \
+  -d '{
+    "text": "明天下午3点开会",
+    "timezone": "Asia/Shanghai"
+  }'
+
+# 查询待办列表
+curl -X GET "http://your-server:10081/api/v1/todo/list" \
+  -H "X-USER-ID: 1"
+
+# 创建待办聊天会话
+curl -X POST "http://your-server:10081/api/v1/todo/1/chat/sessions" \
+  -H "Content-Type: application/json" \
+  -H "X-USER-ID: 1" \
+  -d '{
+    "content": "帮我完善这个待办的详细内容"
+  }'
+```
+
+### 详细文档
+
+- [部署与外部访问指南](DEPLOYMENT.md) - 部署配置、外部访问、APP接入
+- [脚本参考](SCRIPTS_REFERENCE.md) - 常用脚本使用说明
+
+更多详细配置请查看 [部署指南](DEPLOYMENT.md)
+
 ## 📞 支持
 
 如有问题或建议，请：

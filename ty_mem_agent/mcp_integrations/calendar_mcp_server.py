@@ -25,20 +25,31 @@ def get_calendar_mcp_server_config() -> Dict:
     """
     # 日历MCP服务器地址（支持环境变量配置）
     # 优先级：
-    # 1. CALENDAR_MCP_SERVER_URL 环境变量
-    # 2. 检测是否在 Docker 容器中
-    # 3. 默认使用研发机 IP 地址
+    # 1. CALENDAR_MCP_SERVER_URL 环境变量（推荐，支持本地/远程任意地址）
+    # 2. 自动检测网络环境
     
     calendar_server_url = os.environ.get('CALENDAR_MCP_SERVER_URL')
     
-    if not calendar_server_url:
+    if calendar_server_url:
+        logger.info(f"📍 使用配置的日历 MCP 地址: {calendar_server_url}")
+    else:
         # 检测是否在 Docker 容器中
         in_docker = os.path.exists('/.dockerenv') or os.environ.get('DOCKER_CONTAINER') == 'true'
         
         if in_docker:
-            # Docker 环境：尝试通过 localhost 访问宿主机服务（假设使用 host 网络模式）
-            calendar_server_url = 'http://localhost:18091/mcp'
-            logger.info("🐳 检测到 Docker 环境，使用 localhost 访问日历服务")
+            # Docker 环境：检测网络模式
+            # 1. 尝试解析 host.docker.internal（标准端口映射模式）
+            # 2. 如果失败，使用 localhost（host 网络模式）
+            import socket
+            try:
+                socket.gethostbyname('host.docker.internal')
+                # 标准端口映射模式：通过 host.docker.internal 访问宿主机
+                calendar_server_url = 'http://host.docker.internal:18091/mcp'
+                logger.info("🐳 检测到 Docker 标准网络模式，使用 host.docker.internal 访问日历服务")
+            except socket.gaierror:
+                # Host 网络模式：直接通过 localhost 访问
+                calendar_server_url = 'http://localhost:18091/mcp'
+                logger.info("🐳 检测到 Docker Host 网络模式，使用 localhost 访问日历服务")
         else:
             # 研发机环境：使用远程 IP 地址
             calendar_server_url = 'http://10.1.115.38:18091/mcp'

@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     HOST: str = Field(default="0.0.0.0", env="HOST")
     PORT: int = Field(default=8080, env="PORT")
     
+    # CORS 配置
+    ALLOWED_ORIGINS: str = Field(default="*", env="ALLOWED_ORIGINS")
+    
     # === LLM配置 ===
     # DashScope配置
     DASHSCOPE_API_KEY: Optional[str] = Field(default=None, env="DASHSCOPE_API_KEY")

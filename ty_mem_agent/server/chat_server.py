@@ -94,10 +94,17 @@ class ChatServer:
             version="1.0.0"
         )
         
-        # CORS配置
+        # CORS配置 - 允许所有来源（适用于APP调用）
+        # 如果需要限制特定域名，可以在环境变量中配置 ALLOWED_ORIGINS
+        allowed_origins = settings.ALLOWED_ORIGINS
+        if allowed_origins == "*":
+            origins_list = ["*"]
+        else:
+            origins_list = [origin.strip() for origin in allowed_origins.split(",")]
+        
         self.app.add_middleware(
             CORSMiddleware,
-            allow_origins=["*"],  # 生产环境应限制具体域名
+            allow_origins=origins_list,  # 允许所有来源，适合APP调用
             allow_credentials=True,
             allow_methods=["*"],
             allow_headers=["*"],
@@ -123,6 +130,9 @@ class ChatServer:
         
         # 注册待办API路由
         self._register_calendar_routes()
+        
+        # 注册APP API路由
+        self._register_app_api_routes()
         
         # 初始化默认用户
         init_default_users()
@@ -1370,6 +1380,11 @@ class ChatServer:
         except Exception as e:
             logger.error(f"❌ 断开用户连接失败: {e}")
     
+    
+    def _register_app_api_routes(self):
+        """注册APP API路由"""
+        from ty_mem_agent.server.app_api_routes import register_app_api_routes
+        register_app_api_routes(self.app)
     
     def _register_calendar_routes(self):
         """注册日历相关路由（重定向到外部日历前端）"""

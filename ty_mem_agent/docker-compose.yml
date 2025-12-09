@@ -8,15 +8,22 @@ services:
     container_name: ty-memory-agent
     restart: unless-stopped
     
-    # 网络模式：使用 host 模式可以直接访问宿主机上的服务
-    # 这样容器内可以通过 localhost:18091 访问日历 MCP
+    # 使用 host 网络模式（仅 Linux 支持）
+    # 优点：
+    # 1. 性能最好，无网络隔离
+    # 2. 直接访问宿主机服务（localhost:18091）
+    # 3. 避免子网冲突问题
+    # 4. 外部直接通过 <主机IP>:10081 访问
     network_mode: host
     
     # 环境变量：从 .env 文件加载
-    # 挂载的 .env 文件会被 pydantic_settings 自动读取
-    # 也可以在这里显式声明需要的环境变量（从宿主机的 .env 传递到容器）
     env_file:
       - .env
+    
+    # 如果使用了宿主机的日历MCP服务，需要配置访问地址
+    # Host 网络模式下，容器内 localhost = 宿主机 localhost
+    environment:
+      - CALENDAR_MCP_SERVER_URL=${CALENDAR_MCP_SERVER_URL:-http://localhost:18091/mcp}
     
     volumes:
       # 挂载配置文件
@@ -38,7 +45,9 @@ services:
       retries: 3
       start_period: 40s
 
-# 如果不想使用 host 网络模式，可以使用以下配置（需要修改 CALENDAR_MCP_SERVER_URL）
+# 备选方案：使用 host 网络模式（仅在 Linux 系统上推荐）
+# 如果你在 Linux 系统上运行，且需要访问宿主机的多个服务，可以使用以下配置：
+# 
 # services:
 #   ty-mem-agent:
 #     build:
@@ -47,17 +56,16 @@ services:
 #     container_name: ty-memory-agent
 #     restart: unless-stopped
 #     
-#     ports:
-#       - "10081:10081"
-#     
-#     # 添加 extra_hosts 让容器能访问宿主机
-#     extra_hosts:
-#       - "host.docker.internal:host-gateway"
+#     # 网络模式：使用 host 模式（仅Linux）
+#     network_mode: host
 #     
 #     env_file:
 #       - .env
 #     
-#     environment:
-#       # 通过 host.docker.internal 访问宿主机服务
-#       - CALENDAR_MCP_SERVER_URL=http://host.docker.internal:18091/mcp
+#     volumes:
+#       - ./config:/app/ty_mem_agent/config
+#       - ./data:/app/ty_mem_agent/data
+#       - ./logs:/app/ty_mem_agent/logs
+#       - ./workspace:/app/ty_mem_agent/workspace
+#       - ./.env:/app/ty_mem_agent/.env:ro
 
