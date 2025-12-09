@@ -297,6 +297,70 @@ class UserManager:
         """获取用户"""
         return self.users.get(user_id)
     
+    def get_user_by_calendar_id(self, calendar_user_id: int) -> Optional[User]:
+        """根据calendar_user_id获取用户"""
+        for user in self.users.values():
+            if user.calendar_user_id == calendar_user_id:
+                return user
+        return None
+    
+    def get_or_create_user_by_calendar_id(self, calendar_user_id: int) -> Optional[User]:
+        """根据calendar_user_id获取或创建用户（用于APP API自动创建用户）
+        
+        Args:
+            calendar_user_id: 日历服务的整数用户ID
+            
+        Returns:
+            用户对象，如果创建失败返回None
+        """
+        # 先尝试获取现有用户
+        user = self.get_user_by_calendar_id(calendar_user_id)
+        if user:
+            return user
+        
+        # 用户不存在，自动创建
+        try:
+            # 生成用户名（基于calendar_user_id）
+            username = f"app_user_{calendar_user_id}"
+            
+            # 生成user_id（使用calendar_user_id作为标识）
+            # 注意：这里不验证生成的calendar_user_id是否匹配，直接使用给定的calendar_user_id
+            user_id = f"user_cal_{calendar_user_id}"
+            
+            # 创建用户（不需要密码，APP API调用）
+            user = User(
+                user_id=user_id,
+                username=username,
+                email=None,
+                hashed_password="",  # APP用户不需要密码
+                calendar_user_id=calendar_user_id  # 直接使用给定的calendar_user_id
+            )
+            
+            # 保存到内存
+            self.users[user_id] = user
+            
+            # 保存到数据库
+            user_data = {
+                'user_id': user.user_id,
+                'username': user.username,
+                'email': user.email,
+                'hashed_password': user.hashed_password,
+                'is_active': user.is_active,
+                'created_at': user.created_at.isoformat() if user.created_at else datetime.now().isoformat(),
+                'last_login': user.last_login.isoformat() if user.last_login else None,
+                'calendar_user_id': user.calendar_user_id
+            }
+            self.db.save_user(user_data)
+            
+            logger.info(f"👤 自动创建用户: calendar_user_id={calendar_user_id}, user_id={user_id}, username={username}")
+            return user
+            
+        except Exception as e:
+            logger.error(f"❌ 自动创建用户失败: calendar_user_id={calendar_user_id}, error={e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None
+    
     def get_user_by_username(self, username: str) -> Optional[User]:
         """根据用户名获取用户"""
         for user in self.users.values():

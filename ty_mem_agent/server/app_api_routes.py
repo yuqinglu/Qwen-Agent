@@ -1,0 +1,1404 @@
+#!/usr/bin/env python3
+"""
+APP API 路由
+为APP端提供的API接口，包括一句话创建待办、待办AI聊天等功能
+
+⚠️ 重要说明：用户标识方式
+- 所有APP API接口使用 X-USER-ID Header 标识用户
+- X-USER-ID 是整数类型（Integer），对应 calendar_user_id
+- 不要使用字符串类型的 user_id（如 "user_xxx"）
+- 在测试页面中，应该使用从 /user/calendar-id 接口获取的 calendar_user_id 作为 X-USER-ID
+"""
+
+import json
+from datetime import datetime
+from typing import Optional, Dict, Any, List
+from fastapi import APIRouter, HTTPException, Header, status
+from pydantic import BaseModel, Field
+from loguru import logger
+
+from ty_mem_agent.server.user_manager import user_manager
+from ty_mem_agent.server.user_id_mapper import UserIdMapper
+from ty_mem_agent.self_defined_tools.todo_tools import TodoExtractorTool
+from ty_mem_agent.mcp_integrations.calendar_mcp_server import CalendarEventManager
+from ty_mem_agent.server.todo_chat_manager import get_todo_chat_manager
+from ty_mem_agent.server.rich_card_manager import get_rich_card_manager, CARD_TYPES
+from ty_mem_agent.agents.todo_chat_agent import get_todo_chat_agent
+
+
+# ==================== Pydantic 模型 ====================
+
+class QuickCreateTodoRequest(BaseModel):
+    """一句话创建待办请求"""
+    text: str = Field(..., description="用户的自然语言描述")
+    timezone: str = Field(default="Asia/Shanghai", description="时区")
+
+
+class QuickCreateTodoResponse(BaseModel):
+    """一句话创建待办响应"""
+    code: int = Field(default=0, description="响应码")
+    message: str = Field(default="success", description="响应消息")
+    data: Optional[Dict[str, Any]] = Field(default=None, description="响应数据")
+
+
+class AIUnderstanding(BaseModel):
+    """AI对用户意图的理解"""
+    extracted_time: Optional[str] = None
+    extracted_action: Optional[str] = None
+    extracted_participants: Optional[List[str]] = None
+    extracted_topic: Optional[str] = None
+    confidence: float = 0.0
+
+
+# ==================== API 路由 ====================
+
+# 创建路由器
+router = APIRouter(prefix="/api/v1", tags=["APP API"])
+
+
+def get_user_by_header(x_user_id: int = Header(..., alias="x-user-id", description="用户ID（整数类型，对应calendar_user_id）")) -> Dict[str, Any]:
+    """
+    通过X-USER-ID头获取用户信息（如果用户不存在则自动创建）
+    
+    ⚠️ 重要说明：
+    - X-USER-ID 是整数类型（Integer），对应 calendar_user_id
+    - 不要使用字符串类型的 user_id（如 "user_xxx"）
+    - 如果用户不存在，会自动创建用户（用于APP API调用）
+    - 在测试页面中，应该使用从 /user/calendar-id 接口获取的 calendar_user_id 作为 X-USER-ID
+    
+    Args:
+        x_user_id: calendar_user_id（整数类型），对应日历MCP服务中的用户ID
+        
+    Returns:
+        用户信息字典，包含user_id和calendar_user_id
+        
+    Raises:
+        HTTPException: 如果自动创建用户失败
+    """
+    # X-USER-ID 是整数类型，直接作为 calendar_user_id 使用
+    # 注意：不要使用字符串类型的 user_id（如 "user_xxx"）
+    
+    # 尝试获取用户，如果不存在则自动创建
+    user = user_manager.get_or_create_user_by_calendar_id(x_user_id)
+    
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"无法创建或获取用户: calendar_user_id={x_user_id}"
+        )
+    
+    # 确保calendar_user_id已设置
+    if not user.calendar_user_id:
+        calendar_user_id = UserIdMapper.get_calendar_user_id(user.user_id)
+        # 更新用户信息
+        user_manager.db.update_user(user.user_id, {
+            'calendar_user_id': calendar_user_id
+        })
+        user.calendar_user_id = calendar_user_id
+    else:
+        calendar_user_id = user.calendar_user_id
+    
+    return {
+        "user_id": user.user_id,
+        "x_user_id": x_user_id,
+        "calendar_user_id": calendar_user_id,
+        "user": user
+    }
+
+
+@router.post("/todo/quick-create", response_model=QuickCreateTodoResponse)
+async def quick_create_todo(
+    request: QuickCreateTodoRequest,
+    x_user_id: int = Header(..., alias="x-user-id", description="用户ID（整数类型，对应calendar_user_id）")
+):
+    """
+    一句话创建待办
+    
+    用户通过一句自然语言描述，AI自动解析并创建待办事项
+    
+    ⚠️ 重要：X-USER-ID 是整数类型，对应 calendar_user_id，不要使用字符串类型的 user_id
+    
+    - **text**: 用户的自然语言描述，如"明天下午三点开会"
+    - **timezone**: 时区，默认 "Asia/Shanghai"
+    """
+    logger.info(f"📝 一句话创建待办请求: user_id={x_user_id}, text={request.text[:50]}...")
+    
+    try:
+        # 获取用户信息
+        user_info = get_user_by_header(x_user_id)
+        user_id = user_info["user_id"]
+        calendar_user_id = user_info["calendar_user_id"]
+        
+        logger.info(f"📝 用户信息: user_id={user_id}, calendar_user_id={calendar_user_id}")
+        
+        # 使用TodoExtractorTool提取待办信息
+        extractor = TodoExtractorTool()
+        extract_result_str = extractor.call({
+            "text": request.text,
+            "user_id": user_id
+        })
+        
+        extract_result = json.loads(extract_result_str)
+        
+        if not extract_result.get("success"):
+            logger.error(f"❌ 提取待办信息失败: {extract_result.get('error')}")
+            return QuickCreateTodoResponse(
+                code=1001,
+                message=f"解析失败: {extract_result.get('error', '未知错误')}",
+                data=None
+            )
+        
+        # 获取提取的信息
+        extracted_info = extract_result.get("extracted_info", {})
+        calendar_event_params = extract_result.get("calendar_event_params", {})
+        is_recurring = extract_result.get("is_recurring", False)
+        
+        logger.info(f"📝 提取的待办信息: {json.dumps(extracted_info, ensure_ascii=False)[:200]}...")
+        logger.info(f"📝 日历事件参数: {json.dumps(calendar_event_params, ensure_ascii=False)[:200]}...")
+        
+        # 使用CalendarEventManager创建待办
+        calendar_manager = CalendarEventManager(user_id=calendar_user_id)
+        
+        if is_recurring:
+            # 创建重复事件
+            result_str = calendar_manager.create_recurring_event(
+                title=calendar_event_params.get("title", "未命名待办"),
+                rrule=calendar_event_params.get("rrule", ""),
+                duration=calendar_event_params.get("duration", 3600),
+                event_date_time=calendar_event_params.get("eventDateTime"),
+                description=calendar_event_params.get("description"),
+                location=calendar_event_params.get("location"),
+                timezone=request.timezone
+            )
+        else:
+            # 创建一次性事件
+            result_str = calendar_manager.create_one_time_event(
+                title=calendar_event_params.get("title", "未命名待办"),
+                duration=calendar_event_params.get("duration", 3600),
+                description=calendar_event_params.get("description"),
+                location=calendar_event_params.get("location"),
+                timezone=request.timezone,
+                event_date_time=calendar_event_params.get("eventDateTime")
+            )
+        
+        logger.info(f"📝 日历MCP返回结果: {result_str[:200] if isinstance(result_str, str) else str(result_str)[:200]}...")
+        
+        # 解析MCP返回结果
+        try:
+            if isinstance(result_str, str):
+                mcp_result = json.loads(result_str)
+            else:
+                mcp_result = result_str
+        except json.JSONDecodeError:
+            logger.warning(f"⚠️ MCP返回结果不是有效的JSON: {result_str[:200]}")
+            mcp_result = {}
+        
+        # 从MCP返回结果中提取 event_id
+        # MCP返回格式: {"event": {"id": 28, ...}}
+        event_id = None
+        if isinstance(mcp_result, dict) and "event" in mcp_result:
+            event_obj = mcp_result.get("event", {})
+            if isinstance(event_obj, dict):
+                event_id = event_obj.get("id")
+        
+        # 构建AI理解信息
+        ai_understanding = {
+            "extracted_time": extracted_info.get("start_time") or extracted_info.get("deadline"),
+            "extracted_action": extracted_info.get("title"),
+            "extracted_participants": extracted_info.get("participants", []),
+            "extracted_topic": extracted_info.get("description"),
+            "confidence": 0.92  # 可以根据实际情况调整
+        }
+        
+        # 构建响应数据
+        response_data = {
+            "event_id": event_id,
+            "title": calendar_event_params.get("title"),
+            "event_date_time": calendar_event_params.get("eventDateTime"),
+            "duration": calendar_event_params.get("duration", 3600),
+            "description": calendar_event_params.get("description"),
+            "location": calendar_event_params.get("location"),
+            "is_recurring": is_recurring,
+            "rrule": calendar_event_params.get("rrule") if is_recurring else None,
+            "ai_understanding": ai_understanding
+        }
+        
+        logger.info(f"✅ 待办创建成功: event_id={response_data.get('event_id')}, title={response_data.get('title')}")
+        
+        return QuickCreateTodoResponse(
+            code=0,
+            message="success",
+            data=response_data
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ 创建待办失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return QuickCreateTodoResponse(
+            code=500,
+            message=f"服务器错误: {str(e)}",
+            data=None
+        )
+
+
+@router.get("/todo/list")
+async def list_todos(
+    x_user_id: int = Header(..., alias="x-user-id", description="用户ID（整数类型，对应calendar_user_id）"),
+    range_start: Optional[str] = None,
+    range_end: Optional[str] = None,
+    timezone: str = "Asia/Shanghai"
+):
+    """
+    查询待办列表
+    
+    ⚠️ 重要：X-USER-ID 是整数类型，对应 calendar_user_id，不要使用字符串类型的 user_id
+    
+    - **range_start**: 查询开始时间（RFC3339格式）
+    - **range_end**: 查询结束时间（RFC3339格式）
+    - **timezone**: 时区，默认 "Asia/Shanghai"
+    """
+    """
+    查询待办列表
+    
+    - **range_start**: 查询开始时间（RFC3339格式）
+    - **range_end**: 查询结束时间（RFC3339格式）
+    - **timezone**: 时区，默认 "Asia/Shanghai"
+    """
+    logger.info(f"📋 查询待办列表: user_id={x_user_id}")
+    
+    try:
+        # 获取用户信息
+        user_info = get_user_by_header(x_user_id)
+        calendar_user_id = user_info["calendar_user_id"]
+        
+        # 使用CalendarEventManager查询待办
+        calendar_manager = CalendarEventManager(user_id=calendar_user_id)
+        result_str = calendar_manager.query_events(
+            timezone=timezone,
+            range_start=range_start,
+            range_end=range_end
+        )
+        
+        # 解析结果
+        try:
+            if isinstance(result_str, str):
+                result = json.loads(result_str)
+            else:
+                result = result_str
+        except json.JSONDecodeError:
+            result = {"raw_result": result_str}
+        
+        # 提取事件列表
+        events = []
+        if isinstance(result, dict):
+            events = result.get("eventInstanceList", result.get("instances", result.get("events", [])))
+        elif isinstance(result, list):
+            events = result
+        
+        return {
+            "code": 0,
+            "message": "success",
+            "data": {
+                "total": len(events),
+                "events": events
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ 查询待办失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {
+            "code": 500,
+            "message": f"服务器错误: {str(e)}",
+            "data": None
+        }
+
+
+# ==================== 待办聊天会话接口 ====================
+
+class CreateTodoChatSessionRequest(BaseModel):
+    """创建待办聊天会话请求"""
+    content: str = Field(..., description="初始用户消息（必选）")
+    title: Optional[str] = Field(default=None, description="会话标题（可选，如不提供则自动生成）")
+    todo_content: Optional[str] = Field(default=None, description="当前待办的正文内容（Markdown格式）")
+    rich_cards: Optional[List[Dict[str, Any]]] = Field(default=None, description="当前待办关联的富媒体卡片列表")
+
+
+class TodoChatReply(BaseModel):
+    """AI回复"""
+    message_id: str
+    content: str
+    todo_content: Optional[str] = None
+    suggested_todos: List[Dict[str, Any]] = []
+    rich_cards: List[Dict[str, Any]] = []
+
+
+class CreateTodoChatSessionResponse(BaseModel):
+    """创建待办聊天会话响应"""
+    code: int = Field(default=0, description="响应码")
+    message: str = Field(default="success", description="响应消息")
+    data: Optional[Dict[str, Any]] = Field(default=None, description="响应数据")
+
+
+@router.post("/todo/{event_id}/chat/sessions", response_model=CreateTodoChatSessionResponse)
+async def create_todo_chat_session(
+    event_id: int,
+    request: CreateTodoChatSessionRequest,
+    x_user_id: int = Header(..., alias="x-user-id", description="用户ID（整数类型，对应calendar_user_id）")
+):
+    """
+    创建待办聊天会话
+    
+    为指定待办创建一个新的AI聊天会话。
+    
+    ⚠️ 重要说明：
+    - X-USER-ID 是整数类型，对应 calendar_user_id
+    - content 是必填参数，必须提供初始用户消息
+    - 如果不提供 title，系统会基于用户初始消息自动生成会话标题
+    - 使用 ReAct (Reasoning + Acting) 架构进行任务规划和AI回复
+    
+    参数说明：
+    - **event_id**: 待办事件ID
+    - **content**: 初始用户消息（必选）
+    - **title**: 会话标题（可选，不提供则自动生成）
+    - **todo_content**: 当前待办的正文内容（Markdown格式）
+    - **rich_cards**: 当前待办关联的富媒体卡片列表
+    """
+    logger.info(f"📝 创建待办聊天会话请求: event_id={event_id}, user_id={x_user_id}, content={request.content[:50]}...")
+    
+    try:
+        # 验证用户
+        user_info = get_user_by_header(x_user_id)
+        calendar_user_id = user_info["calendar_user_id"]
+        
+        # 获取聊天管理器和AI Agent
+        chat_manager = get_todo_chat_manager()
+        todo_agent = get_todo_chat_agent()
+        
+        # 检查工具是否已加载，如果没有则强制重新初始化
+        if hasattr(todo_agent, 'function_map') and len(todo_agent.function_map) == 0:
+            logger.warning("⚠️ TodoChatAgent没有工具，尝试重新初始化...")
+            todo_agent = get_todo_chat_agent(force_reinit=True)
+        
+        # 如果没有提供标题，使用AI生成标题
+        session_title = request.title
+        if not session_title:
+            logger.info("📝 未提供会话标题，使用AI生成...")
+            session_title = todo_agent.generate_session_title(request.content)
+            logger.info(f"✅ 生成会话标题: {session_title}")
+        
+        # 创建会话
+        session = chat_manager.create_session(
+            event_id=event_id,
+            user_id=calendar_user_id,
+            title=session_title,
+            todo_content=request.todo_content,
+            rich_cards=request.rich_cards
+        )
+        
+        # 添加用户消息
+        user_msg = chat_manager.add_message(
+            session_id=session.session_id,
+            role="user",
+            content=request.content
+        )
+        
+        # 使用ReAct架构的AI Agent生成回复
+        logger.info("🤖 使用TodoChatAgent生成AI回复...")
+        
+        # 准备对话历史（新会话暂时没有历史）
+        history = []
+        
+        # 准备富媒体卡片数据
+        rich_cards_data = request.rich_cards if request.rich_cards else []
+        
+        # 调用AI Agent
+        ai_response = await todo_agent.chat_async(
+            user_message=request.content,
+            todo_content=request.todo_content,
+            rich_cards=rich_cards_data,
+            history=history
+        )
+        
+        # 解析AI回复，提取结构化内容
+        parsed_response = todo_agent.parse_response(ai_response)
+        
+        logger.info(f"✅ AI回复生成完成: {parsed_response['content'][:100]}...")
+        
+        # 添加AI回复到会话
+        ai_msg = chat_manager.add_message(
+            session_id=session.session_id,
+            role="assistant",
+            content=parsed_response["content"],
+            todo_content=parsed_response.get("todo_content"),
+            suggested_todos=parsed_response.get("suggested_todos", []),
+            rich_cards=parsed_response.get("rich_cards", [])
+        )
+        
+        # 构建响应数据
+        response_data = {
+            "session_id": session.session_id,
+            "event_id": session.event_id,
+            "title": session.title,
+            "created_at": session.created_at,
+            "reply": {
+                "message_id": ai_msg.message_id if ai_msg else None,
+                "content": parsed_response["content"],
+                "todo_content": parsed_response.get("todo_content"),
+                "suggested_todos": parsed_response.get("suggested_todos", []),
+                "rich_cards": parsed_response.get("rich_cards", [])
+            }
+        }
+        
+        logger.info(f"✅ 待办聊天会话创建成功: session_id={session.session_id}, title={session.title}")
+        
+        return CreateTodoChatSessionResponse(
+            code=0,
+            message="success",
+            data=response_data
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ 创建待办聊天会话失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return CreateTodoChatSessionResponse(
+            code=500,
+            message=f"服务器错误: {str(e)}",
+            data=None
+        )
+
+
+@router.get("/todo/{event_id}/chat/sessions")
+async def list_todo_chat_sessions(
+    event_id: int,
+    x_user_id: int = Header(..., alias="x-user-id", description="用户ID（整数类型，对应calendar_user_id）"),
+    page: int = 1,
+    page_size: int = 20
+):
+    """
+    获取待办的聊天会话列表
+    
+    - **event_id**: 待办事件ID
+    - **page**: 页码，默认1
+    - **page_size**: 每页数量，默认20
+    """
+    logger.info(f"📋 获取待办聊天会话列表: event_id={event_id}, user_id={x_user_id}")
+    
+    try:
+        # 验证用户
+        user_info = get_user_by_header(x_user_id)
+        calendar_user_id = user_info["calendar_user_id"]
+        
+        # 获取聊天管理器
+        chat_manager = get_todo_chat_manager()
+        
+        # 获取会话列表
+        sessions = chat_manager.get_sessions_by_event(event_id, calendar_user_id)
+        
+        # 分页
+        total = len(sessions)
+        start = (page - 1) * page_size
+        end = start + page_size
+        paged_sessions = sessions[start:end]
+        
+        # 构建响应
+        session_list = []
+        for session in paged_sessions:
+            session_list.append({
+                "session_id": session.session_id,
+                "event_id": session.event_id,
+                "title": session.title,
+                "created_at": session.created_at,
+                "updated_at": session.updated_at,
+                "message_count": len(session.messages),
+                "last_message": session.messages[-1].content[:50] if session.messages else None
+            })
+        
+        return {
+            "code": 0,
+            "message": "success",
+            "data": {
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+                "sessions": session_list
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ 获取待办聊天会话列表失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {
+            "code": 500,
+            "message": f"服务器错误: {str(e)}",
+            "data": None
+        }
+
+
+@router.get("/todo/{event_id}/chat/sessions/{session_id}")
+async def get_todo_chat_session(
+    event_id: int,
+    session_id: str,
+    x_user_id: int = Header(..., alias="x-user-id", description="用户ID（整数类型，对应calendar_user_id）")
+):
+    """
+    获取待办聊天会话详情
+    
+    - **event_id**: 待办事件ID
+    - **session_id**: 会话ID
+    """
+    logger.info(f"📋 获取待办聊天会话详情: session_id={session_id}")
+    
+    try:
+        # 验证用户
+        user_info = get_user_by_header(x_user_id)
+        calendar_user_id = user_info["calendar_user_id"]
+        
+        # 获取聊天管理器
+        chat_manager = get_todo_chat_manager()
+        
+        # 获取会话
+        session = chat_manager.get_session(session_id)
+        
+        if not session:
+            return {
+                "code": 404,
+                "message": "会话不存在",
+                "data": None
+            }
+        
+        # 验证权限
+        if session.user_id != calendar_user_id or session.event_id != event_id:
+            return {
+                "code": 403,
+                "message": "无权访问此会话",
+                "data": None
+            }
+        
+        return {
+            "code": 0,
+            "message": "success",
+            "data": {
+                "session_id": session.session_id,
+                "event_id": session.event_id,
+                "title": session.title,
+                "created_at": session.created_at,
+                "updated_at": session.updated_at,
+                "todo_content": session.todo_content,
+                "rich_cards": session.rich_cards,
+                "messages": [msg.to_dict() for msg in session.messages]
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ 获取待办聊天会话详情失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {
+            "code": 500,
+            "message": f"服务器错误: {str(e)}",
+            "data": None
+        }
+
+
+# ==================== 在指定会话中发送消息 ====================
+
+class SendTodoChatMessageRequest(BaseModel):
+    """在指定会话中发送消息请求"""
+    content: str = Field(..., description="用户本次发送的消息内容")
+    todo_content: Optional[str] = Field(default=None, description="当前待办的正文内容（如果有更新）")
+    rich_cards: Optional[List[Dict[str, Any]]] = Field(default=None, description="当前待办关联的富媒体卡片列表")
+
+
+@router.post("/todo/{event_id}/chat/sessions/{session_id}/messages")
+async def send_todo_chat_message(
+    event_id: int,
+    session_id: str,
+    request: SendTodoChatMessageRequest,
+    x_user_id: int = Header(..., alias="x-user-id", description="用户ID（整数类型，对应calendar_user_id）")
+):
+    """
+    在指定会话中发送消息，获取AI回复
+    
+    服务端自动维护会话历史，客户端只需发送当前这一条新消息即可。
+    
+    服务端处理流程：
+    1. 根据 session_id 从数据库获取该会话的完整历史消息
+    2. 将历史消息 + 当前新消息 + 待办内容一起发送给AI
+    3. AI基于完整上下文生成回复
+    4. 服务端保存用户消息和AI回复到数据库
+    5. 返回AI回复给客户端
+    
+    参数说明：
+    - **event_id**: 待办事件ID
+    - **session_id**: 会话ID
+    - **content**: 用户本次发送的消息内容（只需发送当前这一条）
+    - **todo_content**: 当前待办的正文内容（如果有更新，需要传入最新的）
+    - **rich_cards**: 当前待办关联的富媒体卡片列表（如果有更新，需要传入最新的）
+    """
+    logger.info(f"💬 在会话中发送消息: session_id={session_id}, event_id={event_id}, user_id={x_user_id}")
+    
+    try:
+        # 验证用户
+        user_info = get_user_by_header(x_user_id)
+        calendar_user_id = user_info["calendar_user_id"]
+        
+        # 获取聊天管理器和AI Agent
+        chat_manager = get_todo_chat_manager()
+        todo_agent = get_todo_chat_agent()
+        
+        # 检查工具是否已加载，如果没有则强制重新初始化
+        if hasattr(todo_agent, 'function_map') and len(todo_agent.function_map) == 0:
+            logger.warning("⚠️ TodoChatAgent没有工具，尝试重新初始化...")
+            todo_agent = get_todo_chat_agent(force_reinit=True)
+        
+        # 获取会话
+        session = chat_manager.get_session(session_id)
+        
+        if not session:
+            return {
+                "code": 404,
+                "message": "会话不存在",
+                "data": None
+            }
+        
+        # 验证权限
+        if session.user_id != calendar_user_id or session.event_id != event_id:
+            return {
+                "code": 403,
+                "message": "无权访问此会话",
+                "data": None
+            }
+        
+        # 添加用户消息
+        user_msg = chat_manager.add_message(
+            session_id=session_id,
+            role="user",
+            content=request.content
+        )
+        
+        # 获取会话历史消息，转换为AI需要的格式
+        history = []
+        for msg in session.messages[:-1]:  # 排除刚添加的用户消息
+            history.append({
+                "role": msg.role,
+                "content": msg.content
+            })
+        
+        logger.info(f"📜 会话历史消息数: {len(history)}")
+        
+        # 使用ReAct架构的AI Agent生成回复
+        logger.info("🤖 使用TodoChatAgent生成AI回复...")
+        
+        # 准备富媒体卡片数据（优先使用请求中的，否则使用会话中的）
+        rich_cards_data = request.rich_cards if request.rich_cards else (session.rich_cards or [])
+        
+        # 准备待办内容（优先使用请求中的，否则使用会话中的）
+        todo_content = request.todo_content if request.todo_content else session.todo_content
+        
+        # 调用AI Agent
+        ai_response = await todo_agent.chat_async(
+            user_message=request.content,
+            todo_content=todo_content,
+            rich_cards=rich_cards_data,
+            history=history
+        )
+        
+        # 解析AI回复，提取结构化内容
+        parsed_response = todo_agent.parse_response(ai_response)
+        
+        logger.info(f"✅ AI回复生成完成: {parsed_response['content'][:100]}...")
+        
+        # 添加AI回复到会话
+        ai_msg = chat_manager.add_message(
+            session_id=session_id,
+            role="assistant",
+            content=parsed_response["content"],
+            todo_content=parsed_response.get("todo_content"),
+            suggested_todos=parsed_response.get("suggested_todos", []),
+            rich_cards=parsed_response.get("rich_cards", [])
+        )
+        
+        # 如果请求中有更新待办内容或卡片，更新会话
+        if request.todo_content or request.rich_cards:
+            chat_manager.update_session_context(
+                session_id=session_id,
+                todo_content=request.todo_content,
+                rich_cards=request.rich_cards
+            )
+        
+        # 构建响应数据
+        response_data = {
+            "message_id": ai_msg.message_id if ai_msg else None,
+            "content": parsed_response["content"],
+            "todo_content": parsed_response.get("todo_content"),
+            "suggested_todos": parsed_response.get("suggested_todos", []),
+            "rich_cards": parsed_response.get("rich_cards", [])
+        }
+        
+        logger.info(f"✅ 消息发送成功: session_id={session_id}")
+        
+        return {
+            "code": 0,
+            "message": "success",
+            "data": response_data
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ 发送消息失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {
+            "code": 500,
+            "message": f"服务器错误: {str(e)}",
+            "data": None
+        }
+
+
+@router.get("/todo/{event_id}/chat/sessions/{session_id}/messages")
+async def get_todo_chat_messages(
+    event_id: int,
+    session_id: str,
+    x_user_id: int = Header(..., alias="x-user-id", description="用户ID（整数类型，对应calendar_user_id）"),
+    limit: int = 50,
+    before: Optional[str] = None,
+    after: Optional[str] = None
+):
+    """
+    获取会话消息列表（支持分页）
+    
+    用于加载会话的聊天记录，支持向上滚动加载更多历史消息。
+    
+    参数说明：
+    - **event_id**: 待办事件ID
+    - **session_id**: 会话ID
+    - **limit**: 每页数量，默认50，最大100
+    - **before**: 获取此消息ID之前的消息（用于向上加载更多）
+    - **after**: 获取此消息ID之后的消息（用于获取新消息）
+    """
+    logger.info(f"📋 获取会话消息列表: session_id={session_id}, limit={limit}, before={before}, after={after}")
+    
+    try:
+        # 验证用户
+        user_info = get_user_by_header(x_user_id)
+        calendar_user_id = user_info["calendar_user_id"]
+        
+        # 获取聊天管理器
+        chat_manager = get_todo_chat_manager()
+        
+        # 获取会话
+        session = chat_manager.get_session(session_id)
+        
+        if not session:
+            return {
+                "code": 404,
+                "message": "会话不存在",
+                "data": None
+            }
+        
+        # 验证权限
+        if session.user_id != calendar_user_id or session.event_id != event_id:
+            return {
+                "code": 403,
+                "message": "无权访问此会话",
+                "data": None
+            }
+        
+        # 限制最大数量
+        limit = min(limit, 100)
+        
+        # 获取消息列表
+        messages = session.messages
+        
+        # 处理分页
+        if before:
+            # 找到before消息的索引
+            before_idx = None
+            for i, msg in enumerate(messages):
+                if msg.message_id == before:
+                    before_idx = i
+                    break
+            
+            if before_idx is not None:
+                messages = messages[:before_idx]
+                messages = messages[-limit:]  # 取最后limit条
+        elif after:
+            # 找到after消息的索引
+            after_idx = None
+            for i, msg in enumerate(messages):
+                if msg.message_id == after:
+                    after_idx = i
+                    break
+            
+            if after_idx is not None:
+                messages = messages[after_idx + 1:]
+                messages = messages[:limit]  # 取前limit条
+        else:
+            # 默认取最新的消息
+            messages = messages[-limit:]
+        
+        # 判断是否还有更多消息
+        total_count = len(session.messages)
+        has_more = len(session.messages) > limit
+        
+        if messages:
+            oldest_message_id = messages[0].message_id
+            newest_message_id = messages[-1].message_id
+        else:
+            oldest_message_id = None
+            newest_message_id = None
+        
+        return {
+            "code": 0,
+            "message": "success",
+            "data": {
+                "messages": [msg.to_dict() for msg in messages],
+                "has_more": has_more,
+                "oldest_message_id": oldest_message_id,
+                "newest_message_id": newest_message_id,
+                "total": total_count
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ 获取会话消息列表失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {
+            "code": 500,
+            "message": f"服务器错误: {str(e)}",
+            "data": None
+        }
+
+
+@router.post("/todo/{event_id}/chat/sessions/{session_id}/delete")
+async def delete_todo_chat_session(
+    event_id: int,
+    session_id: str,
+    x_user_id: int = Header(..., alias="x-user-id", description="用户ID（整数类型，对应calendar_user_id）")
+):
+    """
+    删除待办聊天会话
+    
+    - **event_id**: 待办事件ID
+    - **session_id**: 会话ID
+    """
+    logger.info(f"🗑️ 删除待办聊天会话: session_id={session_id}")
+    
+    try:
+        # 验证用户
+        user_info = get_user_by_header(x_user_id)
+        calendar_user_id = user_info["calendar_user_id"]
+        
+        # 获取聊天管理器
+        chat_manager = get_todo_chat_manager()
+        
+        # 获取会话验证权限
+        session = chat_manager.get_session(session_id)
+        
+        if not session:
+            return {
+                "code": 404,
+                "message": "会话不存在",
+                "data": None
+            }
+        
+        # 验证权限
+        if session.user_id != calendar_user_id or session.event_id != event_id:
+            return {
+                "code": 403,
+                "message": "无权删除此会话",
+                "data": None
+            }
+        
+        # 删除会话
+        success = chat_manager.delete_session(session_id)
+        
+        if success:
+            return {
+                "code": 0,
+                "message": "success",
+                "data": {"deleted": True}
+            }
+        else:
+            return {
+                "code": 500,
+                "message": "删除失败",
+                "data": None
+            }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ 删除待办聊天会话失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {
+            "code": 500,
+            "message": f"服务器错误: {str(e)}",
+            "data": None
+        }
+
+
+class UpdateSessionTitleRequest(BaseModel):
+    """更新会话标题请求"""
+    title: str = Field(..., description="新标题")
+
+
+@router.post("/todo/{event_id}/chat/sessions/{session_id}/update-title")
+async def update_todo_chat_session_title(
+    event_id: int,
+    session_id: str,
+    request: UpdateSessionTitleRequest,
+    x_user_id: int = Header(..., alias="x-user-id", description="用户ID（整数类型，对应calendar_user_id）")
+):
+    """
+    更新待办聊天会话标题
+    
+    - **event_id**: 待办事件ID
+    - **session_id**: 会话ID
+    - **title**: 新标题
+    """
+    logger.info(f"📝 更新待办聊天会话标题: session_id={session_id}, new_title={request.title}")
+    
+    try:
+        # 验证用户
+        user_info = get_user_by_header(x_user_id)
+        calendar_user_id = user_info["calendar_user_id"]
+        
+        # 获取聊天管理器
+        chat_manager = get_todo_chat_manager()
+        
+        # 获取会话验证权限
+        session = chat_manager.get_session(session_id)
+        
+        if not session:
+            return {
+                "code": 404,
+                "message": "会话不存在",
+                "data": None
+            }
+        
+        # 验证权限
+        if session.user_id != calendar_user_id or session.event_id != event_id:
+            return {
+                "code": 403,
+                "message": "无权更新此会话",
+                "data": None
+            }
+        
+        # 更新标题
+        success = chat_manager.update_session_title(session_id, request.title)
+        
+        if success:
+            return {
+                "code": 0,
+                "message": "success",
+                "data": {
+                    "session_id": session_id,
+                    "title": request.title
+                }
+            }
+        else:
+            return {
+                "code": 500,
+                "message": "更新失败",
+                "data": None
+            }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ 更新待办聊天会话标题失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {
+            "code": 500,
+            "message": f"服务器错误: {str(e)}",
+            "data": None
+        }
+
+
+# ==================== 富媒体卡片接口 ====================
+
+class CreateRichCardRequest(BaseModel):
+    """创建富媒体卡片请求"""
+    card_type: str = Field(..., description="卡片类型")
+    title: str = Field(..., description="卡片标题")
+    subtitle: Optional[str] = Field(default=None, description="副标题")
+    icon: Optional[str] = Field(default=None, description="图标")
+    data: Optional[Dict[str, Any]] = Field(default=None, description="卡片数据")
+    source: Optional[str] = Field(default=None, description="数据来源")
+    expires_at: Optional[str] = Field(default=None, description="过期时间")
+
+
+class UpdateRichCardRequest(BaseModel):
+    """更新富媒体卡片请求"""
+    title: Optional[str] = Field(default=None, description="卡片标题")
+    subtitle: Optional[str] = Field(default=None, description="副标题")
+    icon: Optional[str] = Field(default=None, description="图标")
+    data: Optional[Dict[str, Any]] = Field(default=None, description="卡片数据")
+    source: Optional[str] = Field(default=None, description="数据来源")
+    expires_at: Optional[str] = Field(default=None, description="过期时间")
+
+
+@router.get("/todo/cards/types")
+async def get_card_types():
+    """
+    获取支持的富媒体卡片类型列表
+    """
+    return {
+        "code": 0,
+        "message": "success",
+        "data": {
+            "types": CARD_TYPES
+        }
+    }
+
+
+@router.post("/todo/{event_id}/cards")
+async def create_rich_card(
+    event_id: int,
+    request: CreateRichCardRequest,
+    x_user_id: int = Header(..., alias="x-user-id", description="用户ID（整数类型，对应calendar_user_id）")
+):
+    """
+    创建富媒体卡片
+    
+    - **event_id**: 关联的待办事件ID
+    - **card_type**: 卡片类型（weather/navigation/ride_hailing等）
+    - **title**: 卡片标题
+    - **data**: 卡片数据（JSON对象）
+    """
+    logger.info(f"📝 创建富媒体卡片: event_id={event_id}, type={request.card_type}, title={request.title}")
+    
+    try:
+        # 验证用户
+        user_info = get_user_by_header(x_user_id)
+        calendar_user_id = user_info["calendar_user_id"]
+        
+        # 获取卡片管理器
+        card_manager = get_rich_card_manager()
+        
+        # 创建卡片
+        card = card_manager.create_card(
+            event_id=event_id,
+            user_id=calendar_user_id,
+            card_type=request.card_type,
+            title=request.title,
+            subtitle=request.subtitle,
+            icon=request.icon,
+            data=request.data,
+            source=request.source,
+            expires_at=request.expires_at
+        )
+        
+        return {
+            "code": 0,
+            "message": "success",
+            "data": card.to_dict()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ 创建富媒体卡片失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {
+            "code": 500,
+            "message": f"服务器错误: {str(e)}",
+            "data": None
+        }
+
+
+@router.get("/todo/{event_id}/cards")
+async def get_cards_by_event(
+    event_id: int,
+    x_user_id: int = Header(..., alias="x-user-id", description="用户ID（整数类型，对应calendar_user_id）"),
+    card_type: Optional[str] = None
+):
+    """
+    获取待办的所有富媒体卡片
+    
+    - **event_id**: 待办事件ID
+    - **card_type**: 可选，过滤卡片类型
+    """
+    logger.info(f"📋 获取待办富媒体卡片: event_id={event_id}, type={card_type}")
+    
+    try:
+        # 验证用户
+        user_info = get_user_by_header(x_user_id)
+        calendar_user_id = user_info["calendar_user_id"]
+        
+        # 获取卡片管理器
+        card_manager = get_rich_card_manager()
+        
+        # 获取卡片
+        cards = card_manager.get_cards_by_event(
+            event_id=event_id,
+            user_id=calendar_user_id,
+            card_type=card_type
+        )
+        
+        return {
+            "code": 0,
+            "message": "success",
+            "data": {
+                "total": len(cards),
+                "cards": [card.to_dict() for card in cards]
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ 获取富媒体卡片失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {
+            "code": 500,
+            "message": f"服务器错误: {str(e)}",
+            "data": None
+        }
+
+
+@router.get("/todo/cards/{card_id}")
+async def get_card_by_id(
+    card_id: str,
+    x_user_id: int = Header(..., alias="x-user-id", description="用户ID（整数类型，对应calendar_user_id）")
+):
+    """
+    根据 card_id 获取富媒体卡片
+    
+    - **card_id**: 卡片ID
+    """
+    logger.info(f"📋 获取富媒体卡片: card_id={card_id}")
+    
+    try:
+        # 验证用户
+        user_info = get_user_by_header(x_user_id)
+        calendar_user_id = user_info["calendar_user_id"]
+        
+        # 获取卡片管理器
+        card_manager = get_rich_card_manager()
+        
+        # 获取卡片
+        card = card_manager.get_card(card_id)
+        
+        if not card:
+            return {
+                "code": 404,
+                "message": "卡片不存在",
+                "data": None
+            }
+        
+        # 验证权限
+        if card.user_id != calendar_user_id:
+            return {
+                "code": 403,
+                "message": "无权访问此卡片",
+                "data": None
+            }
+        
+        return {
+            "code": 0,
+            "message": "success",
+            "data": card.to_dict()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ 获取富媒体卡片失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {
+            "code": 500,
+            "message": f"服务器错误: {str(e)}",
+            "data": None
+        }
+
+
+@router.post("/todo/cards/{card_id}/update")
+async def update_rich_card(
+    card_id: str,
+    request: UpdateRichCardRequest,
+    x_user_id: int = Header(..., alias="x-user-id", description="用户ID（整数类型，对应calendar_user_id）")
+):
+    """
+    更新富媒体卡片
+    
+    - **card_id**: 卡片ID
+    """
+    logger.info(f"📝 更新富媒体卡片: card_id={card_id}")
+    
+    try:
+        # 验证用户
+        user_info = get_user_by_header(x_user_id)
+        calendar_user_id = user_info["calendar_user_id"]
+        
+        # 获取卡片管理器
+        card_manager = get_rich_card_manager()
+        
+        # 获取卡片验证权限
+        card = card_manager.get_card(card_id)
+        
+        if not card:
+            return {
+                "code": 404,
+                "message": "卡片不存在",
+                "data": None
+            }
+        
+        if card.user_id != calendar_user_id:
+            return {
+                "code": 403,
+                "message": "无权更新此卡片",
+                "data": None
+            }
+        
+        # 更新卡片
+        updated_card = card_manager.update_card(
+            card_id=card_id,
+            title=request.title,
+            subtitle=request.subtitle,
+            icon=request.icon,
+            data=request.data,
+            source=request.source,
+            expires_at=request.expires_at
+        )
+        
+        if updated_card:
+            return {
+                "code": 0,
+                "message": "success",
+                "data": updated_card.to_dict()
+            }
+        else:
+            return {
+                "code": 500,
+                "message": "更新失败",
+                "data": None
+            }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ 更新富媒体卡片失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {
+            "code": 500,
+            "message": f"服务器错误: {str(e)}",
+            "data": None
+        }
+
+
+@router.post("/todo/cards/{card_id}/delete")
+async def delete_rich_card(
+    card_id: str,
+    x_user_id: int = Header(..., alias="x-user-id", description="用户ID（整数类型，对应calendar_user_id）")
+):
+    """
+    删除富媒体卡片
+    
+    - **card_id**: 卡片ID
+    """
+    logger.info(f"🗑️ 删除富媒体卡片: card_id={card_id}")
+    
+    try:
+        # 验证用户
+        user_info = get_user_by_header(x_user_id)
+        calendar_user_id = user_info["calendar_user_id"]
+        
+        # 获取卡片管理器
+        card_manager = get_rich_card_manager()
+        
+        # 获取卡片验证权限
+        card = card_manager.get_card(card_id)
+        
+        if not card:
+            return {
+                "code": 404,
+                "message": "卡片不存在",
+                "data": None
+            }
+        
+        if card.user_id != calendar_user_id:
+            return {
+                "code": 403,
+                "message": "无权删除此卡片",
+                "data": None
+            }
+        
+        # 删除卡片
+        success = card_manager.delete_card(card_id)
+        
+        if success:
+            return {
+                "code": 0,
+                "message": "success",
+                "data": {"deleted": True}
+            }
+        else:
+            return {
+                "code": 500,
+                "message": "删除失败",
+                "data": None
+            }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ 删除富媒体卡片失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {
+            "code": 500,
+            "message": f"服务器错误: {str(e)}",
+            "data": None
+        }
+
+
+def _generate_simple_ai_reply(user_content: str, todo_content: Optional[str] = None) -> str:
+    """
+    生成简单的AI回复（MVP版本）
+    
+    后续可接入真正的AI模型
+    """
+    # MVP版本：简单的模板回复
+    if "议程" in user_content or "安排" in user_content:
+        return "好的，我已了解您的需求。请问您希望我如何帮您完善这个待办事项的内容？"
+    elif "提醒" in user_content:
+        return "我会帮您关注这个待办事项。您还需要添加其他信息吗？"
+    elif "修改" in user_content or "更新" in user_content:
+        return "好的，请告诉我您想要修改的具体内容。"
+    else:
+        return f"收到您的消息。关于这个待办事项，我可以帮您：\n1. 补充详细内容\n2. 设置提醒\n3. 添加相关信息\n\n请问您需要哪方面的帮助？"
+
+
+# 导出路由器
+def register_app_api_routes(app):
+    """注册APP API路由到FastAPI应用"""
+    app.include_router(router)
+    logger.info("✅ APP API 路由已注册")
+

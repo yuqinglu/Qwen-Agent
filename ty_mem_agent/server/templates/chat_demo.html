@@ -460,6 +460,158 @@
             box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
         }
         
+        /* 一句话创建待办弹窗样式 */
+        .quick-create-dialog {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 2000;
+        }
+        .quick-create-content {
+            background: white;
+            border-radius: 16px;
+            width: 90%;
+            max-width: 500px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+        }
+        .quick-create-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px 24px;
+            background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+            color: white;
+        }
+        .quick-create-header h3 {
+            margin: 0;
+            font-size: 18px;
+        }
+        .quick-create-header .close-btn {
+            background: none;
+            border: none;
+            color: white;
+            font-size: 20px;
+            cursor: pointer;
+            padding: 0;
+            line-height: 1;
+        }
+        .quick-create-body {
+            padding: 24px;
+        }
+        .quick-create-input {
+            width: 100%;
+            padding: 14px 16px;
+            border: 2px solid #e1e4e8;
+            border-radius: 10px;
+            font-size: 15px;
+            transition: all 0.3s;
+            box-sizing: border-box;
+        }
+        .quick-create-input:focus {
+            outline: none;
+            border-color: #11998e;
+            box-shadow: 0 0 0 3px rgba(17, 153, 142, 0.1);
+        }
+        .quick-create-examples {
+            margin-top: 12px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        .example-tag {
+            background: #f0f7ff;
+            color: #1976d2;
+            padding: 6px 12px;
+            border-radius: 16px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .example-tag:hover {
+            background: #1976d2;
+            color: white;
+        }
+        .quick-create-footer {
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+            padding: 16px 24px;
+            border-top: 1px solid #e1e4e8;
+            background: #f9fafb;
+        }
+        .btn-cancel {
+            padding: 10px 20px;
+            border: 1px solid #e1e4e8;
+            border-radius: 8px;
+            background: white;
+            color: #666;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .btn-cancel:hover {
+            background: #f5f5f5;
+        }
+        .quick-create-result {
+            padding: 16px 24px;
+            border-top: 1px solid #e1e4e8;
+        }
+        .result-success {
+            background: #e8f5e9;
+            color: #2e7d32;
+            padding: 12px 16px;
+            border-radius: 8px;
+        }
+        .result-error {
+            background: #ffebee;
+            color: #c62828;
+            padding: 12px 16px;
+            border-radius: 8px;
+        }
+        .result-loading {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: #666;
+        }
+        .result-loading .spinner {
+            width: 20px;
+            height: 20px;
+            border: 2px solid #e1e4e8;
+            border-top-color: #11998e;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        .result-detail {
+            margin-top: 12px;
+            padding: 12px;
+            background: #f9fafb;
+            border-radius: 8px;
+            font-size: 13px;
+        }
+        .result-detail-item {
+            display: flex;
+            margin-bottom: 6px;
+        }
+        .result-detail-label {
+            color: #666;
+            min-width: 80px;
+        }
+        .result-detail-value {
+            color: #333;
+            font-weight: 500;
+        }
+        
         /* 用户信息区域 */
         .user-info {
             position: absolute;
@@ -616,6 +768,224 @@
             <!-- 待办管理按钮（独立区域） -->
             <div class="todo-manager-area" id="todoManagerArea">
                 <button class="btn btn-primary todo-manager-btn" id="todoButton" onclick="openTodoPage()">📝 待办管理</button>
+                <button class="btn btn-primary todo-manager-btn" style="margin-left: 10px; background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);" onclick="showQuickCreateDialog()">⚡ 一句话创建待办</button>
+                <button class="btn btn-primary todo-manager-btn" style="margin-left: 10px; background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);" onclick="showTodoChatDialog()">💬 待办AI聊天</button>
+                <button class="btn btn-primary todo-manager-btn" style="margin-left: 10px; background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);" onclick="showRichCardDialog()">🎴 富媒体卡片</button>
+            </div>
+            
+            <!-- 一句话创建待办弹窗 -->
+            <div id="quickCreateDialog" class="quick-create-dialog" style="display: none;">
+                <div class="quick-create-content">
+                    <div class="quick-create-header">
+                        <h3>⚡ 一句话创建待办</h3>
+                        <button class="close-btn" onclick="hideQuickCreateDialog()">✕</button>
+                    </div>
+                    <div class="quick-create-body">
+                        <p style="color: #666; margin-bottom: 15px;">用自然语言描述您的待办，AI会自动解析时间、地点、参与人等信息</p>
+                        <input type="text" id="quickCreateInput" class="quick-create-input" placeholder="例如：明天下午三点和张总开会讨论Q1预算" onkeypress="handleQuickCreateKeyPress(event)">
+                        <div class="quick-create-examples">
+                            <span class="example-tag" onclick="setQuickCreateExample('明天上午10点提醒我给客户打电话')">明天上午10点提醒我给客户打电话</span>
+                            <span class="example-tag" onclick="setQuickCreateExample('下周一下午2点在会议室A开项目复盘会')">下周一下午2点在会议室A开项目复盘会</span>
+                            <span class="example-tag" onclick="setQuickCreateExample('后天晚上7点去健身房')">后天晚上7点去健身房</span>
+                        </div>
+                    </div>
+                    <div class="quick-create-footer">
+                        <button class="btn-cancel" onclick="hideQuickCreateDialog()">取消</button>
+                        <button class="btn-primary" onclick="submitQuickCreate()" id="quickCreateSubmitBtn">创建待办</button>
+                    </div>
+                    <div id="quickCreateResult" class="quick-create-result" style="display: none;"></div>
+                </div>
+            </div>
+            
+            <!-- 待办AI聊天弹窗 -->
+            <div id="todoChatDialog" class="quick-create-dialog" style="display: none;">
+                <div class="quick-create-content" style="max-width: 750px; max-height: 90vh; display: flex; flex-direction: column;">
+                    <div class="quick-create-header" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
+                        <h3>💬 待办AI聊天 <span style="font-size: 12px; opacity: 0.8;">(ReAct架构)</span></h3>
+                        <button class="close-btn" onclick="hideTodoChatDialog()">✕</button>
+                    </div>
+                    <div class="quick-create-body" style="flex: 1; overflow-y: auto; max-height: 65vh;">
+                        
+                        <!-- 步骤0: 输入待办事件ID -->
+                        <div id="todoChatStep0">
+                            <p style="color: #666; margin-bottom: 15px;">
+                                🤖 请输入待办事件ID，查看并管理该待办的AI聊天会话
+                            </p>
+                            <div class="form-group" style="margin-bottom: 15px;">
+                                <label style="font-weight: 500; margin-bottom: 5px; display: block;">
+                                    待办事件ID (event_id) <span style="color: #e74c3c;">*</span>
+                                </label>
+                                <div style="display: flex; gap: 10px;">
+                                    <input type="number" id="todoChatEventId" class="quick-create-input" placeholder="例如：28" style="flex: 1;" onkeypress="if(event.key==='Enter')loadTodoChatSessions()">
+                                    <button class="btn-primary" onclick="loadTodoChatSessions()" style="padding: 10px 20px; white-space: nowrap;">加载会话</button>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- 步骤1: 会话列表 -->
+                        <div id="todoChatStep1" style="display: none;">
+                            <div style="display: flex; gap: 15px; margin-bottom: 15px; align-items: center;">
+                                <button class="btn-secondary" onclick="showTodoChatStep0()" style="padding: 8px 15px;">← 返回</button>
+                                <span style="flex: 1; text-align: center; color: #666;">
+                                    📋 待办 #<span id="todoChatCurrentEventId"></span> 的聊天会话
+                                </span>
+                                <button class="btn-primary" onclick="showTodoChatStep2()" style="padding: 8px 15px;">+ 新建会话</button>
+                            </div>
+                            
+                            <!-- 会话列表 -->
+                            <div id="todoChatSessionList" style="margin-bottom: 15px; min-height: 150px; max-height: 300px; overflow-y: auto; border: 1px solid #e1e4e8; border-radius: 8px;">
+                                <div style="padding: 30px; text-align: center; color: #999;">暂无聊天会话，点击"+ 新建会话"创建</div>
+                            </div>
+                        </div>
+                        
+                        <!-- 步骤2: 新建会话 -->
+                        <div id="todoChatStep2" style="display: none;">
+                            <div style="display: flex; gap: 15px; margin-bottom: 15px; align-items: center;">
+                                <button class="btn-secondary" onclick="showTodoChatStep1()" style="padding: 8px 15px;">← 返回列表</button>
+                                <span style="flex: 1; text-align: center; color: #666;">
+                                    ✨ 新建聊天会话 - 待办 #<span id="todoChatNewEventId"></span>
+                                </span>
+                                <button class="btn-secondary" onclick="loadRichCardsForChat()" style="padding: 8px 12px; font-size: 12px;">🎴 加载卡片</button>
+                            </div>
+                            <div class="form-group" style="margin-bottom: 15px;">
+                                <label style="font-weight: 500; margin-bottom: 5px; display: block;">
+                                    初始消息 <span style="color: #e74c3c;">*</span>
+                                    <span style="color: #999; font-size: 12px; font-weight: normal;">（例如：帮我看看需要准备什么）</span>
+                                </label>
+                                <input type="text" id="todoChatInitMessage" class="quick-create-input" placeholder="例如：帮我分析一下这个待办需要做哪些准备">
+                            </div>
+                            <div class="form-group" style="margin-bottom: 15px;">
+                                <label style="font-weight: 500; margin-bottom: 5px; display: block;">待办正文（Markdown）</label>
+                                <textarea id="todoChatContent" class="quick-create-input" placeholder="输入待办的详细内容，AI会基于此进行分析..." style="height: 80px; resize: vertical;"></textarea>
+                            </div>
+                            <div class="form-group" style="margin-bottom: 15px;">
+                                <label style="font-weight: 500; margin-bottom: 5px; display: block;">
+                                    富媒体卡片（JSON数组，可选）
+                                    <span style="color: #999; font-size: 12px; font-weight: normal;">点击"加载卡片"自动获取</span>
+                                </label>
+                                <textarea id="todoChatRichCards" class="quick-create-input" placeholder='[{"card_type": "weather", "title": "天气", "data": {...}}]' style="height: 60px; resize: vertical; font-family: monospace; font-size: 11px;"></textarea>
+                            </div>
+                            <div style="text-align: right;">
+                                <button class="btn-primary" onclick="createNewTodoChatSession()" style="padding: 10px 30px;">🚀 创建并开始聊天</button>
+                            </div>
+                        </div>
+                        
+                        <!-- 步骤3: 聊天界面 -->
+                        <div id="todoChatStep3" style="display: none;">
+                            <div style="display: flex; gap: 15px; margin-bottom: 15px; align-items: center;">
+                                <button class="btn-secondary" onclick="showTodoChatStep1()" style="padding: 8px 15px;">← 返回列表</button>
+                                <span style="flex: 1; text-align: center;">
+                                    <strong id="todoChatCurrentSessionTitle">会话标题</strong>
+                                    <button onclick="editCurrentSessionTitle()" style="margin-left: 5px; padding: 2px 6px; font-size: 11px; border: 1px solid #e1e4e8; background: white; border-radius: 3px; cursor: pointer; color: #666;" title="编辑标题">✏️</button>
+                                    <span style="color: #999; font-size: 12px; margin-left: 5px;" id="todoChatCurrentSessionIdDisplay"></span>
+                                </span>
+                                <button class="btn-secondary" onclick="loadRichCardsForChatContext()" style="padding: 6px 10px; font-size: 11px;">🎴</button>
+                            </div>
+                            
+                            <!-- 聊天消息区域 -->
+                            <div id="todoChatMessages" style="min-height: 200px; max-height: 280px; overflow-y: auto; padding: 15px; background: #f9fafb; border-radius: 8px; margin-bottom: 10px; border: 1px solid #e1e4e8;">
+                                <!-- 消息列表 -->
+                            </div>
+                            
+                            <!-- 上下文输入区域（可折叠） -->
+                            <details style="margin-bottom: 10px;">
+                                <summary style="cursor: pointer; font-size: 12px; color: #666; padding: 5px;">📝 上下文设置（点击展开）</summary>
+                                <div style="background: #f0f0f0; padding: 10px; border-radius: 8px; margin-top: 5px;">
+                                    <div class="form-group" style="margin-bottom: 8px;">
+                                        <label style="font-size: 11px; color: #666;">待办正文</label>
+                                        <textarea id="todoChatContextContent" class="quick-create-input" placeholder="待办内容..." style="height: 50px; resize: vertical; font-size: 11px;"></textarea>
+                                    </div>
+                                    <div class="form-group">
+                                        <label style="font-size: 11px; color: #666;">富媒体卡片 (JSON)</label>
+                                        <textarea id="todoChatContextCards" class="quick-create-input" placeholder='[{"card_type":"weather",...}]' style="height: 40px; resize: vertical; font-size: 10px; font-family: monospace;"></textarea>
+                                    </div>
+                                </div>
+                            </details>
+                            
+                            <div style="display: flex; gap: 10px;">
+                                <input type="text" id="todoChatInput" class="quick-create-input" placeholder="输入消息... (按Enter发送)" style="flex: 1;" onkeypress="handleTodoChatKeyPress(event)">
+                                <button class="btn-primary" onclick="sendTodoChatMessage()" style="padding: 10px 20px;">发送</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="todoChatResult" class="quick-create-result" style="display: none;"></div>
+                </div>
+            </div>
+            
+            <!-- 富媒体卡片管理弹窗 -->
+            <div id="richCardDialog" class="quick-create-dialog" style="display: none;">
+                <div class="quick-create-content" style="max-width: 800px; max-height: 90vh; display: flex; flex-direction: column;">
+                    <div class="quick-create-header" style="background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);">
+                        <h3>🎴 富媒体卡片管理</h3>
+                        <button class="close-btn" onclick="hideRichCardDialog()">✕</button>
+                    </div>
+                    <div class="quick-create-body" style="flex: 1; overflow-y: auto; max-height: 65vh;">
+                        <!-- 输入区域 -->
+                        <div style="margin-bottom: 20px; padding: 15px; background: #f9fafb; border-radius: 8px;">
+                            <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+                                <div style="flex: 1;">
+                                    <label style="font-weight: 500; margin-bottom: 5px; display: block; font-size: 13px;">待办事件ID</label>
+                                    <input type="number" id="richCardEventId" class="quick-create-input" placeholder="例如：28" style="padding: 8px 12px;">
+                                </div>
+                                <div style="flex: 1;">
+                                    <label style="font-weight: 500; margin-bottom: 5px; display: block; font-size: 13px;">卡片类型</label>
+                                    <select id="richCardType" class="quick-create-input" style="padding: 8px 12px;">
+                                        <option value="weather">🌤️ 天气</option>
+                                        <option value="navigation">🗺️ 导航</option>
+                                        <option value="ride_hailing">🚗 打车</option>
+                                        <option value="hotel">🏨 酒店</option>
+                                        <option value="flight">✈️ 航班</option>
+                                        <option value="train">🚄 火车票</option>
+                                        <option value="restaurant">🍽️ 餐厅</option>
+                                        <option value="reminder">⏰ 提醒</option>
+                                        <option value="location">📍 位置</option>
+                                        <option value="contact">👤 联系人</option>
+                                        <option value="link">🔗 链接</option>
+                                        <option value="custom">📋 自定义</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+                                <div style="flex: 1;">
+                                    <label style="font-weight: 500; margin-bottom: 5px; display: block; font-size: 13px;">卡片标题</label>
+                                    <input type="text" id="richCardTitle" class="quick-create-input" placeholder="例如：明天天气" style="padding: 8px 12px;">
+                                </div>
+                                <div style="flex: 1;">
+                                    <label style="font-weight: 500; margin-bottom: 5px; display: block; font-size: 13px;">副标题（可选）</label>
+                                    <input type="text" id="richCardSubtitle" class="quick-create-input" placeholder="例如：北京市海淀区" style="padding: 8px 12px;">
+                                </div>
+                            </div>
+                            <div style="margin-bottom: 10px;">
+                                <label style="font-weight: 500; margin-bottom: 5px; display: block; font-size: 13px;">卡片数据（JSON格式）</label>
+                                <textarea id="richCardData" class="quick-create-input" placeholder='例如：{"city": "北京", "weather": "晴", "temperature": 22}' style="height: 60px; resize: vertical; font-family: monospace; font-size: 12px;"></textarea>
+                            </div>
+                            <div style="display: flex; gap: 10px;">
+                                <div style="flex: 1;">
+                                    <label style="font-weight: 500; margin-bottom: 5px; display: block; font-size: 13px;">数据来源（可选）</label>
+                                    <input type="text" id="richCardSource" class="quick-create-input" placeholder="例如：高德天气" style="padding: 8px 12px;">
+                                </div>
+                                <div style="display: flex; align-items: flex-end;">
+                                    <button class="btn-primary" onclick="createRichCard()" style="padding: 10px 20px;">创建卡片</button>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- 操作按钮 -->
+                        <div style="display: flex; gap: 10px; margin-bottom: 15px;">
+                            <button class="btn-secondary" onclick="loadRichCards()" style="padding: 8px 15px;">🔄 加载卡片列表</button>
+                            <span style="flex: 1;"></span>
+                            <span style="color: #666; font-size: 13px; line-height: 36px;">当前待办ID: <strong id="richCardCurrentEventId">-</strong></span>
+                        </div>
+                        
+                        <!-- 卡片列表 -->
+                        <div id="richCardList" style="border: 1px solid #e1e4e8; border-radius: 8px; min-height: 150px;">
+                            <div style="padding: 30px; text-align: center; color: #999;">
+                                请输入待办事件ID并点击"加载卡片列表"查看富媒体卡片
+                            </div>
+                        </div>
+                    </div>
+                    <div id="richCardResult" class="quick-create-result" style="display: none;"></div>
+                </div>
             </div>
             
             <!-- 用户信息区域（登录后显示） -->
@@ -1432,6 +1802,1163 @@
                 console.error('打开日历页面失败:', error);
                 alert('打开日历页面失败: ' + error.message);
             }
+        }
+
+        // ==================== 一句话创建待办相关函数 ====================
+        
+        // 显示一句话创建待办弹窗
+        function showQuickCreateDialog() {
+            document.getElementById('quickCreateDialog').style.display = 'flex';
+            document.getElementById('quickCreateInput').value = '';
+            document.getElementById('quickCreateResult').style.display = 'none';
+            document.getElementById('quickCreateInput').focus();
+        }
+        
+        // 隐藏一句话创建待办弹窗
+        function hideQuickCreateDialog() {
+            document.getElementById('quickCreateDialog').style.display = 'none';
+        }
+        
+        // 设置示例文本
+        function setQuickCreateExample(text) {
+            document.getElementById('quickCreateInput').value = text;
+            document.getElementById('quickCreateInput').focus();
+        }
+        
+        // 处理回车键提交
+        function handleQuickCreateKeyPress(event) {
+            if (event.key === 'Enter') {
+                submitQuickCreate();
+            }
+        }
+        
+        // 提交一句话创建待办
+        async function submitQuickCreate() {
+            const input = document.getElementById('quickCreateInput');
+            const text = input.value.trim();
+            
+            if (!text) {
+                alert('请输入待办描述');
+                return;
+            }
+            
+            const resultDiv = document.getElementById('quickCreateResult');
+            const submitBtn = document.getElementById('quickCreateSubmitBtn');
+            
+            // 显示加载状态
+            resultDiv.style.display = 'block';
+            resultDiv.innerHTML = '<div class="result-loading"><div class="spinner"></div><span>AI正在解析您的待办...</span></div>';
+            submitBtn.disabled = true;
+            submitBtn.textContent = '创建中...';
+            
+            try {
+                // 获取用户的calendar_user_id（数字格式）
+                const calendarIdResponse = await fetch('/user/calendar-id', {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                
+                if (handleAuthError(calendarIdResponse)) {
+                    return;
+                }
+                
+                if (!calendarIdResponse.ok) {
+                    throw new Error('获取用户ID失败');
+                }
+                
+                const calendarIdData = await calendarIdResponse.json();
+                // ⚠️ 重要：X-USER-ID 是整数类型，对应 calendar_user_id
+                // 不要使用字符串类型的 user_id（如 "user_xxx"）
+                // 在测试页面中，直接使用从 /user/calendar-id 获取的 calendar_user_id
+                const xUserId = parseInt(calendarIdData.calendar_user_id);
+                
+                if (isNaN(xUserId)) {
+                    throw new Error('获取用户ID失败：calendar_user_id无效');
+                }
+                
+                console.log('📝 准备创建待办，X-USER-ID (calendar_user_id, 整数类型):', xUserId);
+                
+                // 调用一句话创建待办API
+                const response = await fetch('/api/v1/todo/quick-create', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-USER-ID': String(xUserId)
+                    },
+                    body: JSON.stringify({
+                        text: text,
+                        timezone: 'Asia/Shanghai'
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.code === 0 && data.data) {
+                    // 成功
+                    const todoData = data.data;
+                    resultDiv.innerHTML = `
+                        <div class="result-success">
+                            ✅ 待办创建成功！
+                        </div>
+                        <div class="result-detail">
+                            <div class="result-detail-item">
+                                <span class="result-detail-label">📌 标题：</span>
+                                <span class="result-detail-value">${todoData.title || '未命名'}</span>
+                            </div>
+                            <div class="result-detail-item">
+                                <span class="result-detail-label">📅 时间：</span>
+                                <span class="result-detail-value">${formatDateTime(todoData.event_date_time) || '未设置'}</span>
+                            </div>
+                            ${todoData.duration ? `
+                            <div class="result-detail-item">
+                                <span class="result-detail-label">⏱️ 时长：</span>
+                                <span class="result-detail-value">${formatDuration(todoData.duration)}</span>
+                            </div>` : ''}
+                            ${todoData.location ? `
+                            <div class="result-detail-item">
+                                <span class="result-detail-label">📍 地点：</span>
+                                <span class="result-detail-value">${todoData.location}</span>
+                            </div>` : ''}
+                            ${todoData.description ? `
+                            <div class="result-detail-item">
+                                <span class="result-detail-label">📝 描述：</span>
+                                <span class="result-detail-value">${todoData.description}</span>
+                            </div>` : ''}
+                            ${todoData.is_recurring ? `
+                            <div class="result-detail-item">
+                                <span class="result-detail-label">🔄 重复：</span>
+                                <span class="result-detail-value">是</span>
+                            </div>` : ''}
+                        </div>
+                    `;
+                    
+                    // 清空输入框
+                    input.value = '';
+                    
+                    // 不自动关闭弹窗，让用户手动关闭以便查看结果
+                } else {
+                    // 失败
+                    resultDiv.innerHTML = `
+                        <div class="result-error">
+                            ❌ 创建失败：${data.message || '未知错误'}
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                console.error('创建待办失败:', error);
+                resultDiv.innerHTML = `
+                    <div class="result-error">
+                        ❌ 创建失败：${error.message || '网络错误'}
+                    </div>
+                `;
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.textContent = '创建待办';
+            }
+        }
+        
+        // 格式化日期时间
+        function formatDateTime(dateTimeStr) {
+            if (!dateTimeStr) return null;
+            try {
+                const date = new Date(dateTimeStr);
+                return date.toLocaleString('zh-CN', {
+                    year: 'numeric',
+                    month: '2-digit',
+                    day: '2-digit',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    weekday: 'short'
+                });
+            } catch (e) {
+                return dateTimeStr;
+            }
+        }
+        
+        // 格式化时长（秒 -> 可读格式）
+        function formatDuration(seconds) {
+            if (!seconds) return '未设置';
+            if (seconds < 60) return `${seconds}秒`;
+            if (seconds < 3600) return `${Math.round(seconds / 60)}分钟`;
+            const hours = Math.floor(seconds / 3600);
+            const minutes = Math.round((seconds % 3600) / 60);
+            if (minutes > 0) {
+                return `${hours}小时${minutes}分钟`;
+            }
+            return `${hours}小时`;
+        }
+
+        // ==================== 待办AI聊天相关函数 ====================
+        
+        let todoChatCurrentEventId = null;
+        let todoChatCurrentSessionId = null;
+        let todoChatCalendarUserId = null;
+        
+        // 显示待办聊天弹窗
+        function showTodoChatDialog() {
+            document.getElementById('todoChatDialog').style.display = 'flex';
+            showTodoChatStep0();
+            document.getElementById('todoChatEventId').focus();
+        }
+        
+        // 隐藏待办聊天弹窗
+        function hideTodoChatDialog() {
+            document.getElementById('todoChatDialog').style.display = 'none';
+            // 重置状态
+            todoChatCurrentEventId = null;
+            todoChatCurrentSessionId = null;
+        }
+        
+        // 显示步骤0：输入待办ID
+        function showTodoChatStep0() {
+            document.getElementById('todoChatStep0').style.display = 'block';
+            document.getElementById('todoChatStep1').style.display = 'none';
+            document.getElementById('todoChatStep2').style.display = 'none';
+            document.getElementById('todoChatStep3').style.display = 'none';
+            document.getElementById('todoChatResult').style.display = 'none';
+        }
+        
+        // 显示步骤1：会话列表
+        function showTodoChatStep1() {
+            document.getElementById('todoChatStep0').style.display = 'none';
+            document.getElementById('todoChatStep1').style.display = 'block';
+            document.getElementById('todoChatStep2').style.display = 'none';
+            document.getElementById('todoChatStep3').style.display = 'none';
+            document.getElementById('todoChatResult').style.display = 'none';
+            // 刷新会话列表
+            loadTodoChatSessionsOnly();
+        }
+        
+        // 显示步骤2：新建会话
+        function showTodoChatStep2() {
+            document.getElementById('todoChatStep0').style.display = 'none';
+            document.getElementById('todoChatStep1').style.display = 'none';
+            document.getElementById('todoChatStep2').style.display = 'block';
+            document.getElementById('todoChatStep3').style.display = 'none';
+            document.getElementById('todoChatResult').style.display = 'none';
+            document.getElementById('todoChatNewEventId').textContent = todoChatCurrentEventId;
+            document.getElementById('todoChatInitMessage').value = '';
+            document.getElementById('todoChatContent').value = '';
+            document.getElementById('todoChatInitMessage').focus();
+        }
+        
+        // 显示步骤3：聊天界面
+        function showTodoChatStep3() {
+            document.getElementById('todoChatStep0').style.display = 'none';
+            document.getElementById('todoChatStep1').style.display = 'none';
+            document.getElementById('todoChatStep2').style.display = 'none';
+            document.getElementById('todoChatStep3').style.display = 'block';
+            document.getElementById('todoChatResult').style.display = 'none';
+            document.getElementById('todoChatInput').focus();
+        }
+        
+        // 加载待办聊天会话列表（首次加载，从步骤0进入）
+        async function loadTodoChatSessions() {
+            const eventIdInput = document.getElementById('todoChatEventId');
+            const eventId = parseInt(eventIdInput.value);
+            
+            if (!eventId || isNaN(eventId)) {
+                alert('请输入有效的待办事件ID');
+                return;
+            }
+            
+            const resultDiv = document.getElementById('todoChatResult');
+            resultDiv.style.display = 'block';
+            resultDiv.innerHTML = '<div class="result-loading"><div class="spinner"></div><span>加载中...</span></div>';
+            
+            try {
+                // 获取calendar_user_id
+                const calendarIdResponse = await fetch('/user/calendar-id', {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                
+                if (handleAuthError(calendarIdResponse)) return;
+                if (!calendarIdResponse.ok) throw new Error('获取用户ID失败');
+                
+                const calendarIdData = await calendarIdResponse.json();
+                todoChatCalendarUserId = parseInt(calendarIdData.calendar_user_id);
+                
+                console.log('📋 加载待办聊天会话，event_id:', eventId, 'calendar_user_id:', todoChatCalendarUserId);
+                
+                // 获取会话列表
+                const response = await fetch(`/api/v1/todo/${eventId}/chat/sessions?page=1&page_size=50`, {
+                    headers: {
+                        'X-USER-ID': String(todoChatCalendarUserId)
+                    }
+                });
+                
+                const data = await response.json();
+                
+                if (data.code === 0) {
+                    todoChatCurrentEventId = eventId;
+                    document.getElementById('todoChatCurrentEventId').textContent = eventId;
+                    
+                    // 切换到步骤1：会话列表
+                    showTodoChatStep1();
+                    
+                    // 渲染会话列表
+                    renderTodoChatSessionList(data.data.sessions);
+                } else {
+                    resultDiv.innerHTML = `<div class="result-error">❌ 加载失败：${data.message}</div>`;
+                }
+            } catch (error) {
+                console.error('加载会话列表失败:', error);
+                resultDiv.innerHTML = `<div class="result-error">❌ 加载失败：${error.message}</div>`;
+            }
+        }
+        
+        // 渲染会话列表
+        function renderTodoChatSessionList(sessions) {
+            const listDiv = document.getElementById('todoChatSessionList');
+            
+            if (!sessions || sessions.length === 0) {
+                listDiv.innerHTML = `
+                    <div style="padding: 40px 20px; text-align: center;">
+                        <div style="font-size: 48px; margin-bottom: 15px;">💬</div>
+                        <div style="color: #999; margin-bottom: 15px;">暂无聊天会话</div>
+                        <button class="btn-primary" onclick="showTodoChatStep2()" style="padding: 10px 25px;">
+                            ✨ 创建第一个会话
+                        </button>
+                    </div>`;
+                return;
+            }
+            
+            let html = '';
+            sessions.forEach(session => {
+                html += `
+                    <div class="todo-chat-session-item" style="padding: 12px 15px; border-bottom: 1px solid #e1e4e8; display: flex; align-items: center; gap: 10px; transition: background 0.2s;">
+                        <div style="flex: 1; cursor: pointer;" onclick="selectTodoChatSession('${session.session_id}')">
+                            <div style="font-weight: 500; color: #333;">${session.title}</div>
+                            <div style="font-size: 12px; color: #999; margin-top: 4px;">
+                                ${session.message_count || 0} 条消息 · ${formatDateTime(session.updated_at) || session.updated_at}
+                            </div>
+                            ${session.last_message ? `<div style="font-size: 12px; color: #666; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${session.last_message}</div>` : ''}
+                        </div>
+                        <div style="display: flex; gap: 5px;">
+                            <button onclick="event.stopPropagation(); editSessionTitle('${session.session_id}', '${session.title.replace(/'/g, "\\'")}')" 
+                                    style="padding: 4px 8px; font-size: 11px; border: 1px solid #e1e4e8; background: white; border-radius: 4px; cursor: pointer; color: #666;"
+                                    title="编辑标题">✏️</button>
+                            <button onclick="event.stopPropagation(); deleteSession('${session.session_id}', '${session.title.replace(/'/g, "\\'")}')" 
+                                    style="padding: 4px 8px; font-size: 11px; border: 1px solid #e74c3c; background: white; border-radius: 4px; cursor: pointer; color: #e74c3c;"
+                                    title="删除会话">🗑️</button>
+                        </div>
+                    </div>
+                `;
+            });
+            
+            listDiv.innerHTML = html;
+            
+            // 添加hover效果
+            listDiv.querySelectorAll('.todo-chat-session-item').forEach(item => {
+                item.addEventListener('mouseenter', () => item.style.background = '#f5f5f5');
+                item.addEventListener('mouseleave', () => item.style.background = '');
+            });
+        }
+        
+        // 加载富媒体卡片到聊天输入框
+        async function loadRichCardsForChat() {
+            if (!todoChatCurrentEventId) {
+                alert('请先加载待办事件');
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/v1/todo/${todoChatCurrentEventId}/cards`, {
+                    headers: {
+                        'X-USER-ID': String(todoChatCalendarUserId)
+                    }
+                });
+                
+                const data = await response.json();
+                
+                if (data.code === 0 && data.data.cards.length > 0) {
+                    // 将卡片数据填充到输入框
+                    const cardsJson = JSON.stringify(data.data.cards, null, 2);
+                    document.getElementById('todoChatRichCards').value = cardsJson;
+                    alert(`✅ 已加载 ${data.data.cards.length} 个富媒体卡片`);
+                } else {
+                    alert('该待办暂无富媒体卡片');
+                }
+            } catch (error) {
+                console.error('加载富媒体卡片失败:', error);
+                alert('加载失败：' + error.message);
+            }
+        }
+        
+        // 创建新的待办聊天会话
+        async function createNewTodoChatSession() {
+            const todoContent = document.getElementById('todoChatContent').value.trim() || null;
+            const initMessage = document.getElementById('todoChatInitMessage').value.trim();
+            const richCardsStr = document.getElementById('todoChatRichCards').value.trim();
+            
+            // 验证必填字段
+            if (!initMessage) {
+                alert('请输入初始消息，这是必填项');
+                document.getElementById('todoChatInitMessage').focus();
+                return;
+            }
+            
+            // 解析富媒体卡片
+            let richCards = null;
+            if (richCardsStr) {
+                try {
+                    richCards = JSON.parse(richCardsStr);
+                } catch (e) {
+                    alert('富媒体卡片JSON格式不正确');
+                    return;
+                }
+            }
+            
+            const resultDiv = document.getElementById('todoChatResult');
+            resultDiv.style.display = 'block';
+            resultDiv.className = 'quick-create-result';
+            resultDiv.innerHTML = '<div class="result-loading"><div class="spinner"></div><span>🤖 AI正在分析待办并规划任务...</span></div>';
+            
+            try {
+                const response = await fetch(`/api/v1/todo/${todoChatCurrentEventId}/chat/sessions`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-USER-ID': String(todoChatCalendarUserId)
+                    },
+                    body: JSON.stringify({
+                        content: initMessage,
+                        todo_content: todoContent,
+                        rich_cards: richCards
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.code === 0 && data.data) {
+                    const sessionData = data.data;
+                    const reply = sessionData.reply;
+                    
+                    // 会话创建成功，直接进入聊天界面
+                    todoChatCurrentSessionId = sessionData.session_id;
+                    
+                    // 更新聊天界面
+                    document.getElementById('todoChatCurrentSessionTitle').textContent = sessionData.title;
+                    document.getElementById('todoChatCurrentSessionIdDisplay').textContent = `(${sessionData.session_id.slice(0, 12)}...)`;
+                    
+                    // 渲染消息
+                    const messagesDiv = document.getElementById('todoChatMessages');
+                    let messagesHtml = '';
+                    
+                    // 添加用户消息
+                    messagesHtml += `
+                        <div style="margin-bottom: 12px; text-align: right;">
+                            <div style="display: inline-block; max-width: 80%; padding: 10px 14px; border-radius: 12px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;">
+                                <div style="font-size: 14px;">${initMessage}</div>
+                            </div>
+                        </div>`;
+                    
+                    // 添加AI回复
+                    if (reply) {
+                        messagesHtml += `
+                            <div style="margin-bottom: 12px;">
+                                <div style="display: inline-block; max-width: 85%; padding: 10px 14px; border-radius: 12px; background: white; border: 1px solid #e1e4e8;">
+                                    <div style="font-size: 14px; white-space: pre-wrap; line-height: 1.6;">${reply.content}</div>
+                                    ${reply.todo_content ? `<div style="margin-top: 10px; padding: 10px; background: #e8f4e8; border-radius: 6px; font-size: 12px;"><strong>📝 建议的待办内容：</strong><pre style="margin-top: 5px; white-space: pre-wrap; font-size: 11px;">${reply.todo_content}</pre></div>` : ''}
+                                    ${reply.suggested_todos && reply.suggested_todos.length > 0 ? `<div style="margin-top: 8px; color: #f39c12; font-size: 12px;"><strong>💡 建议新待办：</strong> ${reply.suggested_todos.length} 个</div>` : ''}
+                                </div>
+                            </div>`;
+                    }
+                    
+                    messagesDiv.innerHTML = messagesHtml;
+                    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+                    
+                    // 如果有待办内容，填充到上下文输入框
+                    if (todoContent) {
+                        document.getElementById('todoChatContextContent').value = todoContent;
+                    }
+                    
+                    // 切换到聊天界面
+                    resultDiv.style.display = 'none';
+                    showTodoChatStep3();
+                } else {
+                    resultDiv.className = 'quick-create-result error';
+                    resultDiv.innerHTML = `<div class="result-error">❌ 创建失败：${data.message}</div>`;
+                }
+            } catch (error) {
+                console.error('创建会话失败:', error);
+                resultDiv.className = 'quick-create-result error';
+                resultDiv.innerHTML = `<div class="result-error">❌ 创建失败：${error.message}</div>`;
+            }
+        }
+        
+        // 仅加载会话列表（不切换视图）
+        async function loadTodoChatSessionsOnly() {
+            try {
+                const response = await fetch(`/api/v1/todo/${todoChatCurrentEventId}/chat/sessions?page=1&page_size=50`, {
+                    headers: {
+                        'X-USER-ID': String(todoChatCalendarUserId)
+                    }
+                });
+                
+                const data = await response.json();
+                if (data.code === 0) {
+                    renderTodoChatSessionList(data.data.sessions);
+                }
+            } catch (error) {
+                console.error('刷新会话列表失败:', error);
+            }
+        }
+        
+        // 选择一个会话
+        async function selectTodoChatSession(sessionId) {
+            todoChatCurrentSessionId = sessionId;
+            
+            // 切换到聊天界面
+            showTodoChatStep3();
+            
+            const messagesDiv = document.getElementById('todoChatMessages');
+            messagesDiv.innerHTML = '<div style="text-align: center; color: #999; padding: 20px;">加载消息中...</div>';
+            
+            try {
+                // 获取会话详情
+                const response = await fetch(`/api/v1/todo/${todoChatCurrentEventId}/chat/sessions/${sessionId}`, {
+                    headers: {
+                        'X-USER-ID': String(todoChatCalendarUserId)
+                    }
+                });
+                
+                const data = await response.json();
+                
+                if (data.code === 0 && data.data) {
+                    document.getElementById('todoChatCurrentSessionTitle').textContent = data.data.title;
+                    document.getElementById('todoChatCurrentSessionIdDisplay').textContent = `(${sessionId.slice(0, 12)}...)`;
+                    
+                    // 如果有待办内容，填充到上下文输入框
+                    if (data.data.todo_content) {
+                        document.getElementById('todoChatContextContent').value = data.data.todo_content;
+                    }
+                    
+                    // 渲染消息
+                    renderTodoChatMessages(data.data.messages);
+                } else {
+                    messagesDiv.innerHTML = `<div style="text-align: center; color: #c62828; padding: 20px;">加载失败：${data.message}</div>`;
+                }
+            } catch (error) {
+                console.error('加载会话详情失败:', error);
+                messagesDiv.innerHTML = `<div style="text-align: center; color: #c62828; padding: 20px;">加载失败：${error.message}</div>`;
+            }
+        }
+        
+        // 编辑当前会话标题（在聊天界面）
+        async function editCurrentSessionTitle() {
+            if (!todoChatCurrentSessionId) {
+                alert('请先选择一个会话');
+                return;
+            }
+            
+            const currentTitle = document.getElementById('todoChatCurrentSessionTitle').textContent;
+            await editSessionTitle(todoChatCurrentSessionId, currentTitle);
+        }
+        
+        // 编辑会话标题
+        async function editSessionTitle(sessionId, currentTitle) {
+            const newTitle = prompt('请输入新的会话标题：', currentTitle);
+            
+            if (!newTitle || newTitle.trim() === '') {
+                return;
+            }
+            
+            if (newTitle === currentTitle) {
+                return; // 没有变化
+            }
+            
+            try {
+                const response = await fetch(`/api/v1/todo/${todoChatCurrentEventId}/chat/sessions/${sessionId}/update-title`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-USER-ID': String(todoChatCalendarUserId)
+                    },
+                    body: JSON.stringify({
+                        title: newTitle.trim()
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.code === 0) {
+                    // 刷新会话列表
+                    await loadTodoChatSessionsOnly();
+                    
+                    // 如果当前正在查看这个会话，更新标题显示
+                    if (todoChatCurrentSessionId === sessionId) {
+                        document.getElementById('todoChatCurrentSessionTitle').textContent = newTitle.trim();
+                    }
+                    
+                    // 显示成功提示
+                    const resultDiv = document.getElementById('todoChatResult');
+                    resultDiv.style.display = 'block';
+                    resultDiv.className = 'quick-create-result success';
+                    resultDiv.innerHTML = `<div class="result-success">✅ 标题已更新为：${newTitle.trim()}</div>`;
+                    setTimeout(() => {
+                        resultDiv.style.display = 'none';
+                    }, 2000);
+                } else {
+                    alert(`更新失败：${data.message}`);
+                }
+            } catch (error) {
+                console.error('更新标题失败:', error);
+                alert(`更新失败：${error.message}`);
+            }
+        }
+        
+        // 删除会话
+        async function deleteSession(sessionId, sessionTitle) {
+            if (!confirm(`确定要删除会话"${sessionTitle}"吗？\n\n此操作不可恢复！`)) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/v1/todo/${todoChatCurrentEventId}/chat/sessions/${sessionId}/delete`, {
+                    method: 'POST',
+                    headers: {
+                        'X-USER-ID': String(todoChatCalendarUserId)
+                    }
+                });
+                
+                const data = await response.json();
+                
+                if (data.code === 0) {
+                    // 如果当前正在查看这个会话，返回列表
+                    if (todoChatCurrentSessionId === sessionId) {
+                        todoChatCurrentSessionId = null;
+                        showTodoChatStep1();
+                    }
+                    
+                    // 刷新会话列表
+                    await loadTodoChatSessionsOnly();
+                    
+                    // 显示成功提示
+                    const resultDiv = document.getElementById('todoChatResult');
+                    resultDiv.style.display = 'block';
+                    resultDiv.className = 'quick-create-result success';
+                    resultDiv.innerHTML = `<div class="result-success">✅ 会话已删除</div>`;
+                    setTimeout(() => {
+                        resultDiv.style.display = 'none';
+                    }, 2000);
+                } else {
+                    alert(`删除失败：${data.message}`);
+                }
+            } catch (error) {
+                console.error('删除会话失败:', error);
+                alert(`删除失败：${error.message}`);
+            }
+        }
+        
+        // 渲染聊天消息
+        function renderTodoChatMessages(messages) {
+            const messagesDiv = document.getElementById('todoChatMessages');
+            
+            if (!messages || messages.length === 0) {
+                messagesDiv.innerHTML = '<div style="text-align: center; color: #999; padding: 20px;">暂无消息，开始聊天吧</div>';
+                return;
+            }
+            
+            let html = '';
+            messages.forEach(msg => {
+                const isUser = msg.role === 'user';
+                html += `
+                    <div style="margin-bottom: 12px; ${isUser ? 'text-align: right;' : ''}">
+                        <div style="display: inline-block; max-width: 80%; padding: 10px 14px; border-radius: 12px; ${isUser ? 'background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;' : 'background: white; border: 1px solid #e1e4e8;'}">
+                            <div style="font-size: 14px; white-space: pre-wrap;">${msg.content}</div>
+                            ${msg.todo_content ? `<div style="margin-top: 8px; padding: 8px; background: rgba(0,0,0,0.05); border-radius: 6px; font-size: 12px;"><strong>待办内容：</strong><pre style="margin: 5px 0 0 0; white-space: pre-wrap; font-family: inherit;">${msg.todo_content}</pre></div>` : ''}
+                        </div>
+                        <div style="font-size: 11px; color: #999; margin-top: 4px;">${formatDateTime(msg.timestamp) || msg.timestamp}</div>
+                    </div>
+                `;
+            });
+            
+            messagesDiv.innerHTML = html;
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+        
+        // 处理聊天输入回车
+        function handleTodoChatKeyPress(event) {
+            if (event.key === 'Enter') {
+                sendTodoChatMessage();
+            }
+        }
+        
+        // 加载富媒体卡片到聊天上下文
+        async function loadRichCardsForChatContext() {
+            if (!todoChatCurrentEventId) return;
+            
+            try {
+                const response = await fetch(`/api/v1/todo/${todoChatCurrentEventId}/cards`, {
+                    headers: { 'X-USER-ID': String(todoChatCalendarUserId) }
+                });
+                
+                const data = await response.json();
+                if (data.code === 0 && data.data.cards.length > 0) {
+                    document.getElementById('todoChatContextCards').value = JSON.stringify(data.data.cards, null, 2);
+                    alert(`✅ 已加载 ${data.data.cards.length} 个卡片`);
+                } else {
+                    alert('暂无富媒体卡片');
+                }
+            } catch (error) {
+                alert('加载失败：' + error.message);
+            }
+        }
+        
+        // 发送聊天消息（调用真正的AI接口）
+        async function sendTodoChatMessage() {
+            const input = document.getElementById('todoChatInput');
+            const content = input.value.trim();
+            const todoContent = document.getElementById('todoChatContextContent').value.trim() || null;
+            const richCardsStr = document.getElementById('todoChatContextCards').value.trim();
+            
+            if (!content) return;
+            if (!todoChatCurrentSessionId) {
+                alert('请先选择或创建一个会话');
+                return;
+            }
+            
+            // 解析富媒体卡片
+            let richCards = null;
+            if (richCardsStr) {
+                try {
+                    richCards = JSON.parse(richCardsStr);
+                } catch (e) {
+                    // 忽略解析错误，继续发送
+                }
+            }
+            
+            // 先显示用户消息
+            const messagesDiv = document.getElementById('todoChatMessages');
+            messagesDiv.innerHTML += `
+                <div style="margin-bottom: 12px; text-align: right;">
+                    <div style="display: inline-block; max-width: 80%; padding: 10px 14px; border-radius: 12px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;">
+                        <div style="font-size: 14px;">${content}</div>
+                    </div>
+                    <div style="font-size: 11px; color: #999; margin-top: 4px;">${new Date().toLocaleTimeString()}</div>
+                </div>
+            `;
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            
+            input.value = '';
+            
+            // 显示AI思考中
+            const thinkingId = 'thinking_' + Date.now();
+            messagesDiv.innerHTML += `
+                <div id="${thinkingId}" style="margin-bottom: 12px;">
+                    <div style="display: inline-block; padding: 10px 14px; border-radius: 12px; background: #f0f0f0; color: #666;">
+                        <span class="spinner" style="display: inline-block; width: 12px; height: 12px; border: 2px solid #999; border-top-color: transparent; border-radius: 50%; animation: spin 1s linear infinite; margin-right: 8px;"></span>
+                        AI正在分析并规划任务...
+                    </div>
+                </div>
+            `;
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            
+            try {
+                // 调用发送消息API（在指定会话中发送消息）
+                const response = await fetch(`/api/v1/todo/${todoChatCurrentEventId}/chat/sessions/${todoChatCurrentSessionId}/messages`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-USER-ID': String(todoChatCalendarUserId)
+                    },
+                    body: JSON.stringify({
+                        content: content,
+                        todo_content: todoContent,
+                        rich_cards: richCards
+                    })
+                });
+                
+                const data = await response.json();
+                
+                // 移除思考中提示
+                const thinkingEl = document.getElementById(thinkingId);
+                if (thinkingEl) thinkingEl.remove();
+                
+                if (data.code === 0 && data.data) {
+                    // 直接从 data.data 获取回复（接口返回格式：{message_id, content, todo_content, ...}）
+                    const reply = data.data;
+                    
+                    // 显示AI回复
+                    let replyHtml = `
+                        <div style="margin-bottom: 12px;">
+                            <div style="display: inline-block; max-width: 85%; padding: 10px 14px; border-radius: 12px; background: white; border: 1px solid #e1e4e8;">
+                                <div style="font-size: 14px; white-space: pre-wrap; line-height: 1.6;">${reply.content}</div>`;
+                    
+                    // 显示建议的待办内容
+                    if (reply.todo_content) {
+                        replyHtml += `
+                                <div style="margin-top: 10px; padding: 10px; background: #e8f4e8; border-radius: 6px; font-size: 12px;">
+                                    <strong>📝 建议的待办更新：</strong>
+                                    <pre style="margin-top: 5px; white-space: pre-wrap; font-size: 11px; max-height: 100px; overflow-y: auto;">${reply.todo_content}</pre>
+                                </div>`;
+                    }
+                    
+                    // 显示建议的新待办
+                    if (reply.suggested_todos && reply.suggested_todos.length > 0) {
+                        replyHtml += `
+                                <div style="margin-top: 10px; padding: 10px; background: #fff3cd; border-radius: 6px; font-size: 12px;">
+                                    <strong>💡 建议创建的待办（${reply.suggested_todos.length}个）：</strong>
+                                    <ul style="margin: 5px 0 0 15px; padding: 0;">`;
+                        reply.suggested_todos.forEach(todo => {
+                            replyHtml += `<li>${todo.title} ${todo.event_date_time ? '- ' + todo.event_date_time : ''}</li>`;
+                        });
+                        replyHtml += `</ul></div>`;
+                    }
+                    
+                    // 显示富媒体卡片
+                    if (reply.rich_cards && reply.rich_cards.length > 0) {
+                        replyHtml += `
+                                <div style="margin-top: 10px; padding: 10px; background: #e3f2fd; border-radius: 6px; font-size: 12px;">
+                                    <strong>🎴 信息卡片（${reply.rich_cards.length}个）：</strong>
+                                    <div style="margin-top: 5px;">`;
+                        reply.rich_cards.forEach(card => {
+                            replyHtml += `<div style="background: white; padding: 8px; border-radius: 4px; margin-bottom: 5px;">
+                                <strong>${card.title || card.card_type}</strong>
+                                ${card.subtitle ? `<span style="color: #666;"> - ${card.subtitle}</span>` : ''}
+                            </div>`;
+                        });
+                        replyHtml += `</div></div>`;
+                    }
+                    
+                    replyHtml += `
+                            </div>
+                            <div style="font-size: 11px; color: #999; margin-top: 4px;">${new Date().toLocaleTimeString()}</div>
+                        </div>`;
+                    
+                    messagesDiv.innerHTML += replyHtml;
+                } else {
+                    messagesDiv.innerHTML += `
+                        <div style="margin-bottom: 12px;">
+                            <div style="display: inline-block; padding: 10px 14px; border-radius: 12px; background: #ffebee; color: #c62828;">
+                                ❌ 回复失败：${data.message || '未知错误'}
+                            </div>
+                        </div>`;
+                }
+            } catch (error) {
+                const thinkingEl = document.getElementById(thinkingId);
+                if (thinkingEl) thinkingEl.remove();
+                
+                messagesDiv.innerHTML += `
+                    <div style="margin-bottom: 12px;">
+                        <div style="display: inline-block; padding: 10px 14px; border-radius: 12px; background: #ffebee; color: #c62828;">
+                            ❌ 请求失败：${error.message}
+                        </div>
+                    </div>`;
+            }
+            
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        // ==================== 富媒体卡片管理 ====================
+        
+        // 当前选中的卡片（用于删除等操作）
+        let richCardCurrentEventId = null;
+        
+        // 显示富媒体卡片弹窗
+        function showRichCardDialog() {
+            document.getElementById('richCardDialog').style.display = 'flex';
+        }
+        
+        // 隐藏富媒体卡片弹窗
+        function hideRichCardDialog() {
+            document.getElementById('richCardDialog').style.display = 'none';
+            // 清空结果
+            document.getElementById('richCardResult').style.display = 'none';
+        }
+        
+        // 创建富媒体卡片
+        async function createRichCard() {
+            const eventId = parseInt(document.getElementById('richCardEventId').value);
+            const cardType = document.getElementById('richCardType').value;
+            const title = document.getElementById('richCardTitle').value.trim();
+            const subtitle = document.getElementById('richCardSubtitle').value.trim();
+            const dataStr = document.getElementById('richCardData').value.trim();
+            const source = document.getElementById('richCardSource').value.trim();
+            
+            if (!eventId || isNaN(eventId)) {
+                showRichCardResult('error', '请输入有效的待办事件ID');
+                return;
+            }
+            
+            if (!title) {
+                showRichCardResult('error', '请输入卡片标题');
+                return;
+            }
+            
+            // 解析JSON数据
+            let cardData = {};
+            if (dataStr) {
+                try {
+                    cardData = JSON.parse(dataStr);
+                } catch (e) {
+                    showRichCardResult('error', '卡片数据JSON格式不正确');
+                    return;
+                }
+            }
+            
+            try {
+                // 获取 calendar_user_id
+                const calendarIdResponse = await fetch('/user/calendar-id', {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                
+                if (!calendarIdResponse.ok) {
+                    showRichCardResult('error', '获取用户ID失败');
+                    return;
+                }
+                
+                const calendarIdData = await calendarIdResponse.json();
+                const calendarUserId = calendarIdData.data.calendar_user_id;
+                
+                // 调用创建卡片API
+                const response = await fetch(`/api/v1/todo/${eventId}/cards`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'x-user-id': calendarUserId.toString()
+                    },
+                    body: JSON.stringify({
+                        card_type: cardType,
+                        title: title,
+                        subtitle: subtitle || null,
+                        data: cardData,
+                        source: source || null
+                    })
+                });
+                
+                const result = await response.json();
+                
+                if (result.code === 0) {
+                    const card = result.data;
+                    showRichCardResult('success', `✅ 卡片创建成功！
+                        <br>卡片ID: ${card.card_id}
+                        <br>类型: ${card.card_type}
+                        <br>标题: ${card.title}
+                        <br>创建时间: ${new Date(card.created_at).toLocaleString()}`);
+                    
+                    // 更新当前事件ID并刷新列表
+                    richCardCurrentEventId = eventId;
+                    document.getElementById('richCardCurrentEventId').textContent = eventId;
+                    loadRichCards();
+                    
+                    // 清空输入
+                    document.getElementById('richCardTitle').value = '';
+                    document.getElementById('richCardSubtitle').value = '';
+                    document.getElementById('richCardData').value = '';
+                    document.getElementById('richCardSource').value = '';
+                } else {
+                    showRichCardResult('error', `创建失败: ${result.message}`);
+                }
+            } catch (error) {
+                console.error('创建卡片失败:', error);
+                showRichCardResult('error', `创建失败: ${error.message}`);
+            }
+        }
+        
+        // 加载富媒体卡片列表
+        async function loadRichCards() {
+            const eventId = parseInt(document.getElementById('richCardEventId').value);
+            
+            if (!eventId || isNaN(eventId)) {
+                showRichCardResult('error', '请输入有效的待办事件ID');
+                return;
+            }
+            
+            richCardCurrentEventId = eventId;
+            document.getElementById('richCardCurrentEventId').textContent = eventId;
+            
+            const listDiv = document.getElementById('richCardList');
+            listDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: #666;">加载中...</div>';
+            
+            try {
+                // 获取 calendar_user_id
+                const calendarIdResponse = await fetch('/user/calendar-id', {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                
+                if (!calendarIdResponse.ok) {
+                    listDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: #e74c3c;">获取用户ID失败</div>';
+                    return;
+                }
+                
+                const calendarIdData = await calendarIdResponse.json();
+                const calendarUserId = calendarIdData.data.calendar_user_id;
+                
+                // 调用获取卡片列表API
+                const response = await fetch(`/api/v1/todo/${eventId}/cards`, {
+                    headers: {
+                        'x-user-id': calendarUserId.toString()
+                    }
+                });
+                
+                const result = await response.json();
+                
+                if (result.code === 0) {
+                    const cards = result.data.cards;
+                    
+                    if (cards.length === 0) {
+                        listDiv.innerHTML = '<div style="padding: 30px; text-align: center; color: #999;">该待办暂无富媒体卡片</div>';
+                    } else {
+                        listDiv.innerHTML = cards.map(card => `
+                            <div style="padding: 12px 15px; border-bottom: 1px solid #e1e4e8; display: flex; align-items: center; gap: 15px;">
+                                <div style="width: 40px; height: 40px; border-radius: 8px; background: ${getCardTypeColor(card.card_type)}; display: flex; align-items: center; justify-content: center; font-size: 20px;">
+                                    ${getCardTypeIcon(card.card_type)}
+                                </div>
+                                <div style="flex: 1; min-width: 0;">
+                                    <div style="font-weight: 500; color: #24292e;">${card.title}</div>
+                                    <div style="font-size: 12px; color: #666; margin-top: 2px;">
+                                        ${card.subtitle || ''} ${card.source ? '· 来源: ' + card.source : ''}
+                                    </div>
+                                    <div style="font-size: 11px; color: #999; margin-top: 4px;">
+                                        ID: ${card.card_id} · ${card.card_type} · ${new Date(card.updated_at).toLocaleString()}
+                                    </div>
+                                </div>
+                                <div style="display: flex; gap: 8px;">
+                                    <button onclick="viewCardData('${card.card_id}')" style="padding: 6px 12px; border-radius: 6px; border: 1px solid #e1e4e8; background: white; cursor: pointer; font-size: 12px;">查看</button>
+                                    <button onclick="deleteRichCard('${card.card_id}')" style="padding: 6px 12px; border-radius: 6px; border: 1px solid #e74c3c; background: white; color: #e74c3c; cursor: pointer; font-size: 12px;">删除</button>
+                                </div>
+                            </div>
+                        `).join('');
+                    }
+                } else {
+                    listDiv.innerHTML = `<div style="padding: 20px; text-align: center; color: #e74c3c;">加载失败: ${result.message}</div>`;
+                }
+            } catch (error) {
+                console.error('加载卡片列表失败:', error);
+                listDiv.innerHTML = `<div style="padding: 20px; text-align: center; color: #e74c3c;">加载失败: ${error.message}</div>`;
+            }
+        }
+        
+        // 获取卡片类型颜色
+        function getCardTypeColor(type) {
+            const colors = {
+                'weather': 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                'navigation': 'linear-gradient(135deg, #11998e 0%, #38ef7d 100%)',
+                'ride_hailing': 'linear-gradient(135deg, #fc4a1a 0%, #f7b733 100%)',
+                'hotel': 'linear-gradient(135deg, #ee0979 0%, #ff6a00 100%)',
+                'flight': 'linear-gradient(135deg, #00c6ff 0%, #0072ff 100%)',
+                'train': 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)',
+                'restaurant': 'linear-gradient(135deg, #fa709a 0%, #fee140 100%)',
+                'reminder': 'linear-gradient(135deg, #a8ff78 0%, #78ffd6 100%)',
+                'location': 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)',
+                'contact': 'linear-gradient(135deg, #43e97b 0%, #38f9d7 100%)',
+                'link': 'linear-gradient(135deg, #c471f5 0%, #fa71cd 100%)',
+                'custom': 'linear-gradient(135deg, #6a11cb 0%, #2575fc 100%)'
+            };
+            return colors[type] || colors['custom'];
+        }
+        
+        // 获取卡片类型图标
+        function getCardTypeIcon(type) {
+            const icons = {
+                'weather': '🌤️',
+                'navigation': '🗺️',
+                'ride_hailing': '🚗',
+                'hotel': '🏨',
+                'flight': '✈️',
+                'train': '🚄',
+                'restaurant': '🍽️',
+                'reminder': '⏰',
+                'location': '📍',
+                'contact': '👤',
+                'link': '🔗',
+                'custom': '📋'
+            };
+            return icons[type] || icons['custom'];
+        }
+        
+        // 查看卡片数据
+        async function viewCardData(cardId) {
+            try {
+                // 获取 calendar_user_id
+                const calendarIdResponse = await fetch('/user/calendar-id', {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                
+                if (!calendarIdResponse.ok) {
+                    alert('获取用户ID失败');
+                    return;
+                }
+                
+                const calendarIdData = await calendarIdResponse.json();
+                const calendarUserId = calendarIdData.data.calendar_user_id;
+                
+                // 获取卡片详情
+                const response = await fetch(`/api/v1/todo/cards/${cardId}`, {
+                    headers: {
+                        'x-user-id': calendarUserId.toString()
+                    }
+                });
+                
+                const result = await response.json();
+                
+                if (result.code === 0) {
+                    const card = result.data;
+                    alert(`卡片详情：\n\n卡片ID: ${card.card_id}\n类型: ${card.card_type}\n标题: ${card.title}\n副标题: ${card.subtitle || '-'}\n数据: ${JSON.stringify(card.data, null, 2)}\n来源: ${card.source || '-'}\n创建时间: ${card.created_at}\n更新时间: ${card.updated_at}`);
+                } else {
+                    alert(`获取失败: ${result.message}`);
+                }
+            } catch (error) {
+                console.error('获取卡片详情失败:', error);
+                alert(`获取失败: ${error.message}`);
+            }
+        }
+        
+        // 删除富媒体卡片
+        async function deleteRichCard(cardId) {
+            if (!confirm('确定要删除这个富媒体卡片吗？')) {
+                return;
+            }
+            
+            try {
+                // 获取 calendar_user_id
+                const calendarIdResponse = await fetch('/user/calendar-id', {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                
+                if (!calendarIdResponse.ok) {
+                    alert('获取用户ID失败');
+                    return;
+                }
+                
+                const calendarIdData = await calendarIdResponse.json();
+                const calendarUserId = calendarIdData.data.calendar_user_id;
+                
+                // 调用删除卡片API
+                const response = await fetch(`/api/v1/todo/cards/${cardId}/delete`, {
+                    method: 'POST',
+                    headers: {
+                        'x-user-id': calendarUserId.toString()
+                    }
+                });
+                
+                const result = await response.json();
+                
+                if (result.code === 0) {
+                    showRichCardResult('success', '✅ 卡片已删除');
+                    // 刷新列表
+                    loadRichCards();
+                } else {
+                    alert(`删除失败: ${result.message}`);
+                }
+            } catch (error) {
+                console.error('删除卡片失败:', error);
+                alert(`删除失败: ${error.message}`);
+            }
+        }
+        
+        // 显示富媒体卡片操作结果
+        function showRichCardResult(type, message) {
+            const resultDiv = document.getElementById('richCardResult');
+            resultDiv.style.display = 'block';
+            resultDiv.className = 'quick-create-result ' + (type === 'error' ? 'error' : 'success');
+            resultDiv.innerHTML = message;
+            
+            // 5秒后隐藏
+            setTimeout(() => {
+                resultDiv.style.display = 'none';
+            }, 5000);
         }
 
         // 页面加载时检查登录状态
