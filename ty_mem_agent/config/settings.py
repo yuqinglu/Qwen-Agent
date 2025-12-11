@@ -82,6 +82,21 @@ class Settings(BaseSettings):
     # === 日历MCP服务配置 ===
     CALENDAR_MCP_SERVER_URL: Optional[str] = Field(default=None, env="CALENDAR_MCP_SERVER_URL")
     
+    # === ASR语音识别配置 ===
+    # 阿里云百炼 Fun-ASR WebSocket API 地址
+    ASR_WS_URL: str = Field(
+        default="wss://dashscope.aliyuncs.com/api-ws/v1/inference", 
+        env="ASR_WS_URL"
+    )
+    # 默认ASR模型
+    ASR_MODEL: str = Field(default="fun-asr-realtime", env="ASR_MODEL")
+    # 默认采样率
+    ASR_SAMPLE_RATE: int = Field(default=16000, env="ASR_SAMPLE_RATE")
+    # 默认音频格式
+    ASR_FORMAT: str = Field(default="pcm", env="ASR_FORMAT")
+    # 默认语言
+    ASR_LANGUAGE: str = Field(default="zh", env="ASR_LANGUAGE")
+    
     # === MCP服务配置 ===
     @property
     def MCP_SERVICES(self) -> Dict[str, Dict]:

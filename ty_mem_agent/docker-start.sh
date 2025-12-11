@@ -24,7 +24,9 @@ fi
 
 # 构建镜像
 echo "🔨 构建 Docker 镜像..."
-docker-compose build
+echo "💡 提示：首次构建约需 3-5 分钟，后续构建会利用缓存加速"
+echo "⚡ 使用 BuildKit 可进一步加速：DOCKER_BUILDKIT=1 docker-compose build"
+DOCKER_BUILDKIT=1 docker-compose build
 
 # 启动服务
 echo "🚀 启动服务..."

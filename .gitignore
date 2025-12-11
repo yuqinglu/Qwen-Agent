@@ -58,3 +58,5 @@ examples/data/*
 **/*.sqlite3
 test.db
 ty_mem_agent/data/
+
+ty_mem_agent/doc/*

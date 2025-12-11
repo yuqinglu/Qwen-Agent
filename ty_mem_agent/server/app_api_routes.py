@@ -244,6 +244,116 @@ async def quick_create_todo(
         )
 
 
+class ExtractTodoParamsRequest(BaseModel):
+    """提取待办参数请求"""
+    text: str = Field(..., description="用户的自然语言描述")
+    timezone: str = Field(default="Asia/Shanghai", description="时区")
+
+
+class ExtractTodoParamsResponse(BaseModel):
+    """提取待办参数响应"""
+    code: int = Field(default=0, description="响应码")
+    message: str = Field(default="success", description="响应消息")
+    data: Optional[Dict[str, Any]] = Field(default=None, description="响应数据")
+
+
+@router.post("/todo/extract-params", response_model=ExtractTodoParamsResponse)
+async def extract_todo_params(
+    request: ExtractTodoParamsRequest,
+    x_user_id: int = Header(..., alias="x-user-id", description="用户ID（整数类型，对应calendar_user_id）")
+):
+    """
+    提取待办核心参数（不创建待办）
+    
+    从用户的自然语言描述中提取待办事项的核心参数，但不调用日历MCP创建待办。
+    只返回提取的参数，供客户端使用。
+    
+    ⚠️ 重要：X-USER-ID 是整数类型，对应 calendar_user_id，不要使用字符串类型的 user_id
+    
+    参数说明：
+    - **text**: 用户的自然语言描述，如"明天下午三点开会"
+    - **timezone**: 时区，默认 "Asia/Shanghai"
+    
+    返回参数包括：
+    - title: 待办标题
+    - event_date_time: 事件时间（RFC3339格式）
+    - duration: 持续时间（秒）
+    - description: 描述
+    - location: 地点
+    - participants: 参与者列表
+    - is_recurring: 是否为重复事件
+    - rrule: 重复规则（如果是重复事件）
+    - timezone: 时区
+    """
+    logger.info(f"📝 提取待办参数请求: user_id={x_user_id}, text={request.text[:50]}...")
+    
+    try:
+        # 获取用户信息
+        user_info = get_user_by_header(x_user_id)
+        user_id = user_info["user_id"]
+        calendar_user_id = user_info["calendar_user_id"]
+        
+        logger.info(f"📝 用户信息: user_id={user_id}, calendar_user_id={calendar_user_id}")
+        
+        # 使用TodoExtractorTool提取待办信息
+        extractor = TodoExtractorTool()
+        extract_result_str = extractor.call({
+            "text": request.text,
+            "user_id": user_id
+        })
+        
+        extract_result = json.loads(extract_result_str)
+        
+        if not extract_result.get("success"):
+            logger.error(f"❌ 提取待办信息失败: {extract_result.get('error')}")
+            return ExtractTodoParamsResponse(
+                code=1001,
+                message=f"解析失败: {extract_result.get('error', '未知错误')}",
+                data=None
+            )
+        
+        # 获取提取的信息
+        extracted_info = extract_result.get("extracted_info", {})
+        calendar_event_params = extract_result.get("calendar_event_params", {})
+        is_recurring = extract_result.get("is_recurring", False)
+        
+        logger.info(f"📝 提取的待办信息: {json.dumps(extracted_info, ensure_ascii=False)[:200]}...")
+        logger.info(f"📝 日历事件参数: {json.dumps(calendar_event_params, ensure_ascii=False)[:200]}...")
+        
+        # 构建响应数据（扁平化结构，去掉冗余的嵌套对象）
+        response_data = {
+            "title": calendar_event_params.get("title"),
+            "event_date_time": calendar_event_params.get("eventDateTime"),
+            "duration": calendar_event_params.get("duration", 3600),
+            "description": calendar_event_params.get("description"),
+            "location": calendar_event_params.get("location"),
+            "participants": extracted_info.get("participants", []),
+            "is_recurring": is_recurring,
+            "rrule": calendar_event_params.get("rrule") if is_recurring else None,
+            "timezone": request.timezone
+        }
+        
+        logger.info(f"✅ 待办参数提取成功: title={response_data.get('title')}, is_recurring={is_recurring}")
+        
+        return ExtractTodoParamsResponse(
+            code=0,
+            message="success",
+            data=response_data
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ 提取待办参数失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return ExtractTodoParamsResponse(
+            code=500,
+            message=f"服务器错误: {str(e)}",
+            data=None
+        )
+
+
 @router.get("/todo/list")
 async def list_todos(
     x_user_id: int = Header(..., alias="x-user-id", description="用户ID（整数类型，对应calendar_user_id）"),
@@ -255,13 +365,6 @@ async def list_todos(
     查询待办列表
     
     ⚠️ 重要：X-USER-ID 是整数类型，对应 calendar_user_id，不要使用字符串类型的 user_id
-    
-    - **range_start**: 查询开始时间（RFC3339格式）
-    - **range_end**: 查询结束时间（RFC3339格式）
-    - **timezone**: 时区，默认 "Asia/Shanghai"
-    """
-    """
-    查询待办列表
     
     - **range_start**: 查询开始时间（RFC3339格式）
     - **range_end**: 查询结束时间（RFC3339格式）
@@ -513,6 +616,16 @@ async def list_todo_chat_sessions(
         # 构建响应
         session_list = []
         for session in paged_sessions:
+            # 构建 last_message 对象（根据API文档，应该是JSON对象）
+            last_message = None
+            if session.messages:
+                last_msg = session.messages[-1]
+                last_message = {
+                    "role": last_msg.role,
+                    "content": last_msg.content,
+                    "timestamp": last_msg.timestamp
+                }
+            
             session_list.append({
                 "session_id": session.session_id,
                 "event_id": session.event_id,
@@ -520,7 +633,7 @@ async def list_todo_chat_sessions(
                 "created_at": session.created_at,
                 "updated_at": session.updated_at,
                 "message_count": len(session.messages),
-                "last_message": session.messages[-1].content[:50] if session.messages else None
+                "last_message": last_message
             })
         
         return {
@@ -551,15 +664,24 @@ async def list_todo_chat_sessions(
 async def get_todo_chat_session(
     event_id: int,
     session_id: str,
-    x_user_id: int = Header(..., alias="x-user-id", description="用户ID（整数类型，对应calendar_user_id）")
+    x_user_id: int = Header(..., alias="x-user-id", description="用户ID（整数类型，对应calendar_user_id）"),
+    include_messages: bool = True,
+    message_limit: int = 50
 ):
     """
-    获取待办聊天会话详情
+    获取待办聊天会话详情及历史消息
+    
+    根据API文档，返回格式包含：
+    - session: 会话基本信息
+    - event: 关联的待办事项信息
+    - messages: 历史消息列表（当 include_messages=true 时返回）
     
     - **event_id**: 待办事件ID
     - **session_id**: 会话ID
+    - **include_messages**: 是否包含历史消息，默认true
+    - **message_limit**: 消息数量限制，默认50
     """
-    logger.info(f"📋 获取待办聊天会话详情: session_id={session_id}")
+    logger.info(f"📋 获取待办聊天会话详情: session_id={session_id}, include_messages={include_messages}, message_limit={message_limit}")
     
     try:
         # 验证用户
@@ -587,18 +709,100 @@ async def get_todo_chat_session(
                 "data": None
             }
         
+        # 构建 session 对象（根据API文档格式）
+        session_obj = {
+                "session_id": session.session_id,
+                "title": session.title,
+                "created_at": session.created_at,
+                "updated_at": session.updated_at,
+            "message_count": len(session.messages)
+        }
+        
+        # 尝试从日历MCP获取待办事项信息
+        event_obj = None
+        try:
+            calendar_manager = CalendarEventManager(user_id=calendar_user_id)
+            # 查询事件，尝试找到对应event_id的事件
+            result_str = calendar_manager.query_events(
+                timezone="Asia/Shanghai",
+                range_start=None,
+                range_end=None
+            )
+            
+            # 解析结果
+            if isinstance(result_str, str):
+                result = json.loads(result_str)
+            else:
+                result = result_str
+            
+            # 从事件列表中查找对应event_id的事件
+            events = []
+            if isinstance(result, dict):
+                events = result.get("eventInstanceList", result.get("instances", result.get("events", [])))
+            elif isinstance(result, list):
+                events = result
+            
+            # 查找匹配的事件
+            matched_event = None
+            for evt in events:
+                evt_id = None
+                if isinstance(evt, dict):
+                    evt_id = evt.get("id") or evt.get("event_id") or evt.get("eventId")
+                if evt_id == event_id:
+                    matched_event = evt
+                    break
+            
+            if matched_event:
+                # 构建event对象
+                event_obj = {
+                    "event_id": event_id,
+                    "title": matched_event.get("title") or matched_event.get("summary") or "未命名待办",
+                    "event_date_time": matched_event.get("eventDateTime") or matched_event.get("start_time") or matched_event.get("startTime"),
+                    "duration": matched_event.get("duration", 3600),
+                    "description": matched_event.get("description") or matched_event.get("summary"),
+                    "todo_content": session.todo_content,  # 使用会话中存储的待办内容
+                    "rich_cards": session.rich_cards  # 使用会话中存储的富媒体卡片
+                }
+            else:
+                # 如果找不到事件，使用基本信息
+                logger.warning(f"⚠️ 未找到event_id={event_id}的待办事项，使用基本信息")
+                event_obj = {
+                    "event_id": event_id,
+                    "title": "待办事项",
+                    "event_date_time": None,
+                    "duration": 3600,
+                    "description": None,
+                "todo_content": session.todo_content,
+                    "rich_cards": session.rich_cards
+                }
+        except Exception as e:
+            logger.warning(f"⚠️ 获取待办事项信息失败: {e}，使用基本信息")
+            # 如果获取失败，使用基本信息
+            event_obj = {
+                "event_id": event_id,
+                "title": "待办事项",
+                "event_date_time": None,
+                "duration": 3600,
+                "description": None,
+                "todo_content": session.todo_content,
+                "rich_cards": session.rich_cards
+            }
+        
+        # 构建消息列表（根据include_messages参数）
+        messages = []
+        if include_messages:
+            # 限制消息数量
+            message_list = session.messages[-message_limit:] if len(session.messages) > message_limit else session.messages
+            messages = [msg.to_dict() for msg in message_list]
+        
+        # 构建响应（根据API文档格式）
         return {
             "code": 0,
             "message": "success",
             "data": {
-                "session_id": session.session_id,
-                "event_id": session.event_id,
-                "title": session.title,
-                "created_at": session.created_at,
-                "updated_at": session.updated_at,
-                "todo_content": session.todo_content,
-                "rich_cards": session.rich_cards,
-                "messages": [msg.to_dict() for msg in session.messages]
+                "session": session_obj,
+                "event": event_obj,
+                "messages": messages if include_messages else None
             }
         }
         
@@ -973,9 +1177,12 @@ async def update_todo_chat_session_title(
     """
     更新待办聊天会话标题
     
+    路径：`/api/v1/todo/{event_id}/chat/sessions/{session_id}/update-title`
+    请求参数通过POST body传递JSON格式：{"title": "新标题"}
+    
     - **event_id**: 待办事件ID
     - **session_id**: 会话ID
-    - **title**: 新标题
+    - **title**: 新标题（通过POST body传递）
     """
     logger.info(f"📝 更新待办聊天会话标题: session_id={session_id}, new_title={request.title}")
     
