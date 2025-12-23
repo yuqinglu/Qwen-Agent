@@ -14,6 +14,7 @@ import json
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 from fastapi import APIRouter, HTTPException, Header, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from loguru import logger
 
@@ -24,6 +25,7 @@ from ty_mem_agent.mcp_integrations.calendar_mcp_server import CalendarEventManag
 from ty_mem_agent.server.todo_chat_manager import get_todo_chat_manager
 from ty_mem_agent.server.rich_card_manager import get_rich_card_manager, CARD_TYPES
 from ty_mem_agent.agents.todo_chat_agent import get_todo_chat_agent
+from ty_mem_agent.server.todo_chat_sse_service import get_todo_chat_sse_service
 
 
 # ==================== Pydantic 模型 ====================
@@ -1601,6 +1603,112 @@ def _generate_simple_ai_reply(user_content: str, todo_content: Optional[str] = N
         return "好的，请告诉我您想要修改的具体内容。"
     else:
         return f"收到您的消息。关于这个待办事项，我可以帮您：\n1. 补充详细内容\n2. 设置提醒\n3. 添加相关信息\n\n请问您需要哪方面的帮助？"
+
+
+# ==================== SSE流式聊天路由 ====================
+
+class TodoChatSSERequest(BaseModel):
+    """待办聊天SSE请求"""
+    session_id: Optional[str] = Field(default=None, description="会话ID，为空则创建新会话")
+    title: Optional[str] = Field(default=None, description="会话标题（仅创建新会话时有效）")
+    content: str = Field(..., description="用户消息内容")
+    todo_content: Optional[str] = Field(default=None, description="当前待办正文内容")
+    rich_cards: Optional[List[Dict]] = Field(default=None, description="当前富媒体卡片列表")
+
+
+@router.post("/todo/{event_id}/chat/sessions/stream")
+async def todo_chat_stream(
+    event_id: int,
+    request: TodoChatSSERequest,
+    x_user_id: int = Header(..., alias="x-user-id", description="用户ID（整数类型，对应calendar_user_id）")
+):
+    """
+    待办聊天（SSE流式返回）
+    
+    使用Server-Sent Events (SSE)流式返回AI处理过程，实时展示：
+    - AI的思考和规划步骤
+    - 工具调用进度
+    - 富媒体卡片（立即推送）
+    - 聊天内容（打字机效果）
+    - 待办内容更新
+    - 建议待办列表
+    
+    **⚠️ 重要说明**：
+    1. 如果 session_id 为空，则创建新会话
+    2. 如果 session_id 存在，则在现有会话中继续对话
+    3. 客户端需要使用 EventSource 或 fetch + ReadableStream 接收SSE事件流
+    4. 响应头 Content-Type 为 text/event-stream
+    
+    **SSE事件类型**：
+    - `session_init`: 会话初始化
+    - `plan_update`: 执行计划更新
+    - `rich_card`: 富媒体卡片
+    - `message_delta`: 聊天内容增量
+    - `todo_update`: 待办内容更新
+    - `suggestions`: 建议待办列表
+    - `done`: 处理完成
+    - `error`: 错误信息
+    
+    **参数说明**：
+    - **event_id**: 待办事件ID
+    - **session_id**: 会话ID（可选）
+    - **title**: 会话标题（可选，仅创建新会话时有效）
+    - **content**: 用户消息内容（必填）
+    - **todo_content**: 当前待办正文内容（可选）
+    - **rich_cards**: 当前富媒体卡片列表（可选）
+    
+    **示例请求**：
+    ```bash
+    curl -X POST "http://localhost:8080/api/v1/todo/123456/chat/sessions/stream" \\
+      -H "Content-Type: application/json" \\
+      -H "X-USER-ID: 1001" \\
+      -H "Accept: text/event-stream" \\
+      -d '{
+        "content": "帮我补充会议议程并查询明天的天气",
+        "todo_content": "## Q1预算会议\\n\\n### 时间\\n明天下午3点"
+      }'
+    ```
+    """
+    logger.info(f"📡 待办聊天SSE流式请求: event_id={event_id}, user_id={x_user_id}, session_id={request.session_id}")
+    
+    try:
+        # 验证用户
+        user_info = get_user_by_header(x_user_id)
+        calendar_user_id = user_info["calendar_user_id"]
+        
+        # 获取SSE服务
+        sse_service = get_todo_chat_sse_service()
+        
+        # 创建流式响应
+        async def event_generator():
+            async for event in sse_service.process_message_stream(
+                event_id=event_id,
+                user_id=calendar_user_id,
+                content=request.content,
+                session_id=request.session_id,
+                title=request.title,
+                todo_content=request.todo_content,
+                rich_cards=request.rich_cards or []
+            ):
+                yield event
+        
+        # 返回SSE流式响应
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"  # 禁用nginx缓冲
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ 待办聊天SSE处理失败: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"处理失败: {str(e)}"
+        )
 
 
 # 导出路由器

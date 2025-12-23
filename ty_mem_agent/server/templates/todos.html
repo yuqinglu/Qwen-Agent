@@ -294,6 +294,152 @@
             background-color: #28a745;
         }
 
+        /* SSE测试模态框样式 */
+        .sse-modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 10000;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .sse-modal-content {
+            background: white;
+            border-radius: 12px;
+            width: 90%;
+            max-width: 900px;
+            max-height: 80vh;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+        }
+        
+        .sse-modal-header {
+            padding: 20px;
+            border-bottom: 1px solid #e0e0e0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .sse-modal-header h3 {
+            margin: 0;
+            font-size: 20px;
+        }
+        
+        .sse-close-btn {
+            background: none;
+            border: none;
+            font-size: 24px;
+            cursor: pointer;
+            color: #666;
+        }
+        
+        .sse-modal-body {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
+        
+        .sse-input-panel {
+            width: 350px;
+            border-right: 1px solid #e0e0e0;
+            padding: 20px;
+            overflow-y: auto;
+        }
+        
+        .sse-output-panel {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+            background: #f9f9f9;
+        }
+        
+        .sse-form-group {
+            margin-bottom: 15px;
+        }
+        
+        .sse-form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 500;
+            font-size: 14px;
+        }
+        
+        .sse-form-group input,
+        .sse-form-group textarea {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+            font-family: inherit;
+        }
+        
+        .sse-form-group textarea {
+            resize: vertical;
+            min-height: 60px;
+        }
+        
+        .sse-status {
+            padding: 10px;
+            background: #fff3cd;
+            border-radius: 6px;
+            margin-bottom: 10px;
+        }
+        
+        .sse-steps {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 10px;
+        }
+        
+        .sse-step {
+            padding: 8px;
+            margin-bottom: 5px;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+        
+        .sse-step.pending {
+            background: #f5f5f5;
+        }
+        
+        .sse-step.running {
+            background: #e3f2fd;
+        }
+        
+        .sse-step.completed {
+            background: #e8f5e9;
+        }
+        
+        .sse-step.failed {
+            background: #ffebee;
+        }
+        
+        .sse-message {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 4px solid #4caf50;
+            margin-bottom: 10px;
+            white-space: pre-wrap;
+        }
+        
+        .sse-log {
+            padding: 5px 10px;
+            font-size: 12px;
+            color: #666;
+            border-left: 2px solid #ddd;
+            margin-bottom: 5px;
+        }
+
         .filter-buttons {
             display: flex;
             gap: 10px;
@@ -457,6 +603,7 @@
                     <h1>📝 待办事项管理</h1>
                 </div>
                 <div class="header-right">
+                    <button class="btn btn-secondary" onclick="openSSETest()" style="margin-right: 15px;">🤖 SSE测试</button>
                     <div class="user-info" id="userInfo">
                         <div class="user-avatar" id="userAvatar">U</div>
                         <div class="user-name" id="userName">用户</div>
@@ -513,6 +660,44 @@
 
         <div class="todos-container" id="todos-container">
             <div class="loading">加载中...</div>
+        </div>
+    </div>
+
+    <!-- SSE测试模态框 -->
+    <div id="sseTestModal" class="sse-modal">
+        <div class="sse-modal-content">
+            <div class="sse-modal-header">
+                <h3>🤖 SSE流式聊天测试</h3>
+                <button class="sse-close-btn" onclick="closeSSETest()">&times;</button>
+            </div>
+            <div class="sse-modal-body">
+                <div class="sse-input-panel">
+                    <div class="sse-form-group">
+                        <label>待办事件ID *</label>
+                        <input type="number" id="sseEventId" value="123456" placeholder="输入事件ID">
+                    </div>
+                    <div class="sse-form-group">
+                        <label>用户消息 *</label>
+                        <textarea id="sseContent" rows="4" placeholder="输入你的消息...">帮我补充会议议程，并查询明天的天气</textarea>
+                    </div>
+                    <div class="sse-form-group">
+                        <label>当前待办内容</label>
+                        <textarea id="sseTodoContent" rows="5" placeholder="当前待办的Markdown内容...">## Q1预算会议
+
+### 参会人员
+- 张总
+- 李经理
+
+### 会议时间
+明天下午3点</textarea>
+                    </div>
+                    <button class="btn btn-primary" id="sseSendBtn" onclick="sendSSEMessage()" style="width: 100%; margin-bottom: 10px;">发送消息</button>
+                    <button class="btn btn-secondary" onclick="clearSSEOutput()" style="width: 100%;">清空输出</button>
+                </div>
+                <div class="sse-output-panel" id="sseOutput">
+                    <div class="sse-status">等待发送消息...</div>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -942,6 +1127,174 @@
         });
 
         // 测试状态点相关的临时代码已移除
+
+        // ==================== SSE聊天测试功能 ====================
+        
+        function openSSETest() {
+            document.getElementById('sseTestModal').style.display = 'flex';
+        }
+        
+        function closeSSETest() {
+            document.getElementById('sseTestModal').style.display = 'none';
+        }
+        
+        let sseMessageContent = '';
+        
+        async function sendSSEMessage() {
+            const eventId = document.getElementById('sseEventId').value;
+            const content = document.getElementById('sseContent').value;
+            const todoContent = document.getElementById('sseTodoContent').value;
+            
+            if (!eventId || !content) {
+                alert('请填写必填字段');
+                return;
+            }
+            
+            // 获取用户ID，如果未登录则使用测试ID
+            let userId = currentUserId;
+            if (!userId || userId === 'null' || userId === 'undefined') {
+                userId = 1001; // 使用默认测试用户ID
+                console.warn('未登录，使用测试用户ID: 1001');
+            }
+            
+            const outputPanel = document.getElementById('sseOutput');
+            outputPanel.innerHTML = '<div class="sse-status">正在连接...</div>';
+            document.getElementById('sseSendBtn').disabled = true;
+            sseMessageContent = '';
+            
+            const requestBody = {
+                content: content,
+                todo_content: todoContent || null,
+                rich_cards: []
+            };
+            
+            console.log('发送SSE请求:', {
+                userId: userId,
+                eventId: eventId,
+                contentLength: content.length
+            });
+            
+            try {
+                const response = await fetch(`/api/v1/todo/${eventId}/chat/sessions/stream`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-USER-ID': String(userId),
+                        'Accept': 'text/event-stream'
+                    },
+                    body: JSON.stringify(requestBody)
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                let currentEvent = '';
+                
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop();
+                    
+                    for (const line of lines) {
+                        if (line.startsWith('event: ')) {
+                            currentEvent = line.substring(7).trim();
+                        } else if (line.startsWith('data: ')) {
+                            const data = JSON.parse(line.substring(6));
+                            addSSEEvent(currentEvent, data);
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('SSE请求失败:', error);
+                addSSEEvent('error', {message: '请求失败', detail: error.message});
+            } finally {
+                document.getElementById('sseSendBtn').disabled = false;
+            }
+        }
+        
+        function addSSEEvent(type, data) {
+            const panel = document.getElementById('sseOutput');
+            const statusElements = panel.querySelectorAll('.sse-status');
+            statusElements.forEach(el => el.remove());
+            
+            switch(type) {
+                case 'session_init':
+                    appendSSELog(`✅ 会话创建: ${data.session_id}`);
+                    break;
+                case 'plan_update':
+                    renderSSESteps(data.steps);
+                    break;
+                case 'rich_card':
+                    appendSSELog(`🌤️ 卡片: ${data.title}`);
+                    break;
+                case 'message_delta':
+                    sseMessageContent += data.content;
+                    updateSSEMessage(sseMessageContent);
+                    break;
+                case 'todo_update':
+                    appendSSELog(`📝 待办已更新`);
+                    break;
+                case 'suggestions':
+                    appendSSELog(`💡 生成${data.length}个建议待办`);
+                    break;
+                case 'done':
+                    appendSSELog(`✅ 完成 (${data.duration_ms}ms)`);
+                    break;
+                case 'error':
+                    appendSSELog(`❌ 错误: ${data.message}`);
+                    break;
+            }
+            
+            panel.scrollTop = panel.scrollHeight;
+        }
+        
+        function renderSSESteps(steps) {
+            let stepsDiv = document.querySelector('.sse-steps');
+            if (!stepsDiv) {
+                stepsDiv = document.createElement('div');
+                stepsDiv.className = 'sse-steps';
+                document.getElementById('sseOutput').appendChild(stepsDiv);
+            }
+            
+            stepsDiv.innerHTML = steps.map(step => {
+                const statusIcon = {
+                    'pending': '⏸️',
+                    'running': '⏳',
+                    'completed': '✅',
+                    'failed': '❌'
+                }[step.status];
+                return `<div class="sse-step ${step.status}">${statusIcon} ${step.desc}</div>`;
+            }).join('');
+        }
+        
+        function updateSSEMessage(text) {
+            let messageDiv = document.querySelector('.sse-message');
+            if (!messageDiv) {
+                messageDiv = document.createElement('div');
+                messageDiv.className = 'sse-message';
+                document.getElementById('sseOutput').appendChild(messageDiv);
+            }
+            messageDiv.textContent = text;
+        }
+        
+        function appendSSELog(text) {
+            const log = document.createElement('div');
+            log.className = 'sse-log';
+            log.textContent = `[${new Date().toLocaleTimeString()}] ${text}`;
+            document.getElementById('sseOutput').appendChild(log);
+        }
+        
+        function clearSSEOutput() {
+            document.getElementById('sseOutput').innerHTML = '<div class="sse-status">等待发送...</div>';
+            sseMessageContent = '';
+        }
     </script>
 </body>
 </html>

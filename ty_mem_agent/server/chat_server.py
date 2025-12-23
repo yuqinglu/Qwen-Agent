@@ -150,6 +150,23 @@ class ChatServer:
             """首页"""
             return {"message": "TY Memory Agent Chat Server", "version": "1.0.0"}
         
+        @self.app.get("/todos.html", response_class=HTMLResponse)
+        async def todos_page():
+            """待办事项页面"""
+            templates_dir = Path(__file__).parent / "templates"
+            todos_file = templates_dir / "todos.html"
+            
+            if todos_file.exists():
+                with open(todos_file, "r", encoding="utf-8") as f:
+                    return HTMLResponse(f.read())
+            else:
+                return HTMLResponse("<h1>todos.html not found</h1>", status_code=404)
+        
+        @self.app.get("/static/todos.html", response_class=HTMLResponse)
+        async def todos_page_static():
+            """待办事项页面（静态路径兼容）"""
+            return await todos_page()
+        
         @self.app.get("/health")
         async def health_check():
             """健康检查"""
