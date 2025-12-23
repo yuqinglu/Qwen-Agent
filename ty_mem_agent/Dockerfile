@@ -1,5 +1,10 @@
 # TY Memory Agent Dockerfile
-FROM python:3.10-slim
+# 使用国内镜像源拉取基础镜像（解决 Docker Hub 访问问题）
+# 如果阿里云镜像源不可用，可以尝试以下备选方案：
+# - 网易镜像：hub-mirror.c.163.com/library/python:3.10-slim
+# - 腾讯云镜像：ccr.ccs.tencentyun.com/library/python:3.10-slim
+# - 中科大镜像：docker.mirrors.ustc.edu.cn/library/python:3.10-slim
+FROM docker.m.daocloud.io/library/python:3.10-slim
 
 # 设置工作目录
 WORKDIR /app
