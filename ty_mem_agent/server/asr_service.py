@@ -274,6 +274,7 @@ class DashscopeASRClient:
                         "format": self.config.format,
                         "sample_rate": self.config.sample_rate,
                         "language_hints": [self.config.language],
+                        "semantic_punctuation_enabled": True,
                         "enable_punctuation": self.config.enable_punctuation,
                         "enable_inverse_text_normalization": self.config.enable_inverse_text_normalization
                     },
@@ -565,38 +566,8 @@ class ASRSession:
             # 创建ASR客户端
             self._client = DashscopeASRClient(config=self.config)
             
-            # 设置回调，将结果放入队列
-            def on_partial(result: ASRResult):
-                asyncio.create_task(self._result_queue.put({
-                    "type": "partial",
-                    "data": result.to_dict()
-                }))
-            
-            def on_final(result: ASRResult):
-                asyncio.create_task(self._result_queue.put({
-                    "type": "final",
-                    "data": result.to_dict()
-                }))
-            
-            def on_error(error: ASRError):
-                asyncio.create_task(self._result_queue.put({
-                    "type": "error",
-                    "code": error.code,
-                    "message": error.message
-                }))
-            
-            def on_done():
-                asyncio.create_task(self._result_queue.put({
-                    "type": "done",
-                    "status": "completed"
-                }))
-            
-            self._client.set_callbacks(
-                on_partial=on_partial,
-                on_final=on_final,
-                on_error=on_error,
-                on_done=on_done
-            )
+            # 注意：不设置回调函数，避免重复处理结果
+            # 结果将由 _receive_loop 统一处理并放入队列
             
             # 连接到阿里云ASR服务
             if not await self._client.connect():
@@ -608,7 +579,7 @@ class ASRSession:
                 self._status = "error"
                 return False
             
-            # 启动结果接收任务
+            # 启动结果接收任务（统一处理结果，避免重复）
             self._receive_task = asyncio.create_task(self._receive_loop())
             
             self._status = "ready"

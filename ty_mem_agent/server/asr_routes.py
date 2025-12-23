@@ -8,6 +8,7 @@ ASR 语音识别 API 路由
 
 import json
 import asyncio
+import logging
 from typing import Optional, Dict, Any
 from datetime import datetime
 
@@ -29,6 +30,43 @@ from ty_mem_agent.server.asr_service import (
     get_asr_config,
     SUPPORTED_AUDIO_FORMATS
 )
+
+
+# ==================== WebSocket 日志过滤器 ====================
+
+class WebSocketBinaryLogFilter(logging.Filter):
+    """过滤WebSocket BINARY消息的日志"""
+    
+    def filter(self, record: logging.LogRecord) -> bool:
+        """
+        过滤掉WebSocket的BINARY消息日志
+        只保留TEXT消息和其他重要日志
+        """
+        message = record.getMessage()
+        
+        # 过滤掉 "< BINARY" 消息（客户端发送的音频数据）
+        if "< BINARY" in message:
+            return False
+        
+        # 可选：也过滤掉 "> BINARY" 消息（服务端发送的二进制数据，如果有）
+        # if "> BINARY" in message:
+        #     return False
+        
+        return True
+
+
+# 应用日志过滤器到uvicorn的日志
+def setup_websocket_log_filter():
+    """设置WebSocket日志过滤器"""
+    # 获取uvicorn的logger
+    uvicorn_logger = logging.getLogger("uvicorn.access")
+    uvicorn_logger.addFilter(WebSocketBinaryLogFilter())
+    
+    # 也应用到uvicorn.error logger
+    uvicorn_error_logger = logging.getLogger("uvicorn.error")
+    uvicorn_error_logger.addFilter(WebSocketBinaryLogFilter())
+    
+    logger.info("✅ WebSocket日志过滤器已启用（已过滤BINARY消息）")
 
 
 # ==================== Pydantic 模型 ====================
@@ -392,6 +430,7 @@ def register_asr_websocket(app):
         asr_session = None
         user_id = None
         initialized = False
+        poll_task = None  # 保存轮询任务的引用
         
         try:
             while True:
@@ -422,11 +461,7 @@ def register_asr_websocket(app):
                                 "code": 1001,
                                 "message": "发送音频失败"
                             })
-                        
-                        # 检查是否有识别结果
-                        result = await asr_session.get_result(timeout=0.01)
-                        if result:
-                            await websocket.send_json(result)
+                        # 结果由后台轮询任务 _poll_results 统一处理，避免重复发送
                 
                 elif "text" in message:
                     # JSON消息
@@ -489,8 +524,8 @@ def register_asr_websocket(app):
                             })
                             logger.info(f"✅ ASR会话已启动: user_id={user_id}, session_id={asr_session.session_id}")
                             
-                            # 启动结果轮询任务
-                            asyncio.create_task(_poll_results(websocket, asr_session))
+                            # 启动结果轮询任务（保存任务引用以便后续等待）
+                            poll_task = asyncio.create_task(_poll_results(websocket, asr_session))
                         else:
                             await websocket.send_json({
                                 "type": "error",
@@ -513,18 +548,18 @@ def register_asr_websocket(app):
                         if asr_session:
                             await asr_session.finish()
                             
-                            # 等待最终结果
-                            for _ in range(50):  # 最多等待5秒
-                                result = await asr_session.get_result(timeout=0.1)
-                                if result:
-                                    await websocket.send_json(result)
-                                    if result.get("type") == "done":
-                                        break
+                            # 等待后台轮询任务处理完所有结果（包括最终的final结果）
+                            # _poll_results 会在收到 "done" 后自动退出
+                            # 等待轮询任务完成，确保所有结果都已发送给客户端
+                            if poll_task:
+                                try:
+                                    # 设置超时以防万一（最多等待5秒）
+                                    await asyncio.wait_for(poll_task, timeout=5.0)
+                                    logger.info(f"✅ 轮询任务已完成，所有结果已发送")
+                                except asyncio.TimeoutError:
+                                    logger.warning(f"⚠️ 等待轮询任务超时")
+                                    poll_task.cancel()
                             
-                            await websocket.send_json({
-                                "type": "done",
-                                "message": "识别完成"
-                            })
                             logger.info(f"✅ ASR识别完成: session_id={asr_session.session_id}")
                         break
                     
@@ -550,6 +585,14 @@ def register_asr_websocket(app):
             except:
                 pass
         finally:
+            # 取消轮询任务（如果还在运行）
+            if poll_task and not poll_task.done():
+                poll_task.cancel()
+                try:
+                    await poll_task
+                except asyncio.CancelledError:
+                    pass
+            
             # 清理ASR会话
             if asr_session:
                 session_manager = get_asr_session_manager()
@@ -562,7 +605,8 @@ async def _poll_results(websocket: WebSocket, asr_session):
     轮询ASR结果并发送给客户端
     """
     try:
-        while asr_session.status in ("ready", "running"):
+        # 注意：也要包括"finished"状态，以便在调用finish()后继续获取最终的final结果
+        while asr_session.status in ("ready", "running", "finished"):
             result = await asr_session.get_result(timeout=0.1)
             if result:
                 await websocket.send_json(result)
@@ -583,6 +627,9 @@ def register_asr_routes(app):
     - HTTP接口（/api/v1/asr/...）
     - WebSocket接口（/api/v1/asr/stream）
     """
+    # 设置WebSocket日志过滤器（过滤BINARY消息）
+    setup_websocket_log_filter()
+    
     # 注册HTTP路由
     app.include_router(router)
     
