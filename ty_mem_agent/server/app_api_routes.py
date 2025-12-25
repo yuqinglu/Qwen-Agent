@@ -278,13 +278,15 @@ async def extract_todo_params(
     
     返回参数包括：
     - title: 待办标题
-    - event_date_time: 事件时间（RFC3339格式）
+    - date: 事件日期，格式为 YYYYmmdd（如 20231225）
+    - time: 事件时间，格式为 HHmmss（如 143000）
     - duration: 持续时间（秒）
     - description: 描述
     - location: 地点
     - participants: 参与者列表
     - is_recurring: 是否为重复事件
-    - rrule: 重复规则（如果是重复事件）
+    - recurrenceRule: 重复规则，参考 iCalendar RFC 5545（如果是重复事件）
+    - alarmTrigger: 提醒触发器，提前多少时间提醒，参考 iCalendar RFC 5545
     - timezone: 时区
     """
     logger.info(f"📝 提取待办参数请求: user_id={x_user_id}, text={request.text[:50]}...")
@@ -322,20 +324,42 @@ async def extract_todo_params(
         logger.info(f"📝 提取的待办信息: {json.dumps(extracted_info, ensure_ascii=False)[:200]}...")
         logger.info(f"📝 日历事件参数: {json.dumps(calendar_event_params, ensure_ascii=False)[:200]}...")
         
-        # 构建响应数据（扁平化结构，去掉冗余的嵌套对象）
+        # 处理日期时间，将 event_date_time 拆分为 date 和 time
+        event_date_time = calendar_event_params.get("eventDateTime")
+        date_str = None
+        time_str = None
+        
+        if event_date_time:
+            try:
+                # 解析 RFC3339 格式的时间
+                from datetime import datetime
+                dt = datetime.fromisoformat(event_date_time.replace('Z', '+00:00'))
+                # 转换为 YYYYmmdd 和 HHmmss 格式
+                date_str = dt.strftime("%Y%m%d")
+                time_str = dt.strftime("%H%M%S")
+            except Exception as e:
+                logger.warning(f"⚠️ 解析日期时间失败: {e}, event_date_time={event_date_time}")
+        
+        # 获取提醒触发器（alarmTrigger）
+        # 从 calendar_event_params 中获取，如果没有提到提醒则为 None
+        alarm_trigger = calendar_event_params.get("alarm_trigger")
+        
+        # 构建响应数据
         response_data = {
             "title": calendar_event_params.get("title"),
-            "event_date_time": calendar_event_params.get("eventDateTime"),
+            "date": date_str,
+            "time": time_str,
             "duration": calendar_event_params.get("duration", 3600),
             "description": calendar_event_params.get("description"),
             "location": calendar_event_params.get("location"),
             "participants": extracted_info.get("participants", []),
             "is_recurring": is_recurring,
-            "rrule": calendar_event_params.get("rrule") if is_recurring else None,
+            "recurrenceRule": calendar_event_params.get("rrule") if is_recurring else None,
+            "alarmTrigger": alarm_trigger,  # 从提取结果中获取，如果用户没有提到提醒则为 None
             "timezone": request.timezone
         }
         
-        logger.info(f"✅ 待办参数提取成功: title={response_data.get('title')}, is_recurring={is_recurring}")
+        logger.info(f"✅ 待办参数提取成功: title={response_data.get('title')}, date={date_str}, time={time_str}, is_recurring={is_recurring}")
         
         return ExtractTodoParamsResponse(
             code=0,

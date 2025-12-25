@@ -73,6 +73,47 @@ class TodoExtractorTool(BaseTool):
             self.llm = get_chat_model(llm_config)
         return self.llm
     
+    def _parse_datetime_naive(self, dt_str: str) -> datetime:
+        """
+        安全地解析ISO格式时间字符串为naive datetime
+        
+        处理各种时区格式：
+        - 2024-12-24T10:00:00
+        - 2024-12-24T10:00:00Z
+        - 2024-12-24T10:00:00+08:00
+        - 2024-12-24T10:00:00-05:00
+        
+        返回：naive datetime（移除所有时区信息）
+        """
+        if not dt_str:
+            return None
+        
+        try:
+            # 先尝试解析为aware datetime
+            # replace('Z', '+00:00') 处理 Z 结尾的情况
+            dt = datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
+            
+            # 如果是aware datetime，转换为naive（移除时区信息）
+            if dt.tzinfo is not None:
+                # 转换为UTC时间，然后移除时区信息
+                dt = dt.replace(tzinfo=None)
+            
+            return dt
+        except Exception as e:
+            logger.warning(f"解析时间字符串失败: {dt_str}, 错误: {e}")
+            # 尝试更激进的处理：手动移除时区信息
+            try:
+                # 移除所有可能的时区后缀
+                # 格式: +08:00, -05:00, Z
+                import re
+                clean_str = re.sub(r'[+-]\d{2}:\d{2}$', '', dt_str)
+                clean_str = clean_str.replace('Z', '')
+                dt = datetime.fromisoformat(clean_str)
+                return dt
+            except Exception as e2:
+                logger.error(f"彻底解析时间失败: {dt_str}, 错误: {e2}")
+                return None
+    
     def call(self, params: Union[str, Dict], **kwargs) -> str:
         """执行待办提取（仅提取信息，不创建待办）
         
@@ -104,19 +145,19 @@ class TodoExtractorTool(BaseTool):
             
             duration = extracted_info.get('duration', 60)  # 默认0小时
             
-            # 确定开始时间
+            # 确定开始时间（使用安全的解析方法）
             start_dt = None
             if extracted_info.get('start_time'):
                 start_str = extracted_info['start_time']
                 try:
-                    start_dt = datetime.fromisoformat(start_str.replace('Z', '+00:00').split('+')[0])
+                    start_dt = self._parse_datetime_naive(start_str)
                 except Exception as e:
                     logger.warning(f"解析start_time失败: {e}")
             
             if not start_dt and extracted_info.get('deadline'):
                 deadline_str = extracted_info['deadline']
                 try:
-                    start_dt = datetime.fromisoformat(deadline_str.replace('Z', '+00:00').split('+')[0])
+                    start_dt = self._parse_datetime_naive(deadline_str)
                 except Exception as e:
                     logger.warning(f"解析deadline失败: {e}")
             
@@ -132,10 +173,13 @@ class TodoExtractorTool(BaseTool):
                 if extracted_info.get('end_time'):
                     end_str = extracted_info['end_time']
                     try:
-                        end_dt = datetime.fromisoformat(end_str.replace('Z', '+00:00').split('+')[0])
-                        duration_seconds = (end_dt - start_dt).total_seconds()
-                        duration = max(900, int(duration_seconds))  # 至少15分钟（900秒）
-                        logger.debug(f"⏱️ Duration计算（基于end_time）: {duration}秒 ({duration/60:.1f}分钟)")
+                        end_dt = self._parse_datetime_naive(end_str)
+                        if end_dt:
+                            duration_seconds = (end_dt - start_dt).total_seconds()
+                            duration = max(900, int(duration_seconds))  # 至少15分钟（900秒）
+                            logger.debug(f"⏱️ Duration计算（基于end_time）: {duration}秒 ({duration/60:.1f}分钟)")
+                        else:
+                            logger.warning(f"解析end_time失败，使用提供的duration")
                     except Exception as e:
                         logger.warning(f"解析end_time失败: {e}，使用提供的duration")
                 elif extracted_info.get('duration'):
@@ -175,12 +219,64 @@ class TodoExtractorTool(BaseTool):
             is_recurring = extracted_info.get('is_recurring', False)
             rrule = extracted_info.get('rrule')
             
+            # 处理提醒时间，转换为 iCalendar RFC 5545 格式的 alarmTrigger
+            alarm_trigger = None
+            if extracted_info.get('reminder_time') and start_dt:
+                try:
+                    reminder_str = extracted_info['reminder_time']
+                    # 使用安全的解析方法，确保返回 naive datetime
+                    reminder_dt = self._parse_datetime_naive(reminder_str)
+                    
+                    if not reminder_dt:
+                        logger.warning(f"无法解析提醒时间: {reminder_str}")
+                    else:
+                        # 计算提醒时间与事件开始时间的时间差
+                        # 现在两者都是 naive datetime，可以安全相减
+                        time_diff = start_dt - reminder_dt
+                        
+                        # 转换为分钟数
+                        minutes_before = int(time_diff.total_seconds() / 60)
+                        
+                        if minutes_before > 0:
+                            # 转换为 iCalendar 格式
+                            # 如果大于等于1440分钟(1天)，使用天数表示
+                            if minutes_before >= 1440:
+                                days = minutes_before // 1440
+                                remaining_minutes = minutes_before % 1440
+                                if remaining_minutes > 0:
+                                    hours = remaining_minutes // 60
+                                    mins = remaining_minutes % 60
+                                    if hours > 0 and mins > 0:
+                                        alarm_trigger = f"-P{days}DT{hours}H{mins}M"
+                                    elif hours > 0:
+                                        alarm_trigger = f"-P{days}DT{hours}H"
+                                    else:
+                                        alarm_trigger = f"-P{days}DT{mins}M"
+                                else:
+                                    alarm_trigger = f"-P{days}D"
+                            # 如果大于等于60分钟，使用小时表示
+                            elif minutes_before >= 60:
+                                hours = minutes_before // 60
+                                mins = minutes_before % 60
+                                if mins > 0:
+                                    alarm_trigger = f"-PT{hours}H{mins}M"
+                                else:
+                                    alarm_trigger = f"-PT{hours}H"
+                            # 否则使用分钟表示
+                            else:
+                                alarm_trigger = f"-PT{minutes_before}M"
+                            
+                            logger.debug(f"⏰ 提醒时间转换: reminder_time={reminder_str}, start_time={start_dt.isoformat()}, alarmTrigger={alarm_trigger}")
+                except Exception as e:
+                    logger.warning(f"处理提醒时间失败: {e}")
+            
             # 构建基础参数
             base_params = {
                 "title": extracted_info.get('title', '未命名事件'),
                 "description": description,
                 "location": extracted_info.get('location'),
-                "timezone": "Asia/Shanghai"
+                "timezone": "Asia/Shanghai",
+                "alarm_trigger": alarm_trigger  # 添加提醒触发器
             }
             
             # 根据是否为重复事件，构建不同的参数
@@ -246,7 +342,7 @@ class TodoExtractorTool(BaseTool):
 - end_time: 结束时间（ISO 8601格式，如"2025-10-15T10:00:00"）
 - deadline: 截止时间（ISO 8601格式，如"2025-10-15T08:30:00"，如果没有start_time则使用此字段）
 - duration: 持续时间（整数，单位：分钟，如60表示1小时，可选）【注意：此字段仅用于辅助，实际会被转换为秒数】
-- reminder_time: 提醒时间（ISO 8601格式，可选）
+- reminder_time: 提醒时间（ISO 8601格式，仅当用户明确提到"提醒"、"提前XX分钟/小时"时才填写，如"提前30分钟提醒"则计算出提醒时间点）
 - location: 地点（可选）
 - participants: 参与人列表（数组，如["张总"]）
 - priority: 优先级（0-低，1-中，2-高）
@@ -380,12 +476,13 @@ class TodoExtractorTool(BaseTool):
                     # 解析为datetime对象
                     from datetime import datetime, timedelta
                     
-                    # 尝试解析ISO格式
-                    try:
-                        deadline_dt = datetime.fromisoformat(deadline_str.replace('Z', '+00:00'))
-                    except:
-                        # 如果失败，尝试不带时区的格式
-                        deadline_dt = datetime.fromisoformat(deadline_str.split('+')[0].split('Z')[0])
+                    # 使用安全的解析方法
+                    deadline_dt = self._parse_datetime_naive(deadline_str)
+                    
+                    if not deadline_dt:
+                        # 如果解析失败，保持原值
+                        logger.warning(f"无法解析 deadline: {deadline_str}")
+                        return cleaned
                     
                     # 减去1天，并设置为23:59:59
                     corrected_dt = deadline_dt - timedelta(days=1)
