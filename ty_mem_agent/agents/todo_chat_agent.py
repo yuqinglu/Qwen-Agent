@@ -8,7 +8,7 @@
 import json
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Union, Iterator, AsyncIterator
+from typing import Dict, List, Optional, Any, Union, Iterator, AsyncIterator, Literal
 from datetime import datetime
 from loguru import logger
 
@@ -46,11 +46,11 @@ TODO_CHAT_SYSTEM_PROMPT = """你是一个**积极主动**的智能待办助手�
 
 ## 🔧 可用工具
 
-你可以调用以下类型的工具（如果可用）：
-- **天气查询**：查询目的地天气
-- **地图导航**：规划交通路线
-- **日历服务**：创建待办、设置提醒
-- **时间查询**：获取当前时间
+你可以使用以下工具：
+
+{tool_descs}
+
+注意：工具名称必须是以下之一: {tool_names}
 
 ## ⚡ 主动服务示例
 
@@ -87,10 +87,33 @@ TODO_CHAT_SYSTEM_PROMPT = """你是一个**积极主动**的智能待办助手�
    - 调用相关MCP工具执行任务
    - 生成富媒体卡片（天气、行程等）
 
-## 📝 结构化输出格式
+## 📝 回复格式要求
+
+### ⚠️ 重要：你必须按照ReAct格式完整回复
+
+**ReAct格式**：
+```
+Question: [用户的问题]
+Thought: [你的思考过程]
+Action: [工具名称，必须是可用工具之一]
+Action Input: [工具参数，JSON格式]
+Observation: [工具返回结果]
+... (可以重复多次 Thought/Action/Action Input/Observation)
+Thought: [最终思考]
+Final Answer: [你对用户的最终回复，必须友好且完整]
+```
+
+**关键要求**：
+1. ✅ **必须输出"Final Answer:"** - 这是你对用户的最终回复，必须包含
+2. ✅ **Final Answer必须友好且完整** - 向用户解释你做了什么，结果如何
+3. ✅ **使用结构化标记** - 在Final Answer中嵌入[TODO_CONTENT_UPDATE]、[RICH_CARD]、[SUGGESTED_TODO]标记
+
+### 📝 Final Answer中的结构化输出格式
+
+**重要**：以下所有结构化标记都必须放在Final Answer中，作为Final Answer的一部分。
 
 ### 1. 建议创建新待办/提醒
-当需要为用户创建新的待办或提醒时：
+当需要为用户创建新的待办或提醒时，在Final Answer中嵌入：
 
 [SUGGESTED_TODO]
 {{
@@ -104,7 +127,7 @@ TODO_CHAT_SYSTEM_PROMPT = """你是一个**积极主动**的智能待办助手�
 [/SUGGESTED_TODO]
 
 ### 2. 更新待办内容
-当需要完善待办内容时：
+当需要完善待办内容时，在Final Answer中嵌入：
 
 [TODO_CONTENT_UPDATE]
 ## 12月5日北京出差
@@ -129,7 +152,7 @@ TODO_CHAT_SYSTEM_PROMPT = """你是一个**积极主动**的智能待办助手�
 [/TODO_CONTENT_UPDATE]
 
 ### 3. 生成富媒体卡片
-当查询到信息需要展示时（如天气、航班等）：
+当查询到信息需要展示时（如天气、航班等），在Final Answer中嵌入：
 
 [RICH_CARD]
 {{
@@ -147,6 +170,51 @@ TODO_CHAT_SYSTEM_PROMPT = """你是一个**积极主动**的智能待办助手�
 }}
 [/RICH_CARD]
 
+**注意**：富媒体卡片会自动从工具返回结果中提取，你不需要手动生成。只需在Final Answer中用友好的语言向用户说明即可。
+
+### 📋 Final Answer完整示例
+
+以下是一个完整的Final Answer示例，展示了如何将结构化标记嵌入到回复中：
+
+```
+Final Answer: 好的，我已经为您查询了北京的天气情况。明天（12月30日）北京天气晴朗，白天最高温度3℃，夜间最低温度-9℃，温差较大。建议您：
+
+1. 携带厚外套和围巾保暖
+2. 早晚温度很低，注意防寒
+3. 天气晴好，适合出行
+
+我已经为您更新了待办内容，并建议了一些准备事项。
+
+[TODO_CONTENT_UPDATE]
+## 明天去北京出差
+
+**天气情况**
+- 日期：2025-12-30
+- 天气：晴
+- 温度：白天3℃，夜间-9℃
+- 风力：东北风1-3级
+
+**出行建议**
+- 携带厚外套、围巾、手套
+- 注意早晚保暖
+- 准备保温杯
+[/TODO_CONTENT_UPDATE]
+
+[SUGGESTED_TODO]
+{{
+  "title": "准备保暖衣物",
+  "description": "北京明天温度-9℃至3℃，准备厚外套、围巾、手套",
+  "relation_type": "pre"
+}}
+[/SUGGESTED_TODO]
+```
+
+**关键点**：
+- Final Answer以友好的文字说明开头
+- 然后嵌入[TODO_CONTENT_UPDATE]标记（如果需要更新待办）
+- 然后嵌入[SUGGESTED_TODO]标记（如果需要建议新待办）
+- 所有标记都是Final Answer的一部分，不是分开的
+
 ## 🚫 禁止事项
 
 1. **不要只是给建议而不行动**：能查询的立即查询，能创建的立即创建
@@ -162,6 +230,11 @@ TODO_CHAT_SYSTEM_PROMPT = """你是一个**积极主动**的智能待办助手�
 4. **友好专业**：像贴心的私人助理一样服务
 
 当前时间：{current_time}
+现在开始执行：
+
+Question: {query}
+Thought: 
+
 """
 
 
@@ -196,10 +269,13 @@ class TodoChatAgent(ReActChat):
                 }
                 llm = llm_config  # 传递配置字典，让基类处理
         
-        # 系统提示词
-        system_message = TODO_CHAT_SYSTEM_PROMPT.format(
-            current_time=datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        )
+        # 系统提示词（不在这里格式化tool_descs和tool_names，这些会在_prepend_react_prompt中动态填充）
+        # 保存原始模板，用于后续格式化
+        self._system_message_template = TODO_CHAT_SYSTEM_PROMPT
+        
+        # 初始化时只设置一个占位符版本，实际格式化会在_prepend_react_prompt中进行
+        # 这里设置一个默认值，避免基类检查时出错
+        system_message = "待办助手系统提示词（将在执行时动态格式化）"
         
         super().__init__(
             function_list=function_list,
@@ -209,6 +285,56 @@ class TodoChatAgent(ReActChat):
             description="专门用于待办页面的智能聊天助手",
             **kwargs
         )
+    
+    def _prepend_react_prompt(self, messages: List[Message], lang: Literal['en', 'zh'] = 'zh') -> List[Message]:
+        """
+        重写父类方法，参考原始实现，但使用TODO_CHAT_SYSTEM_PROMPT作为系统提示词
+        """
+        from qwen_agent.utils.utils import format_as_text_message
+        import json
+        
+        # 提取工具描述（与父类逻辑相同）
+        tool_descs = []
+        for f in self.function_map.values():
+            function = f.function
+            name = function.get('name', None)
+            name_for_human = function.get('name_for_human', name)
+            name_for_model = function.get('name_for_model', name)
+            assert name_for_human and name_for_model
+            args_format = function.get('args_format', '')
+            tool_descs.append(
+                '{name_for_model}: Call this tool to interact with the {name_for_human} API. '
+                'What is the {name_for_human} API useful for? {description_for_model} Parameters: {parameters} {args_format}'.format(
+                    name_for_human=name_for_human,
+                    name_for_model=name_for_model,
+                    description_for_model=function['description'],
+                    parameters=json.dumps(function['parameters'], ensure_ascii=False),
+                    args_format=args_format
+                ).rstrip()
+            )
+        tool_descs = '\n\n'.join(tool_descs)
+        tool_names = ','.join(tool.name for tool in self.function_map.values())
+        
+        # 格式化消息
+        text_messages = [format_as_text_message(m, add_upload_info=True, lang=lang) for m in messages]
+        
+        # 获取用户查询
+        user_query = text_messages[-1].content if text_messages else ""
+        
+        # 使用原始模板格式化系统提示词，填入所有占位符
+        # 参考原始PROMPT_REACT的实现，使用.format()方法
+        from datetime import datetime
+        complete_prompt = self._system_message_template.format(
+            current_time=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            tool_descs=tool_descs,
+            tool_names=tool_names,
+            query=user_query
+        )
+        
+        # 替换最后一条消息的内容
+        text_messages[-1].content = complete_prompt
+        
+        return text_messages
         
         logger.info("✅ TodoChatAgent 初始化完成")
     
@@ -335,10 +461,25 @@ class TodoChatAgent(ReActChat):
             context_parts.append(f"## 当前待办正文\n\n{todo_content}")
         
         if rich_cards:
-            cards_info = "\n".join([
-                f"- {card.get('card_type', 'unknown')}: {card.get('title', '未知')}"
-                for card in rich_cards
-            ])
+            # 完整展示卡片信息，包括数据内容
+            import json
+            cards_info_list = []
+            for idx, card in enumerate(rich_cards, 1):
+                card_type = card.get('card_type', 'unknown')
+                card_title = card.get('title', '未知')
+                card_data = card.get('data', {})
+                
+                # 将卡片数据格式化为易读的文本
+                card_info = f"### 卡片 {idx}: {card_title} ({card_type})\n"
+                if card_data:
+                    # 使用缩进的JSON格式展示数据
+                    card_info += f"```json\n{json.dumps(card_data, ensure_ascii=False, indent=2)}\n```"
+                else:
+                    card_info += "（无数据）"
+                
+                cards_info_list.append(card_info)
+            
+            cards_info = "\n\n".join(cards_info_list)
             context_parts.append(f"## 关联的富媒体卡片\n\n{cards_info}")
         
         context_message = "\n\n".join(context_parts) if context_parts else ""
@@ -457,33 +598,70 @@ class TodoChatAgent(ReActChat):
             clean_response = final_answer_match.group(1).strip()
             logger.debug(f"📝 从ReAct回复中提取Final Answer: {clean_response[:100]}...")
         else:
-            # 没有Final Answer格式，尝试去除Thought:前缀
-            clean_response = response
-            # 去除开头的Thought:部分（如果存在）
-            thought_pattern = r'^Thought:\s*.*?(?=\n\n|\n[A-Z]|$)'
-            clean_response = re.sub(thought_pattern, '', clean_response, flags=re.DOTALL).strip()
+            # 没有Final Answer格式，尝试提取最后一个Thought的内容
+            logger.warning("⚠️ 未找到Final Answer，尝试提取最后一个Thought")
+            
+            # 提取所有Thought
+            last_thought_pattern = r'Thought:\s*(.*?)(?=\n(?:Action:|Observation:|Final Answer:|Thought:|\Z))'
+            thought_matches = list(re.finditer(last_thought_pattern, response, re.DOTALL))
+            
+            if thought_matches:
+                # 取最后一个Thought的内容
+                last_thought = thought_matches[-1].group(1).strip()
+                
+                # 判断是否应该使用这个Thought作为最终回复：
+                # 1. 包含结构化标记（TODO_CONTENT_UPDATE、SUGGESTED_TODO、RICH_CARD）
+                # 2. 包含结论性关键词
+                # 3. 后面没有Action（说明是最终回复）
+                has_structured_markers = any(marker in last_thought for marker in [
+                    '[TODO_CONTENT_UPDATE]', '[SUGGESTED_TODO]', '[RICH_CARD]'
+                ])
+                has_conclusion_keywords = any(keyword in last_thought.lower() for keyword in [
+                    'i now know', '现在我知道', '我知道了', 'final answer', '已成功', '已完成', '已创建', '已更新'
+                ])
+                
+                # 检查这个Thought后面是否还有Action
+                thought_end_pos = thought_matches[-1].end()
+                remaining_text = response[thought_end_pos:]
+                has_following_action = 'Action:' in remaining_text
+                
+                # 如果包含结构化标记，或者包含结论性关键词，或者后面没有Action，使用这个Thought
+                if has_structured_markers or has_conclusion_keywords or not has_following_action:
+                    clean_response = last_thought
+                    logger.info(f"📝 提取最后的Thought作为回复（包含结构化标记={has_structured_markers}, 结论性={has_conclusion_keywords}, 无后续Action={not has_following_action}）: {clean_response[:100]}...")
+                else:
+                    # 否则尝试完全清理ReAct格式
+                    clean_response = self._clean_react_format(response)
+            else:
+                # 完全清理ReAct格式
+                clean_response = self._clean_react_format(response)
+            
+            # 如果清理后为空，返回提示信息
+            if not clean_response or len(clean_response) < 5:
+                clean_response = "我已经为您处理了相关信息。"
+                logger.warning("⚠️ 清理ReAct格式后内容为空或过短，使用默认提示")
         
         result = {
-            "content": clean_response,
+            "content": clean_response,  # 使用提取的Final Answer作为基础
             "todo_content": None,
             "suggested_todos": [],
             "rich_cards": []
         }
         
+        # 从clean_response中提取结构化标记（因为这些标记应该在Final Answer中）
         todo_match = re.search(
             r'\[TODO_CONTENT_UPDATE\](.*?)\[/TODO_CONTENT_UPDATE\]',
-            response,
+            clean_response,
             re.DOTALL
         )
         if todo_match:
             result["todo_content"] = todo_match.group(1).strip()
-            # 从回复中移除这部分
-            result["content"] = response.replace(todo_match.group(0), '').strip()
+            result["content"] = result["content"].replace(todo_match.group(0), '').strip()
         
-        # 提取建议的新待办
+        # 提取建议的新待办（从clean_response中提取）
         suggested_matches = re.findall(
             r'\[SUGGESTED_TODO\](.*?)\[/SUGGESTED_TODO\]',
-            response,
+            clean_response,
             re.DOTALL
         )
         for match in suggested_matches:
@@ -494,10 +672,10 @@ class TodoChatAgent(ReActChat):
             except json.JSONDecodeError:
                 logger.warning(f"⚠️ 无法解析建议待办: {match}")
         
-        # 提取富媒体卡片
+        # 提取富媒体卡片（从clean_response中提取）
         card_matches = re.findall(
             r'\[RICH_CARD\](.*?)\[/RICH_CARD\]',
-            response,
+            clean_response,
             re.DOTALL
         )
         for match in card_matches:
@@ -513,6 +691,39 @@ class TodoChatAgent(ReActChat):
         result["content"] = result["content"].strip()
         
         return result
+    
+    def _clean_react_format(self, text: str) -> str:
+        """
+        清理ReAct格式，只保留可读内容
+        
+        策略：保留最后一个Thought的内容，删除其他ReAct标记
+        """
+        import re
+        
+        # 先尝试提取最后一个Thought的内容
+        last_thought_pattern = r'Thought:\s*(.*?)(?=\n(?:Action:|Observation:|Final Answer:|Thought:|\Z))'
+        thought_matches = list(re.finditer(last_thought_pattern, text, re.DOTALL))
+        
+        if thought_matches:
+            # 如果有Thought，使用最后一个Thought的内容
+            last_thought = thought_matches[-1].group(1).strip()
+            if last_thought:
+                return last_thought
+        
+        # 如果没有Thought或Thought为空，尝试清理格式
+        # 1. 去除Action:行
+        text = re.sub(r'^Action:.*?$', '', text, flags=re.MULTILINE)
+        # 2. 去除Action Input:及其内容（直到下一个标记）
+        text = re.sub(r'Action Input:.*?(?=\n(?:Observation|Thought|Action|$))', '', text, flags=re.DOTALL)
+        # 3. 去除Observation:及其内容（直到下一个Thought或结束）
+        text = re.sub(r'Observation:.*?(?=\nThought:|$)', '', text, flags=re.DOTALL)
+        # 4. 去除Thought:标记，但保留内容（如果还有的话）
+        text = re.sub(r'^Thought:\s*', '', text, flags=re.MULTILINE)
+        # 5. 清理多余空行
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        text = text.strip()
+        
+        return text
 
 
 # 全局Agent实例管理
