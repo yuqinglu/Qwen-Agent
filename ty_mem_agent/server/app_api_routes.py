@@ -55,7 +55,7 @@ class AIUnderstanding(BaseModel):
 # ==================== API 路由 ====================
 
 # 创建路由器
-router = APIRouter(prefix="/api/v1", tags=["APP API"])
+router = APIRouter(prefix="/agent/api/v1", tags=["APP API"])
 
 
 def get_user_by_header(x_user_id: int = Header(..., alias="x-user-id", description="用户ID（整数类型，对应calendar_user_id）")) -> Dict[str, Any]:
@@ -1249,7 +1249,7 @@ async def update_todo_chat_session_title(
     """
     更新待办聊天会话标题
     
-    路径：`/api/v1/todo/{event_id}/chat/sessions/{session_id}/update-title`
+    路径：`/agent/api/v1/todo/{event_id}/chat/sessions/{session_id}/update-title`
     请求参数通过POST body传递JSON格式：{"title": "新标题"}
     
     - **event_id**: 待办事件ID
@@ -1729,7 +1729,7 @@ async def todo_chat_stream(
     
     **示例请求**：
     ```bash
-    curl -X POST "http://localhost:8080/api/v1/todo/123456/chat/sessions/stream" \\
+    curl -X POST "http://localhost:8080/agent/api/v1/todo/123456/chat/sessions/stream" \\
       -H "Content-Type: application/json" \\
       -H "X-USER-ID: 1001" \\
       -H "Accept: text/event-stream" \\

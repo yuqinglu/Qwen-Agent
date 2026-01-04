@@ -81,7 +81,7 @@ class ASRRecognizeResponse(BaseModel):
 # ==================== API 路由 ====================
 
 # 创建路由器
-router = APIRouter(prefix="/api/v1/asr", tags=["ASR语音识别"])
+router = APIRouter(prefix="/agent/api/v1/asr", tags=["ASR语音识别"])
 
 
 def get_user_by_header(x_user_id: int = Header(..., alias="x-user-id", description="用户ID")) -> Dict[str, Any]:
