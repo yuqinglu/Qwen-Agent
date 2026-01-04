@@ -560,6 +560,29 @@ async def create_todo_chat_session(
         
         logger.info(f"✅ AI回复生成完成: {parsed_response['content'][:100]}...")
         
+        # 保存AI生成的富媒体卡片到RichCardManager
+        rich_cards_from_ai = parsed_response.get("rich_cards", [])
+        if rich_cards_from_ai:
+            card_manager = get_rich_card_manager()
+            for card_data in rich_cards_from_ai:
+                try:
+                    # 使用已有的card_id（如果存在），否则由RichCardManager生成
+                    card_id = card_data.get("card_id")
+                    card_manager.create_card(
+                        event_id=event_id,
+                        user_id=calendar_user_id,
+                        card_type=card_data.get("card_type", "custom"),
+                        title=card_data.get("title", "未命名卡片"),
+                        subtitle=card_data.get("subtitle"),
+                        icon=card_data.get("icon"),
+                        data=card_data.get("data", {}),
+                        source=card_data.get("source"),
+                        expires_at=card_data.get("expires_at"),
+                        card_id=card_id
+                    )
+                except Exception as e:
+                    logger.warning(f"⚠️ 保存富媒体卡片失败: {e}")
+        
         # 添加AI回复到会话
         ai_msg = chat_manager.add_message(
             session_id=session.session_id,
@@ -567,7 +590,7 @@ async def create_todo_chat_session(
             content=parsed_response["content"],
             todo_content=parsed_response.get("todo_content"),
             suggested_todos=parsed_response.get("suggested_todos", []),
-            rich_cards=parsed_response.get("rich_cards", [])
+            rich_cards=rich_cards_from_ai
         )
         
         # 构建响应数据
@@ -953,6 +976,29 @@ async def send_todo_chat_message(
         
         logger.info(f"✅ AI回复生成完成: {parsed_response['content'][:100]}...")
         
+        # 保存AI生成的富媒体卡片到RichCardManager
+        rich_cards_from_ai = parsed_response.get("rich_cards", [])
+        if rich_cards_from_ai:
+            card_manager = get_rich_card_manager()
+            for card_data in rich_cards_from_ai:
+                try:
+                    # 使用已有的card_id（如果存在），否则由RichCardManager生成
+                    card_id = card_data.get("card_id")
+                    card_manager.create_card(
+                        event_id=event_id,
+                        user_id=calendar_user_id,
+                        card_type=card_data.get("card_type", "custom"),
+                        title=card_data.get("title", "未命名卡片"),
+                        subtitle=card_data.get("subtitle"),
+                        icon=card_data.get("icon"),
+                        data=card_data.get("data", {}),
+                        source=card_data.get("source"),
+                        expires_at=card_data.get("expires_at"),
+                        card_id=card_id
+                    )
+                except Exception as e:
+                    logger.warning(f"⚠️ 保存富媒体卡片失败: {e}")
+        
         # 添加AI回复到会话
         ai_msg = chat_manager.add_message(
             session_id=session_id,
@@ -960,7 +1006,7 @@ async def send_todo_chat_message(
             content=parsed_response["content"],
             todo_content=parsed_response.get("todo_content"),
             suggested_todos=parsed_response.get("suggested_todos", []),
-            rich_cards=parsed_response.get("rich_cards", [])
+            rich_cards=rich_cards_from_ai
         )
         
         # 如果请求中有更新待办内容或卡片，更新会话

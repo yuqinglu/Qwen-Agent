@@ -2210,27 +2210,27 @@
             
             // 先切换到聊天界面
             showTodoChatStep3();
-            
+                    
             // 准备消息容器
-            const messagesDiv = document.getElementById('todoChatMessages');
+                    const messagesDiv = document.getElementById('todoChatMessages');
             messagesDiv.innerHTML = '';
-            
+                    
             // 显示用户消息
             messagesDiv.innerHTML += `
-                <div style="margin-bottom: 12px; text-align: right;">
-                    <div style="display: inline-block; max-width: 80%; padding: 10px 14px; border-radius: 12px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;">
+                        <div style="margin-bottom: 12px; text-align: right;">
+                            <div style="display: inline-block; max-width: 80%; padding: 10px 14px; border-radius: 12px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;">
                         <div style="font-size: 14px;">${escapeHtml(initMessage)}</div>
-                    </div>
+                            </div>
                     <div style="font-size: 11px; color: #999; margin-top: 4px;">${new Date().toLocaleTimeString()}</div>
-                </div>
+                                </div>
             `;
-            
+                    
             // 使用SSE流式接口
             await processTodoChatWithSSE(initMessage, todoContent, richCards, null);
-            
-            // 如果有待办内容，填充到上下文输入框
-            if (todoContent) {
-                document.getElementById('todoChatContextContent').value = todoContent;
+                    
+                    // 如果有待办内容，填充到上下文输入框
+                    if (todoContent) {
+                        document.getElementById('todoChatContextContent').value = todoContent;
             }
         }
         
@@ -2626,7 +2626,7 @@
                                 } else if (currentEvent === 'done') {
                                     // 完成
                                     const thinkingEl = document.getElementById(`${aiReplyId}_thinking`);
-                                    if (thinkingEl) thinkingEl.remove();
+                if (thinkingEl) thinkingEl.remove();
                                     const timeEl = document.getElementById(`${aiReplyId}_time`);
                                     timeEl.style.display = 'block';
                                     timeEl.textContent = new Date().toLocaleTimeString();
@@ -2696,11 +2696,11 @@
                         ${step.progress > 0 && step.progress < 100 ? `<span style="font-size: 11px; color: #999;">${step.progress}%</span>` : ''}
                     </div>
                 `;
-            });
+                        });
             
             stepsContainer.innerHTML = stepsHtml;
-        }
-        
+                    }
+                    
         // 渲染富媒体卡片
         function renderRichCardInChat(aiReplyId, card) {
             const cardsContainer = document.getElementById(`${aiReplyId}_cards`);
@@ -2708,13 +2708,13 @@
                 <div style="margin-top: 10px; padding: 10px; background: #e3f2fd; border-radius: 6px; border-left: 3px solid #2196f3;">
                     <div style="font-size: 12px; font-weight: 600; color: #1976d2; margin-bottom: 4px;">
                         🎴 ${card.title || card.card_type}
-                    </div>
+                            </div>
                     ${card.subtitle ? `<div style="font-size: 11px; color: #666; margin-bottom: 6px;">${card.subtitle}</div>` : ''}
                     ${card.data ? `<div style="font-size: 11px; color: #444; background: white; padding: 6px; border-radius: 4px; margin-top: 6px;"><pre style="margin: 0; white-space: pre-wrap;">${JSON.stringify(card.data, null, 2)}</pre></div>` : ''}
-                </div>
+                            </div>
             `;
             cardsContainer.innerHTML += cardHtml;
-        }
+                }
         
         // 渲染待办更新
         function renderTodoUpdate(aiReplyId, data) {
@@ -2723,7 +2723,7 @@
                 <div style="margin-top: 10px; padding: 10px; background: #e8f5e9; border-radius: 6px; border-left: 3px solid #4caf50;">
                     <div style="font-size: 12px; font-weight: 600; color: #2e7d32; margin-bottom: 4px;">
                         📝 待办内容已更新
-                    </div>
+                        </div>
                     ${data.change_summary ? `<div style="font-size: 11px; color: #666; margin-bottom: 6px;">${data.change_summary}</div>` : ''}
                     ${data.new_content ? `<div style="font-size: 11px; color: #444; background: white; padding: 8px; border-radius: 4px; margin-top: 6px; max-height: 150px; overflow-y: auto;"><pre style="margin: 0; white-space: pre-wrap;">${data.new_content}</pre></div>` : ''}
                 </div>
@@ -2756,7 +2756,7 @@
             suggestionsHtml += `</ul></div>`;
             suggestionsContainer.innerHTML = suggestionsHtml;
         }
-        
+
         // ==================== 富媒体卡片管理 ====================
         
         // 当前选中的卡片（用于删除等操作）
