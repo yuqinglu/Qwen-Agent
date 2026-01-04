@@ -140,6 +140,15 @@ class ChatServer:
         # 初始化默认用户
         init_default_users()
         
+        # 初始化Nacos服务注册（如果启用）
+        self.nacos_registry = None
+        if settings.NACOS_ENABLED:
+            try:
+                from ty_mem_agent.server.nacos_service import init_nacos_registry
+                self.nacos_registry = init_nacos_registry(settings)
+            except Exception as e:
+                logger.warning(f"⚠️ Nacos初始化失败: {e}")
+        
         logger.info("🚀 Chat Server 初始化完成")
     
     def _setup_routes(self):
@@ -1461,6 +1470,44 @@ class ChatServer:
         
         logger.info(f"🚀 启动Chat Server: {settings.HOST}:{settings.PORT}")
         
+        # 注册到Nacos（如果启用）
+        if self.nacos_registry:
+            try:
+                from ty_mem_agent.server.nacos_service import extract_api_routes_from_design
+                api_routes = extract_api_routes_from_design()
+                
+                # 获取实际的服务地址（如果是0.0.0.0，需要获取本机IP）
+                host = settings.HOST
+                if host == "0.0.0.0":
+                    import socket
+                    # 获取本机IP地址
+                    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    try:
+                        s.connect(("8.8.8.8", 80))
+                        host = s.getsockname()[0]
+                    except Exception:
+                        host = "127.0.0.1"
+                    finally:
+                        s.close()
+                
+                success = self.nacos_registry.register_api_services(
+                    host=host,
+                    port=settings.PORT,
+                    api_routes=api_routes,
+                    metadata={
+                        'version': settings.VERSION,
+                        'project_name': settings.PROJECT_NAME,
+                        'service_type': 'ty-memory-agent-api'
+                    }
+                )
+                if success:
+                    logger.info(f"✅ 服务已注册到Nacos: {host}:{settings.PORT}")
+                else:
+                    logger.warning("⚠️ 服务注册到Nacos失败，但服务将继续启动")
+            except Exception as e:
+                logger.error(f"❌ 注册到Nacos时出错: {e}")
+                logger.warning("⚠️ 服务将继续启动，但不会注册到Nacos")
+        
         config = uvicorn.Config(
             self.app,
             host=settings.HOST,
@@ -1490,6 +1537,26 @@ class ChatServer:
     async def cleanup(self):
         """清理资源"""
         try:
+            # 从Nacos注销服务（如果已注册）
+            if self.nacos_registry:
+                try:
+                    host = settings.HOST
+                    if host == "0.0.0.0":
+                        import socket
+                        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                        try:
+                            s.connect(("8.8.8.8", 80))
+                            host = s.getsockname()[0]
+                        except Exception:
+                            host = "127.0.0.1"
+                        finally:
+                            s.close()
+                    
+                    self.nacos_registry.deregister_service(host, settings.PORT)
+                    logger.info("✅ 服务已从Nacos注销")
+                except Exception as e:
+                    logger.warning(f"⚠️ 从Nacos注销服务时出错: {e}")
+            
             # 断开所有连接
             for user_id in list(self.active_connections.keys()):
                 await self._disconnect_user(user_id)

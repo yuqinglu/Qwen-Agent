@@ -97,6 +97,22 @@ class Settings(BaseSettings):
     # 默认语言
     ASR_LANGUAGE: str = Field(default="zh", env="ASR_LANGUAGE")
     
+    # === Nacos配置 ===
+    # Nacos服务注册中心地址
+    NACOS_SERVER_ADDRESSES: str = Field(default="localhost:8848", env="NACOS_SERVER_ADDRESSES")
+    # Nacos命名空间（可选）
+    NACOS_NAMESPACE: Optional[str] = Field(default=None, env="NACOS_NAMESPACE")
+    # Nacos用户名（可选，如果需要认证）
+    NACOS_USERNAME: Optional[str] = Field(default=None, env="NACOS_USERNAME")
+    # Nacos密码（可选，如果需要认证）
+    NACOS_PASSWORD: Optional[str] = Field(default=None, env="NACOS_PASSWORD")
+    # 是否启用Nacos服务注册
+    NACOS_ENABLED: bool = Field(default=False, env="NACOS_ENABLED")
+    # 服务名称（注册到Nacos的服务名）
+    NACOS_SERVICE_NAME: str = Field(default="ty-memory-agent", env="NACOS_SERVICE_NAME")
+    # 服务组名（可选，不设置时Nacos默认使用DEFAULT_GROUP）
+    NACOS_GROUP_NAME: Optional[str] = Field(default=None, env="NACOS_GROUP_NAME")
+    
     # === MCP服务配置 ===
     @property
     def MCP_SERVICES(self) -> Dict[str, Dict]:

@@ -36,6 +36,9 @@ python-dotenv
 pyyaml
 pydantic-settings
 
+# 服务注册与发现（使用HTTP API，requests已包含在qwen-agent依赖中）
+# nacos-sdk-python  # 可选，如需使用SDK方式可取消注释
+
 # ===================================================================
 # 已包含在 qwen-agent extras 中的依赖
 # ===================================================================

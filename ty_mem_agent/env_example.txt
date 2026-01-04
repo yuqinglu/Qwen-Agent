@@ -108,3 +108,26 @@ MEMORY_RETENTION_DAYS=30
 # proactive: 主动模式 - 积极主动服务 (默认)
 # aggressive: 激进模式 - 非常主动，提供大量建议
 AGENT_PROACTIVITY_LEVEL=proactive
+
+# === Nacos 服务注册配置（可选）===
+# 是否启用Nacos服务注册
+# 启用后，应用启动时会自动将所有APP API接口注册到Nacos服务注册中心
+NACOS_ENABLED=false
+
+# Nacos服务器地址
+# 格式: ip:port 或 ip1:port1,ip2:port2（多个地址用逗号分隔）
+NACOS_SERVER_ADDRESSES=localhost:8848
+
+# Nacos命名空间（可选，留空使用public命名空间）
+# NACOS_NAMESPACE=your_namespace_id
+
+# Nacos用户名和密码（可选，如果Nacos启用了认证）
+# NACOS_USERNAME=nacos
+# NACOS_PASSWORD=nacos
+
+# 服务名称（注册到Nacos的服务名）
+NACOS_SERVICE_NAME=ty-memory-agent
+
+# 服务组名（可选，不设置时Nacos会使用默认值 DEFAULT_GROUP）
+# 只有在需要自定义服务分组时才需要设置此参数
+# NACOS_GROUP_NAME=DEFAULT_GROUP
