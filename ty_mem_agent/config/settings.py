@@ -79,6 +79,25 @@ class Settings(BaseSettings):
     FEISHU_APP_ID: Optional[str] = Field(default=None, env="FEISHU_APP_ID")
     FEISHU_APP_SECRET: Optional[str] = Field(default=None, env="FEISHU_APP_SECRET")
     
+    # === AutoGLM 手机操作配置 ===
+    # AutoGLM 模型服务 URL（智谱BigModel或ModelScope）
+    AUTOGLM_BASE_URL: str = Field(
+        default="https://open.bigmodel.cn/api/paas/v4", 
+        env="AUTOGLM_BASE_URL"
+    )
+    # AutoGLM 模型名称
+    AUTOGLM_MODEL: str = Field(default="autoglm-phone", env="AUTOGLM_MODEL")
+    # AutoGLM API Key（智谱平台或ModelScope平台）
+    AUTOGLM_API_KEY: Optional[str] = Field(default=None, env="AUTOGLM_API_KEY")
+    # Open-AutoGLM 项目本地路径（可选，用于命令行调用）
+    AUTOGLM_PATH: Optional[str] = Field(default=None, env="AUTOGLM_PATH")
+    # 默认设备 ID（虚拟安卓机）
+    AUTOGLM_DEVICE_ID: str = Field(default="emulator-5554", env="AUTOGLM_DEVICE_ID")
+    # 任务执行超时时间（秒）
+    AUTOGLM_TIMEOUT: int = Field(default=180, env="AUTOGLM_TIMEOUT")
+    # 是否启用 AutoGLM 手机操作功能
+    AUTOGLM_ENABLED: bool = Field(default=True, env="AUTOGLM_ENABLED")
+    
     # === 日历MCP服务配置 ===
     CALENDAR_MCP_SERVER_URL: Optional[str] = Field(default=None, env="CALENDAR_MCP_SERVER_URL")
     

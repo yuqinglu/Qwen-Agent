@@ -1781,9 +1781,293 @@ async def todo_chat_stream(
         )
 
 
+# ==================== 多Agent路由 API ====================
+
+class MultiAgentRouteRequest(BaseModel):
+    """多Agent路由请求"""
+    query: str = Field(..., description="用户查询内容")
+    context: Optional[Dict[str, Any]] = Field(default=None, description="上下文信息")
+
+
+class MultiAgentExecuteRequest(BaseModel):
+    """多Agent执行请求"""
+    query: str = Field(..., description="用户查询内容")
+    session_id: Optional[str] = Field(default=None, description="会话ID")
+    context: Optional[Dict[str, Any]] = Field(default=None, description="上下文信息（如待办页面上下文）")
+
+
+class PhoneExecuteRequest(BaseModel):
+    """手机操作执行请求"""
+    task_description: str = Field(..., description="任务描述，如'在12306预订明天从重庆到昆明的高铁票'")
+    app_hint: Optional[str] = Field(default=None, description="目标APP提示，如'12306'、'淘宝'")
+    execute: bool = Field(default=True, description="是否执行任务（False则只分析不执行）")
+
+
+@router.post("/multi-agent/route")
+async def multi_agent_route(
+    request: MultiAgentRouteRequest,
+    x_user_id: int = Header(..., alias="x-user-id", description="用户ID")
+):
+    """
+    多Agent路由分析
+    
+    分析用户请求，返回应该由哪个Agent处理：
+    - memory_agent: 通用对话、工具调用
+    - todo_chat_agent: 待办聊天
+    - phone_agent: 手机APP操作（订票、购物、外卖等）
+    
+    不执行实际操作，只返回路由决策。
+    """
+    try:
+        from ty_mem_agent.agents import get_multi_agent_router
+        
+        router_agent = get_multi_agent_router()
+        
+        # 进行路由分析
+        routing_result = await router_agent.route(
+            query=request.query,
+            context=request.context or {}
+        )
+        
+        return {
+            "code": 0,
+            "message": "success",
+            "data": {
+                "routing": routing_result.to_dict(),
+                "user_id": x_user_id
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ 多Agent路由分析失败: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"路由分析失败: {str(e)}"
+        )
+
+
+@router.post("/multi-agent/execute")
+async def multi_agent_execute(
+    request: MultiAgentExecuteRequest,
+    x_user_id: int = Header(..., alias="x-user-id", description="用户ID")
+):
+    """
+    多Agent智能执行
+    
+    自动分析用户请求，路由到合适的Agent并执行：
+    
+    1. **普通对话/工具调用** → memory_agent
+       - 天气查询、时间查询、待办管理等
+       
+    2. **待办页面聊天** → todo_chat_agent
+       - 需要在context中提供 is_todo_chat_page=True 和 event_id
+       
+    3. **手机APP操作** → phone_agent
+       - 订火车票、机票
+       - 网购下单（淘宝、京东等）
+       - 点外卖
+       - 预约网约车
+       
+    示例请求：
+    - "帮我订明天从重庆到北京的高铁票" → phone_agent (12306)
+    - "帮我在淘宝买双秋冬袜子" → phone_agent (淘宝)
+    - "帮我点一杯奶茶" → phone_agent (美团/饿了么)
+    - "明天北京天气怎么样" → memory_agent
+    """
+    try:
+        from ty_mem_agent.agents import get_multi_agent_router
+        
+        router_agent = get_multi_agent_router()
+        
+        # 执行请求
+        result = await router_agent.handle_request(
+            query=request.query,
+            user_id=str(x_user_id),
+            session_id=request.session_id,
+            context=request.context or {}
+        )
+        
+        return {
+            "code": 0 if result.get("success") else 1,
+            "message": "success" if result.get("success") else result.get("error", "执行失败"),
+            "data": result
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ 多Agent执行失败: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"执行失败: {str(e)}"
+        )
+
+
+@router.get("/phone/capabilities")
+async def get_phone_capabilities(
+    x_user_id: int = Header(..., alias="x-user-id", description="用户ID")
+):
+    """
+    获取手机操作能力
+    
+    返回PhoneAgent支持的操作类型和APP列表。
+    """
+    try:
+        from ty_mem_agent.agents import get_phone_agent
+        
+        phone_agent = get_phone_agent()
+        capabilities = phone_agent.get_capabilities()
+        
+        return {
+            "code": 0,
+            "message": "success",
+            "data": capabilities
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ 获取手机能力失败: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"获取失败: {str(e)}"
+        )
+
+
+@router.post("/phone/execute")
+async def execute_phone_task(
+    request: PhoneExecuteRequest,
+    x_user_id: int = Header(..., alias="x-user-id", description="用户ID")
+):
+    """
+    执行手机操作任务
+    
+    直接调用PhoneAgent执行手机APP操作任务。
+    
+    支持的任务类型：
+    - train_ticket: 火车票预订（12306）
+    - flight_ticket: 机票预订（携程、飞猪）
+    - hotel: 酒店预订
+    - shopping: 网购下单（淘宝、京东、拼多多）
+    - food_delivery: 外卖订餐（美团、饿了么）
+    - ride_hailing: 网约车预约（滴滴）
+    
+    注意：
+    - 操作会在云端虚拟手机上执行
+    - 最终支付需要用户在真实手机上完成
+    
+    示例：
+    - task_description: "在12306预订明天从重庆到昆明的高铁票"
+    - task_description: "在淘宝搜索秋冬加厚长袜并加入购物车"
+    - task_description: "在美团点一杯蜜雪冰城的满杯百香果"
+    """
+    try:
+        from ty_mem_agent.agents import get_phone_agent
+        
+        phone_agent = get_phone_agent()
+        
+        # 处理请求
+        result = await phone_agent.handle_query(
+            user_query=request.task_description,
+            user_id=str(x_user_id),
+            execute=request.execute
+        )
+        
+        # 构建响应
+        if result.get("handled"):
+            execution_result = result.get("execution_result", {})
+            return {
+                "code": 0 if execution_result.get("success", False) else 1,
+                "message": result.get("message", ""),
+                "data": {
+                    "handled": True,
+                    "analysis": result.get("analysis", {}),
+                    "execution": execution_result,
+                    "next_action": execution_result.get("next_action"),
+                    "fallback_suggestion": execution_result.get("fallback_suggestion")
+                }
+            }
+        else:
+            return {
+                "code": 1,
+                "message": result.get("message", "无法处理此任务"),
+                "data": {
+                    "handled": False,
+                    "analysis": result.get("analysis", {}),
+                    "reason": result.get("message")
+                }
+            }
+        
+    except Exception as e:
+        logger.error(f"❌ 手机任务执行失败: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"执行失败: {str(e)}"
+        )
+
+
+@router.get("/phone/devices")
+async def get_phone_devices(
+    x_user_id: int = Header(..., alias="x-user-id", description="用户ID")
+):
+    """
+    获取设备状态
+    
+    返回虚拟手机设备池的状态信息。
+    """
+    try:
+        from ty_mem_agent.phone_integration import get_device_manager
+        
+        device_manager = get_device_manager()
+        status_summary = device_manager.get_status_summary()
+        
+        return {
+            "code": 0,
+            "message": "success",
+            "data": status_summary
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ 获取设备状态失败: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"获取失败: {str(e)}"
+        )
+
+
+@router.get("/multi-agent/agents")
+async def get_registered_agents(
+    x_user_id: int = Header(..., alias="x-user-id", description="用户ID")
+):
+    """
+    获取已注册的Agent列表
+    
+    返回多Agent系统中所有可用的Agent信息。
+    """
+    try:
+        from ty_mem_agent.agents import get_multi_agent_router
+        
+        router_agent = get_multi_agent_router()
+        agents_info = router_agent.get_registered_agents()
+        
+        return {
+            "code": 0,
+            "message": "success",
+            "data": {
+                "agents": agents_info,
+                "router_name": router_agent.name,
+                "router_description": router_agent.description
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ 获取Agent列表失败: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"获取失败: {str(e)}"
+        )
+
+
 # 导出路由器
 def register_app_api_routes(app):
     """注册APP API路由到FastAPI应用"""
     app.include_router(router)
     logger.info("✅ APP API 路由已注册")
+    logger.info("✅ 多Agent路由 API 已启用")
 

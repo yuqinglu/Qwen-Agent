@@ -81,6 +81,54 @@ ELEME_MODE=sandbox  # sandbox（测试环境） 或 production（生产环境）
 FEISHU_APP_ID=your_feishu_app_id_here
 FEISHU_APP_SECRET=your_feishu_app_secret_here
 
+# === AutoGLM 手机操作配置（用于订票、购物、外卖、打车等手机APP操作）===
+# 项目地址: https://github.com/zai-org/Open-AutoGLM
+# 
+# AutoGLM 是手机Agent框架，可以通过自然语言指令操作安卓手机
+# 本项目集成AutoGLM，实现以下功能：
+# - 火车票/机票预订（12306、携程等）
+# - 网购下单（淘宝、京东、拼多多等）
+# - 外卖订餐（美团、饿了么等）
+# - 网约车预约（滴滴等）
+#
+# 工作原理：
+# 1. 在服务器上部署虚拟安卓手机（模拟器）
+# 2. 用户发起请求后，AutoGLM在虚拟手机上执行APP操作
+# 3. 操作完成后，用户在自己真实手机上确认并支付
+# 
+# 模型服务选择：
+# - 智谱BigModel（推荐）: https://open.bigmodel.cn/
+# - ModelScope: https://modelscope.cn/models/ZhipuAI/AutoGLM-Phone-9B
+
+# 是否启用 AutoGLM 手机操作功能
+AUTOGLM_ENABLED=true
+
+# AutoGLM 模型服务 URL
+# 智谱BigModel（推荐）:
+AUTOGLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4
+# ModelScope（备选）:
+# AUTOGLM_BASE_URL=https://api-inference.modelscope.cn/v1
+
+# AutoGLM 模型名称
+# 智谱BigModel: autoglm-phone
+# ModelScope: ZhipuAI/AutoGLM-Phone-9B
+AUTOGLM_MODEL=autoglm-phone
+
+# AutoGLM API Key（从智谱平台或ModelScope平台获取）
+AUTOGLM_API_KEY=your_autoglm_api_key_here
+
+# Open-AutoGLM 项目本地路径（可选，用于命令行调用）
+# 如果配置了此路径，会通过subprocess调用Open-AutoGLM
+# 如果不配置，会使用模拟模式（用于测试）
+# AUTOGLM_PATH=/path/to/Open-AutoGLM
+
+# 默认虚拟设备ID（安卓模拟器设备号）
+# 可通过 adb devices 命令查看连接的设备
+AUTOGLM_DEVICE_ID=emulator-5554
+
+# 任务执行超时时间（秒）
+AUTOGLM_TIMEOUT=180
+
 # === 数据库配置 ===
 # Redis（可选，用于会话存储）
 REDIS_URL=redis://localhost:6379/0
