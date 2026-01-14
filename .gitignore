@@ -58,5 +58,7 @@ examples/data/*
 **/*.sqlite3
 test.db
 ty_mem_agent/data/
+ty_mem_agent/data_docker/
+ty_mem_agent/logs_docker/
 
 ty_mem_agent/doc/*

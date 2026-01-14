@@ -28,12 +28,10 @@ services:
     volumes:
       # 挂载配置文件
       - ./config:/app/ty_mem_agent/config
-      # 挂载数据目录（持久化数据库和用户数据）
-      - ./data:/app/ty_mem_agent/data
-      # 挂载日志目录（持久化日志）
-      - ./logs:/app/ty_mem_agent/logs
-      # 挂载工作空间
-      - ./workspace:/app/ty_mem_agent/workspace
+      # 挂载数据目录（容器专用，避免与本地运行冲突）
+      - ./data_docker:/app/ty_mem_agent/data
+      # 挂载日志目录（容器专用，避免与本地运行冲突）
+      - ./logs_docker:/app/ty_mem_agent/logs
       # 挂载环境变量文件（如果需要在容器内读取）
       - ./.env:/app/ty_mem_agent/.env:ro
       
