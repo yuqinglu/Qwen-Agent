@@ -232,7 +232,7 @@ class TodoChatSSEService:
                         "steps": [step.to_dict() for step in steps]
                     })
                 
-                yield self._format_sse_event("todo_update", {
+                yield self._format_sse_event("todo_content", {
                     "base_version": 1,
                     "new_version": 2,
                     "change_summary": analysis_result.get("change_summary", "AI已更新待办内容"),
@@ -253,7 +253,7 @@ class TodoChatSSEService:
             # ========== 阶段 8: 推送建议待办 ==========
             if suggestions:
                 logger.info(f"💡 推送{len(suggestions)}个待办建议")
-                yield self._format_sse_event("suggestions", suggestions)
+                yield self._format_sse_event("suggested_todos", suggestions)
             
             # ========== 阶段 8: 保存并完成 ==========
             # 保存AI生成的富媒体卡片到RichCardManager
