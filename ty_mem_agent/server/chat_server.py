@@ -1513,7 +1513,10 @@ class ChatServer:
             host=settings.HOST,
             port=settings.PORT,
             log_level=settings.LOG_LEVEL.lower(),
-            reload=settings.DEBUG
+            reload=settings.DEBUG,
+            # WebSocket配置：增加keepalive超时时间，适应移动端网络环境
+            ws_ping_interval=60,  # 每60秒发送一次ping（默认20秒）
+            ws_ping_timeout=60    # 等待pong响应的超时时间60秒（默认20秒）
         )
         
         server = uvicorn.Server(config)

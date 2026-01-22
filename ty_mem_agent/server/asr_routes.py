@@ -456,6 +456,7 @@ def register_asr_websocket(app):
                     if asr_session:
                         success = await asr_session.send_audio(audio_data)
                         if not success:
+                            logger.error(f"❌ 发送音频失败: session={asr_session.session_id}, size={len(audio_data)}")
                             await websocket.send_json({
                                 "type": "error",
                                 "code": 1001,
@@ -545,8 +546,11 @@ def register_asr_websocket(app):
                     
                     elif msg_type == "end":
                         # 结束消息
+                        logger.info(f"📥 收到end消息: session_id={asr_session.session_id if asr_session else 'None'}")
                         if asr_session:
+                            # 调用finish结束识别，触发最终结果返回
                             await asr_session.finish()
+                            logger.debug(f"✅ finish()调用完成，等待轮询任务...")
                             
                             # 等待后台轮询任务处理完所有结果（包括最终的final结果）
                             # _poll_results 会在收到 "done" 后自动退出
@@ -557,8 +561,10 @@ def register_asr_websocket(app):
                                     await asyncio.wait_for(poll_task, timeout=5.0)
                                     logger.info(f"✅ 轮询任务已完成，所有结果已发送")
                                 except asyncio.TimeoutError:
-                                    logger.warning(f"⚠️ 等待轮询任务超时")
+                                    logger.warning(f"⚠️ 等待轮询任务超时（5秒），强制取消")
                                     poll_task.cancel()
+                            else:
+                                logger.warning(f"⚠️ poll_task为None，无法等待")
                             
                             logger.info(f"✅ ASR识别完成: session_id={asr_session.session_id}")
                         break
@@ -593,10 +599,16 @@ def register_asr_websocket(app):
                 except asyncio.CancelledError:
                     pass
             
-            # 清理ASR会话
+            # 清理ASR会话（安全关闭，避免KeyError）
             if asr_session:
-                session_manager = get_asr_session_manager()
-                await session_manager.close_session(asr_session.session_id)
+                try:
+                    session_manager = get_asr_session_manager()
+                    await session_manager.close_session(asr_session.session_id)
+                except KeyError:
+                    # Session已经被删除，忽略
+                    logger.debug(f"Session {asr_session.session_id} 已经被清理")
+                except Exception as e:
+                    logger.error(f"关闭ASR会话时出错: {e}")
             logger.info("📴 ASR WebSocket连接已关闭")
 
 
@@ -605,16 +617,24 @@ async def _poll_results(websocket: WebSocket, asr_session):
     轮询ASR结果并发送给客户端
     """
     try:
+        result_count = 0
         # 注意：也要包括"finished"状态，以便在调用finish()后继续获取最终的final结果
         while asr_session.status in ("ready", "running", "finished"):
             result = await asr_session.get_result(timeout=0.1)
             if result:
+                result_count += 1
+                result_type = result.get("type", "unknown")
+                logger.debug(f"📤 发送ASR结果 #{result_count}: type={result_type}, session={asr_session.session_id}")
                 await websocket.send_json(result)
-                if result.get("type") == "done":
+                if result_type == "done":
+                    logger.info(f"✅ ASR结果轮询完成，共发送 {result_count} 个结果")
                     break
             await asyncio.sleep(0.05)
+    except asyncio.CancelledError:
+        logger.info(f"📴 ASR结果轮询任务被取消: session={asr_session.session_id}")
+        raise
     except Exception as e:
-        logger.warning(f"结果轮询任务出错: {e}")
+        logger.warning(f"⚠️ 结果轮询任务出错: {e}, session={asr_session.session_id}")
 
 
 # ==================== 导出函数 ====================
