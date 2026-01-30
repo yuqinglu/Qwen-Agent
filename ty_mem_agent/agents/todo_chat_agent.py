@@ -672,19 +672,18 @@ class TodoChatAgent(ReActChat):
             except json.JSONDecodeError:
                 logger.warning(f"⚠️ 无法解析建议待办: {match}")
         
-        # 提取富媒体卡片（从clean_response中提取）
-        card_matches = re.findall(
-            r'\[RICH_CARD\](.*?)\[/RICH_CARD\]',
-            clean_response,
-            re.DOTALL
-        )
-        for match in card_matches:
-            try:
-                card_data = json.loads(match.strip())
-                result["rich_cards"].append(card_data)
-                result["content"] = result["content"].replace(f'[RICH_CARD]{match}[/RICH_CARD]', '').strip()
-            except json.JSONDecodeError:
-                logger.warning(f"⚠️ 无法解析富媒体卡片: {match}")
+        # 提取富媒体卡片（从clean_response中提取）- 使用统一的提取函数
+        from ty_mem_agent.server.rich_card_manager import extract_cards_from_ai_response
+        extracted_cards = extract_cards_from_ai_response(clean_response, source="待办聊天AI")
+        
+        # 从响应文本中移除[RICH_CARD]标记
+        for card in extracted_cards:
+            result["rich_cards"].append(card)
+            # 移除标记（使用card_id或title来匹配）
+            card_pattern = r'\[RICH_CARD\].*?\[/RICH_CARD\]'
+            clean_response = re.sub(card_pattern, '', clean_response, flags=re.DOTALL)
+        
+        result["content"] = clean_response.strip()
         
         # 清理残留的标记和多余空行
         result["content"] = re.sub(r'\n{3,}', '\n\n', result["content"])

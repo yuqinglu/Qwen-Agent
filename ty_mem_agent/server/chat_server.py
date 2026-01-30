@@ -137,6 +137,9 @@ class ChatServer:
         # 注册ASR语音识别路由
         self._register_asr_routes()
         
+        # 注册通用聊天路由
+        self._register_general_chat_routes()
+        
         # 初始化默认用户
         init_default_users()
         
@@ -1419,6 +1422,11 @@ class ChatServer:
         """注册ASR语音识别路由"""
         from ty_mem_agent.server.asr_routes import register_asr_routes
         register_asr_routes(self.app)
+    
+    def _register_general_chat_routes(self):
+        """注册通用聊天路由"""
+        from ty_mem_agent.server.general_chat_routes import register_general_chat_routes
+        register_general_chat_routes(self.app)
     
     def _register_calendar_routes(self):
         """注册日历相关路由（重定向到外部日历前端）"""

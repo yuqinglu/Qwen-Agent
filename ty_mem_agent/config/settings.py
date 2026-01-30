@@ -97,6 +97,20 @@ class Settings(BaseSettings):
     # 默认语言
     ASR_LANGUAGE: str = Field(default="zh", env="ASR_LANGUAGE")
     
+    # === TTS语音合成配置 ===
+    # TTS模型（qwen3-tts-flash推荐用于实时场景）
+    TTS_MODEL: str = Field(default="qwen3-tts-flash", env="TTS_MODEL")
+    # 默认音色（Cherry推荐）
+    TTS_VOICE: str = Field(default="Cherry", env="TTS_VOICE")
+    # 语言类型
+    TTS_LANGUAGE_TYPE: str = Field(default="Chinese", env="TTS_LANGUAGE_TYPE")
+    # 注意：qwen3-tts-flash输出格式固定：PCM 24kHz, 16bit, mono
+    # 仅支持参数：text, voice, language_type（volume、speech_rate等不支持）
+    
+    # === 智能分句配置 ===
+    # 是否使用AI进行智能分句（True=准确但慢, False=快速但可能不够准确）
+    SENTENCE_SPLITTER_USE_AI: bool = Field(default=False, env="SENTENCE_SPLITTER_USE_AI")
+    
     # === Nacos配置 ===
     # Nacos服务注册中心地址
     NACOS_SERVER_ADDRESSES: str = Field(default="localhost:8848", env="NACOS_SERVER_ADDRESSES")

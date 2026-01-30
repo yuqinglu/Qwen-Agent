@@ -11,6 +11,7 @@ APP API 路由
 """
 
 import json
+import time
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 from fastapi import APIRouter, HTTPException, Header, status
@@ -560,24 +561,30 @@ async def create_todo_chat_session(
         
         logger.info(f"✅ AI回复生成完成: {parsed_response['content'][:100]}...")
         
-        # 保存AI生成的富媒体卡片到RichCardManager
+        # 保存AI生成的富媒体卡片到RichCardManager（使用统一的规范化函数）
         rich_cards_from_ai = parsed_response.get("rich_cards", [])
         if rich_cards_from_ai:
+            from ty_mem_agent.server.rich_card_manager import normalize_card_data
             card_manager = get_rich_card_manager()
             for card_data in rich_cards_from_ai:
                 try:
+                    # 规范化卡片数据，确保字段完整
+                    normalized_card = normalize_card_data(card_data, source="待办聊天AI", user_id=calendar_user_id)
+                    if not normalized_card:
+                        continue
+                    
                     # 使用已有的card_id（如果存在），否则由RichCardManager生成
-                    card_id = card_data.get("card_id")
+                    card_id = normalized_card.get("card_id")
                     card_manager.create_card(
                         event_id=event_id,
                         user_id=calendar_user_id,
-                        card_type=card_data.get("card_type", "custom"),
-                        title=card_data.get("title", "未命名卡片"),
-                        subtitle=card_data.get("subtitle"),
-                        icon=card_data.get("icon"),
-                        data=card_data.get("data", {}),
-                        source=card_data.get("source"),
-                        expires_at=card_data.get("expires_at"),
+                        card_type=normalized_card.get("card_type", "custom"),
+                        title=normalized_card.get("title", "未命名卡片"),
+                        subtitle=normalized_card.get("subtitle"),
+                        icon=normalized_card.get("icon"),
+                        data=normalized_card.get("data", {}),
+                        source=normalized_card.get("source"),
+                        expires_at=normalized_card.get("expires_at"),
                         card_id=card_id
                     )
                 except Exception as e:
@@ -976,24 +983,30 @@ async def send_todo_chat_message(
         
         logger.info(f"✅ AI回复生成完成: {parsed_response['content'][:100]}...")
         
-        # 保存AI生成的富媒体卡片到RichCardManager
+        # 保存AI生成的富媒体卡片到RichCardManager（使用统一的规范化函数）
         rich_cards_from_ai = parsed_response.get("rich_cards", [])
         if rich_cards_from_ai:
+            from ty_mem_agent.server.rich_card_manager import normalize_card_data
             card_manager = get_rich_card_manager()
             for card_data in rich_cards_from_ai:
                 try:
+                    # 规范化卡片数据，确保字段完整
+                    normalized_card = normalize_card_data(card_data, source="待办聊天AI", user_id=calendar_user_id)
+                    if not normalized_card:
+                        continue
+                    
                     # 使用已有的card_id（如果存在），否则由RichCardManager生成
-                    card_id = card_data.get("card_id")
+                    card_id = normalized_card.get("card_id")
                     card_manager.create_card(
                         event_id=event_id,
                         user_id=calendar_user_id,
-                        card_type=card_data.get("card_type", "custom"),
-                        title=card_data.get("title", "未命名卡片"),
-                        subtitle=card_data.get("subtitle"),
-                        icon=card_data.get("icon"),
-                        data=card_data.get("data", {}),
-                        source=card_data.get("source"),
-                        expires_at=card_data.get("expires_at"),
+                        card_type=normalized_card.get("card_type", "custom"),
+                        title=normalized_card.get("title", "未命名卡片"),
+                        subtitle=normalized_card.get("subtitle"),
+                        icon=normalized_card.get("icon"),
+                        data=normalized_card.get("data", {}),
+                        source=normalized_card.get("source"),
+                        expires_at=normalized_card.get("expires_at"),
                         card_id=card_id
                     )
                 except Exception as e:
@@ -1068,8 +1081,12 @@ async def get_todo_chat_messages(
     - **before**: 获取此消息ID之前的消息（用于向上加载更多）
     - **after**: 获取此消息ID之后的消息（用于获取新消息）
     """
+    t0 = time.perf_counter()
+    logger.info(
+        f"📥 get_todo_chat_messages 请求到达: session_id={session_id}, event_id={event_id}, limit={limit}, before={before}, after={after}"
+    )
     logger.info(f"📋 获取会话消息列表: session_id={session_id}, limit={limit}, before={before}, after={after}")
-    
+
     try:
         # 验证用户
         user_info = get_user_by_header(x_user_id)
@@ -1080,22 +1097,30 @@ async def get_todo_chat_messages(
         
         # 获取会话
         session = chat_manager.get_session(session_id)
-        
+
         if not session:
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+            logger.info(
+                f"📤 get_todo_chat_messages 响应返回: code=404, elapsed_ms={elapsed_ms:.2f}, session_id={session_id}"
+            )
             return {
                 "code": 404,
                 "message": "会话不存在",
                 "data": None
             }
-        
+
         # 验证权限
         if session.user_id != calendar_user_id or session.event_id != event_id:
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+            logger.info(
+                f"📤 get_todo_chat_messages 响应返回: code=403, elapsed_ms={elapsed_ms:.2f}, session_id={session_id}"
+            )
             return {
                 "code": 403,
                 "message": "无权访问此会话",
                 "data": None
             }
-        
+
         # 限制最大数量
         limit = min(limit, 100)
         
@@ -1139,7 +1164,11 @@ async def get_todo_chat_messages(
         else:
             oldest_message_id = None
             newest_message_id = None
-        
+
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        logger.info(
+            f"📤 get_todo_chat_messages 响应返回: code=0, elapsed_ms={elapsed_ms:.2f}, session_id={session_id}, count={len(messages)}"
+        )
         return {
             "code": 0,
             "message": "success",
@@ -1151,13 +1180,17 @@ async def get_todo_chat_messages(
                 "total": total_count
             }
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
+        elapsed_ms = (time.perf_counter() - t0) * 1000
         logger.error(f"❌ 获取会话消息列表失败: {e}")
         import traceback
         logger.error(traceback.format_exc())
+        logger.info(
+            f"📤 get_todo_chat_messages 响应返回: code=500, elapsed_ms={elapsed_ms:.2f}, session_id={session_id}, error={e!s}"
+        )
         return {
             "code": 500,
             "message": f"服务器错误: {str(e)}",

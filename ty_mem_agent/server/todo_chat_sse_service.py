@@ -638,72 +638,36 @@ class TodoChatSSEService:
             logger.debug(f"提取Thought失败: {e}")
             return None, None
     
-    async def _try_parse_and_push_cards(self, observation: str):
+    async def _try_parse_and_push_cards(self, observation: str, tool_name: str = "工具调用"):
         """
         尝试从observation中解析富媒体卡片（异步生成器）
         
         工具返回的结果可能包含JSON格式的数据，尝试解析为卡片
+        使用统一的卡片提取函数，确保与通用聊天一致
         
+        Args:
+            observation: 工具返回的观察结果
+            tool_name: 工具名称
+            
         Yields:
             rich_card SSE事件
         """
-        import re
-        import json
-        
         try:
-            # 尝试查找JSON内容
-            json_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
-            matches = re.findall(json_pattern, observation)
+            # 使用统一的卡片提取函数
+            from ty_mem_agent.server.rich_card_manager import extract_cards_from_tool_result
+            cards = extract_cards_from_tool_result(
+                tool_name=tool_name,
+                tool_result=observation,
+                user_id=None  # SSE服务中可能没有user_id，使用None
+            )
             
-            for match in matches:
-                try:
-                    data = json.loads(match)
-                    
-                    # 检查是否像是一个卡片数据
-                    if isinstance(data, dict) and any(key in data for key in ['weather', 'temperature', 'city', 'location', 'name', 'address', 'price']):
-                        # 构建简单的卡片
-                        card = {
-                            "card_id": f"card_{uuid.uuid4().hex[:8]}",
-                            "card_type": self._infer_card_type(data),
-                            "title": self._infer_card_title(data),
-                            "data": data,
-                            "source": "工具调用",
-                            "updated_at": datetime.now().isoformat()
-                        }
-                        
-                        logger.info(f"🎴 从工具结果中解析出卡片（类型: {card['card_type']}），立即推送")
-                        yield self._format_sse_event("rich_card", card)
-                        await asyncio.sleep(0.05)  # 短暂延迟
-                        
-                except json.JSONDecodeError:
-                    continue
+            for card in cards:
+                logger.info(f"🎴 从工具结果中解析出卡片（类型: {card['card_type']}），立即推送")
+                yield self._format_sse_event("rich_card", card)
+                await asyncio.sleep(0.05)  # 短暂延迟
                     
         except Exception as e:
             logger.debug(f"解析卡片失败（正常，不是所有工具都返回卡片）: {e}")
-    
-    def _infer_card_type(self, data: dict) -> str:
-        """根据数据内容推断卡片类型"""
-        if any(k in data for k in ['weather', 'temperature']):
-            return 'weather'
-        elif any(k in data for k in ['route', 'distance', 'duration']):
-            return 'navigation'
-        elif any(k in data for k in ['hotel', 'room', 'price']):
-            return 'hotel'
-        elif any(k in data for k in ['flight', 'airline', 'departure']):
-            return 'flight'
-        else:
-            return 'info'
-    
-    def _infer_card_title(self, data: dict) -> str:
-        """根据数据内容推断卡片标题"""
-        if 'city' in data:
-            return f"{data['city']}天气"
-        elif 'name' in data:
-            return data['name']
-        elif 'title' in data:
-            return data['title']
-        else:
-            return "查询结果"
     
     async def _analyze_intent(
         self,

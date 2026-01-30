@@ -62,3 +62,7 @@ ty_mem_agent/data_docker/
 ty_mem_agent/logs_docker/
 
 ty_mem_agent/doc/*
+
+#音频文件
+*.wav
+*.pcm

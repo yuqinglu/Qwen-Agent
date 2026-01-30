@@ -79,14 +79,29 @@ class UpdateUserProfileTool(BaseTool):
         'type': 'string',
         'description': '用户兴趣爱好，多个兴趣用逗号分隔（如需更新）',
         'required': False
+    }, {
+        'name': 'phone',
+        'type': 'string',
+        'description': '用户手机号码（用于打车、预约等服务，用户告知后务必调用本工具保存）',
+        'required': False
     }]
     
     def call(self, params: str, **kwargs) -> str:
         """执行用户画像更新"""
         try:
-            # 解析参数
-            params_dict = json.loads(params)
-            user_id = params_dict.get('user_id')
+            # 解析参数（user_id 可由 agent 通过 kwargs 注入，无需 LLM 显式传递）
+            if isinstance(params, dict):
+                params_dict = params
+            elif isinstance(params, str) and params.strip():
+                try:
+                    params_dict = json.loads(params)
+                except json.JSONDecodeError:
+                    params_dict = {}
+            else:
+                params_dict = {}
+            if not isinstance(params_dict, dict):
+                params_dict = {}
+            user_id = params_dict.get('user_id') or kwargs.get('user_id')
             
             if not user_id:
                 return json.dumps({
@@ -124,6 +139,9 @@ class UpdateUserProfileTool(BaseTool):
                 elif isinstance(interests_str, list):
                     updates['interests'] = interests_str
             
+            if 'phone' in params_dict and params_dict['phone']:
+                updates['phone'] = str(params_dict['phone']).strip()
+            
             if not updates:
                 return json.dumps({
                     "success": False,
@@ -151,6 +169,7 @@ class UpdateUserProfileTool(BaseTool):
                         "gender": profile.gender if profile else None,
                         "location": profile.location if profile else None,
                         "home_address": profile.home_address if profile else None,
+                        "phone": profile.phone if profile else None,
                         "occupation": profile.occupation if profile else None,
                         "interests": profile.interests if profile else []
                     }
@@ -204,9 +223,19 @@ class GetUserProfileTool(BaseTool):
     def call(self, params: str, **kwargs) -> str:
         """执行用户画像查询"""
         try:
-            # 解析参数
-            params_dict = json.loads(params)
-            user_id = params_dict.get('user_id')
+            # 解析参数（user_id 可由 agent 通过 kwargs 注入，无需 LLM 显式传递）
+            if isinstance(params, dict):
+                params_dict = params
+            elif isinstance(params, str) and params.strip():
+                try:
+                    params_dict = json.loads(params)
+                except json.JSONDecodeError:
+                    params_dict = {}
+            else:
+                params_dict = {}
+            if not isinstance(params_dict, dict):
+                params_dict = {}
+            user_id = params_dict.get('user_id') or kwargs.get('user_id')
             
             if not user_id:
                 return json.dumps({
@@ -231,6 +260,7 @@ class GetUserProfileTool(BaseTool):
                         "gender": profile.gender,
                         "location": profile.location,
                         "home_address": profile.home_address,
+                        "phone": profile.phone,  # 电话号码（用于打车等服务）
                         "occupation": profile.occupation,
                         "interests": profile.interests,
                         "preferences": profile.preferences,
