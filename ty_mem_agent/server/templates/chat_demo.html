@@ -2599,6 +2599,13 @@
                                         todoChatCurrentSessionId = data.session_id;
                                         console.log('✅ 新会话创建:', data.session_id);
                                     }
+                                } else if (currentEvent === 'title_updated') {
+                                    // 会话标题更新（仅首次会话时）
+                                    if (data.title) {
+                                        const sessionTitleEl = document.getElementById('todoChatCurrentSessionTitle');
+                                        if (sessionTitleEl) sessionTitleEl.textContent = data.title;
+                                        console.log('✅ 会话标题已更新:', data.title);
+                                    }
                                 } else if (currentEvent === 'plan_update') {
                                     // 更新执行计划
                                     renderPlanSteps(planDisplayId, data.steps);

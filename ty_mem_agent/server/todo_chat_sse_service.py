@@ -119,8 +119,10 @@ class TodoChatSSEService:
             )
             
             # ========== 阶段 2: 快速意图分析 ==========
+            is_new_session = session_id is None
             analysis_result = await self._analyze_intent(
-                content, todo_content, rich_cards, session.messages
+                content, todo_content, rich_cards, session.messages,
+                is_new_session=is_new_session
             )
             
             # 确保analysis_result不为None
@@ -134,6 +136,22 @@ class TodoChatSSEService:
                     "need_suggestions": False,
                     "change_summary": None
                 }
+            
+            # 新会话且用户未提供标题时，使用意图分析生成的标题并推送 title_updated 事件
+            if is_new_session and (not title or title == "新对话"):
+                analyzed_title = analysis_result.get("session_title")
+                if analyzed_title and analyzed_title.strip():
+                    # 清理标题：去除引号、截断长度
+                    session_title = analyzed_title.strip().strip('"\'').replace('\n', ' ')
+                    if len(session_title) > 20:
+                        session_title = session_title[:17] + "..."
+                    self.chat_manager.update_session_title(session.session_id, session_title)
+                    yield self._format_sse_event("title_updated", {
+                        "session_id": session.session_id,
+                        "title": session_title,
+                        "timestamp": datetime.now().isoformat()
+                    })
+                    logger.info(f"📝 新会话标题已更新: {session_title}")
             
             # 检查是否是简单聊天
             is_simple_chat = analysis_result.get("is_simple_chat", False)
@@ -674,7 +692,8 @@ class TodoChatSSEService:
         content: str,
         todo_content: Optional[str],
         rich_cards: Optional[List[Dict]],
-        history_messages: List
+        history_messages: List,
+        is_new_session: bool = False
     ) -> Dict[str, Any]:
         """
         分析用户意图，制定执行计划
@@ -733,6 +752,20 @@ class TodoChatSSEService:
 3. 如果卡片信息已过时（如查询时间较早）或用户明确要求更新，则需要重新查询
 4. 如果用户基于已有卡片提出新的需求，应该充分利用卡片中的详细信息进行分析
 """
+            
+            # 新会话时，在意图分析中同时生成会话标题
+            session_title_instruction = ""
+            session_title_field = ""
+            if is_new_session:
+                session_title_instruction = """
+#### session_title（会话标题）- 仅新会话时需要
+请根据用户消息生成一个简短的会话标题（不超过20个字符）：
+- 简洁概括用户意图或需求，如"明日六点飞香格里拉"、"补充会议议程"
+- 不要使用标点符号
+- 直接输出核心内容
+"""
+                session_title_field = ''',
+    "session_title": "根据用户消息生成的简短会话标题，不超过20字符"'''
             
             # 构建详细的分析提示词
             analysis_prompt = f"""你是一个智能待办助手的任务规划器，需要深入分析用户需求并制定执行计划。
@@ -828,7 +861,7 @@ class TodoChatSSEService:
 - 当前待办需要前置准备工作（如"开会"需要"准备材料"）
 - 当前待办完成后有后续任务（如"出差"后有"报销"）
 - 基于待办内容，主动发现用户可能遗漏的相关任务
-
+{session_title_instruction}
 **设为 false 的情况：**
 - 用户只是简单的信息查询
 - 待办任务已经很简单明确
@@ -885,6 +918,7 @@ class TodoChatSSEService:
     "need_suggestions": true/false,  // 如果is_simple_chat=true，则必须为false
     "change_summary": "如果需要更新待办，简要说明会做哪些更新（如果不需要则为null）",
     "reasoning": "你的分析推理过程（1-2句话，说明为什么这样判断，特别是is_simple_chat的判断依据）"
+{session_title_field}
 }}
 
 **注意**：
@@ -966,7 +1000,7 @@ class TodoChatSSEService:
             # 简单判断是否是简单聊天（用于回退）
             is_simple_chat_fallback = self._is_simple_chat_fallback(content)
             
-            return {
+            result = {
                 "is_simple_chat": is_simple_chat_fallback,
                 "summary": "识别用户需求并制定执行计划",
                 "need_tools": need_tools if not is_simple_chat_fallback else False,
@@ -974,6 +1008,13 @@ class TodoChatSSEService:
                 "need_suggestions": need_suggestions if not is_simple_chat_fallback else False,
                 "change_summary": "添加详细信息" if need_update_todo and not is_simple_chat_fallback else None
             }
+            # 新会话时使用简单截取作为标题回退
+            if is_new_session:
+                fallback_title = content.strip().replace('\n', ' ').replace('\r', '')[:20]
+                if len(content) > 20:
+                    fallback_title = fallback_title + "..."
+                result["session_title"] = fallback_title if fallback_title else "新对话"
+            return result
     
     def _is_simple_chat_fallback(self, content_clean: str) -> bool:
         """

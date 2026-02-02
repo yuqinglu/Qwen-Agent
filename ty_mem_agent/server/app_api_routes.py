@@ -1744,6 +1744,7 @@ async def todo_chat_stream(
     
     **SSE事件类型**：
     - `session_init`: 会话初始化
+    - `title_updated`: 会话标题更新（仅首次会话且未提供title时，LLM分析意图后推送）
     - `plan_update`: 执行计划更新
     - `rich_card`: 富媒体卡片
     - `message_delta`: 聊天内容增量
