@@ -44,7 +44,6 @@ class ToolRegistry:
         await self._init_todo_extractor_tool()
         await self._init_calendar_tools()
         await self._init_profile_tools()
-        await self._init_location_tools()
         await self._init_eleme_tools()
         await self._init_feishu_meeting_tools()
         
@@ -395,32 +394,6 @@ class ToolRegistry:
             logger.error(traceback.format_exc())
             self.connection_status['profile'] = False
             self.tools_cache['profile'] = []
-    
-    async def _init_location_tools(self):
-        """初始化位置坐标工具"""
-        try:
-            from ty_mem_agent.self_defined_tools.location_tools import get_location_tools
-            
-            logger.info("📍 正在初始化位置坐标工具...")
-            
-            # 获取位置工具
-            tools = get_location_tools()
-            
-            if tools:
-                self.tools_cache["location"] = tools
-                self.connection_status["location"] = True
-                logger.info(f"✅ 位置坐标工具初始化成功，共 {len(tools)} 个工具")
-                for tool in tools:
-                    logger.debug(f"   - {tool.name}: {tool.description}")
-            else:
-                self.connection_status["location"] = False
-                self.tools_cache["location"] = []
-                logger.warning("⚠️  位置坐标工具初始化失败")
-                
-        except Exception as e:
-            logger.warning(f"⚠️  位置坐标工具初始化失败: {e}")
-            self.connection_status["location"] = False
-            self.tools_cache["location"] = []
     
     async def _init_eleme_tools(self):
         """初始化饿了么外卖工具"""

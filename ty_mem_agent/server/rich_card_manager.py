@@ -1089,6 +1089,98 @@ def _normalize_card_data(card_data: Dict, source: str = "unknown", user_id: int 
     return normalize_card_data(card_data, source, user_id)
 
 
+def build_weather_card_from_amap_result(
+    tool_name: str,
+    tool_result: Any,
+    user_id: int = None,
+) -> Optional[Dict]:
+    """
+    从高德天气 MCP 工具结果（amap_maps-maps_weather）构建天气富媒体卡片。
+    支持实时天气（lives）与预报（forecasts/casts）格式，归一化为 _build_card_from_data 所需字段。
+    """
+    if not tool_name or "weather" not in tool_name.lower():
+        return None
+    try:
+        if isinstance(tool_result, str):
+            s = tool_result.strip()
+            if s.startswith(("{", "[")):
+                data = json.loads(s)
+            else:
+                data = None
+        else:
+            data = tool_result if isinstance(tool_result, dict) else None
+        if not data or not isinstance(data, dict):
+            return None
+        # 高德实时天气：lives
+        if "lives" in data and isinstance(data["lives"], list) and len(data["lives"]) > 0:
+            live = data["lives"][0]
+            city = live.get("city") or live.get("province") or ""
+            if live.get("province") and live.get("city") and live.get("city") != live.get("province"):
+                city = f"{live.get('province')}{live.get('city')}"
+            reporttime = live.get("reporttime", "")
+            flat = {
+                "city": city,
+                "weather": live.get("weather", ""),
+                "temperature": live.get("temperature", ""),
+                "winddirection": live.get("winddirection", ""),
+                "windpower": live.get("windpower", ""),
+                "humidity": live.get("humidity", ""),
+                "date": reporttime[:10] if reporttime else "",
+                "reporttime": reporttime,
+            }
+            return _build_card_from_data(flat, tool_name, user_id)
+        # 高德预报：forecasts 为每日对象数组（顶层 city，forecasts[].date/dayweather/daytemp 等）
+        if "forecasts" in data and isinstance(data["forecasts"], list) and len(data["forecasts"]) > 0:
+            city = data.get("city") or ""
+            first = data["forecasts"][0]
+            # 格式1：forecasts[0] 直接是某日（含 dayweather/date）
+            if "dayweather" in first or "date" in first:
+                dayweather = first.get("dayweather", "")
+                nightweather = first.get("nightweather", "")
+                weather = dayweather or nightweather
+                daytemp = first.get("daytemp", "")
+                nighttemp = first.get("nighttemp", "")
+                temperature = f"{nighttemp}~{daytemp}℃" if (nighttemp and daytemp) else (f"{daytemp or nighttemp}℃" if (daytemp or nighttemp) else "")
+                flat = {
+                    "city": city,
+                    "weather": weather,
+                    "dayweather": dayweather,
+                    "nightweather": nightweather,
+                    "temperature": temperature,
+                    "daytemp": daytemp,
+                    "nighttemp": nighttemp,
+                    "date": first.get("date", ""),
+                    "week": first.get("week", ""),
+                }
+                return _build_card_from_data(flat, tool_name, user_id)
+            # 格式2：forecasts[0].casts 嵌套（部分接口）
+            casts = first.get("casts") or []
+            if casts:
+                cast = casts[0]
+                dayweather = cast.get("dayweather", "")
+                nightweather = cast.get("nightweather", "")
+                weather = dayweather or nightweather
+                daytemp = cast.get("daytemp", "")
+                nighttemp = cast.get("nighttemp", "")
+                temperature = f"{nighttemp}~{daytemp}" if (nighttemp and daytemp) else (daytemp or nighttemp)
+                flat = {
+                    "city": city,
+                    "weather": weather,
+                    "dayweather": dayweather,
+                    "nightweather": nightweather,
+                    "temperature": temperature,
+                    "daytemp": daytemp,
+                    "nighttemp": nighttemp,
+                    "date": cast.get("date", ""),
+                    "week": cast.get("week", ""),
+                }
+                return _build_card_from_data(flat, tool_name, user_id)
+        return None
+    except Exception as e:
+        logger.debug(f"构建天气卡片失败: {e}")
+        return None
+
+
 def _build_card_from_data(data: Dict, tool_name: str, user_id: int = None) -> Optional[Dict]:
     """
     从数据字典构建卡片对象

@@ -341,6 +341,29 @@ class GeneralChatWebSocketService:
                 if handled:
                     return
             
+            # ========== 2.6 取消叫车：若用户明确要取消订单且本会话有最近订单号，则直接调用 taxi_cancel_order，不经过 Agent ==========
+            if self._is_ride_cancel_message(user_message):
+                order_id = self.chat_manager.get_last_ride_order_id(session_id)
+                if order_id:
+                    tts_cfg_for_cancel = None
+                    if enable_tts:
+                        from ty_mem_agent.config.settings import settings
+                        tts_cfg_for_cancel = TTSConfig(
+                            model=tts_config.get("model", settings.TTS_MODEL),
+                            voice=tts_config.get("voice", settings.TTS_VOICE),
+                            language_type=tts_config.get("language_type", settings.TTS_LANGUAGE_TYPE),
+                        )
+                    handled = await self._handle_ride_cancel_and_call_mcp(
+                        websocket=websocket,
+                        session_id=session_id,
+                        user_id=user_id,
+                        order_id=order_id,
+                        enable_tts=enable_tts,
+                        tts_config=tts_cfg_for_cancel,
+                    )
+                    if handled:
+                        return
+            
             # ========== 3. 调用Agent处理 ==========
             # 发送开始生成事件
             await self._send_json(websocket, {
@@ -402,6 +425,9 @@ class GeneralChatWebSocketService:
             _last_ride_destination: Optional[str] = None
             # 叫车场景：在「已查到/请提供电话」之后、推送车型卡片之前，不 TTS 模型中间输出（如「北门位置…」）
             _ride_hailing_suppress_tts_until_cards = False
+            # 本轮已发送过「请确认起终点并选择车型」整句（避免模型尾随输出「车型。」再触发一次重复的 sentence_complete + TTS，且不再下发该尾随 message_delta）
+            _ride_confirm_tts_sent_this_turn = False
+            _last_ride_confirm_tts_sent: Optional[str] = None
             # 本回合是否进入某场景（打车等），用于委托 TTS/抑制 决策
             _scenario = get_scenario_for_message(user_message)
             
@@ -413,14 +439,17 @@ class GeneralChatWebSocketService:
                     delta_text = chunk.get("content", "")
                     full_response += delta_text
                     current_sentence += delta_text
-                    
-                    # 发送文本增量
-                    await self._send_json(websocket, {
-                        "type": "message_delta",
-                        "content": delta_text,
-                        "timestamp": datetime.now().isoformat()
-                    })
-                    
+                    # 叫车场景：在「已查到/请提供电话」之后、推送车型卡片之前，既不 TTS 也不把模型的中间句作为 message_delta 下发；推送车型卡片并播报完整句之后，模型的尾随输出（如「车型。」）也不再下发，避免重复语音与不通顺片段
+                    _suppress_model_stream = (
+                        (_ride_hailing_suppress_tts_until_cards and not _pushed_ride_confirm_cards_this_turn)
+                        or _ride_confirm_tts_sent_this_turn
+                    )
+                    if not _suppress_model_stream:
+                        await self._send_json(websocket, {
+                            "type": "message_delta",
+                            "content": delta_text,
+                            "timestamp": datetime.now().isoformat()
+                        })
                     # 检查是否完成了一个句子（用于TTS）
                     if enable_tts and self._is_sentence_complete(current_sentence):
                         raw_sentence = current_sentence.strip()
@@ -440,10 +469,13 @@ class GeneralChatWebSocketService:
                         if not self._is_meaningful_tts_sentence(raw_sentence):
                             current_sentence = ""
                             continue
-                        # 叫车确认场景：残句（如「车型。」）替换为完整句
+                        # 叫车确认场景：残句（如「车型。」）替换为完整句；若本轮已发送过该完整句（注入的 ride_confirm_tts），不再重复 sentence_complete + TTS
                         tts_text = self._get_ride_confirm_tts_text(
                             raw_sentence, _last_ride_origin, _last_ride_destination
                         ) or raw_sentence
+                        if _ride_confirm_tts_sent_this_turn and tts_text == _last_ride_confirm_tts_sent:
+                            current_sentence = ""
+                            continue
                         # 发送句子完成事件（对外展示用原始句，TTS 用 tts_text）
                         await self._send_json(websocket, {
                             "type": "sentence_complete",
@@ -485,6 +517,7 @@ class GeneralChatWebSocketService:
                         from ty_mem_agent.server.rich_card_manager import (
                             build_todo_card_from_calendar_result,
                             build_ride_hailing_cards_from_didi_result,
+                            build_weather_card_from_amap_result,
                             get_rich_card_manager,
                             parse_estimate_flow_id_from_taxi_estimate_result,
                             parse_estimate_trace_id_from_taxi_estimate_result,
@@ -510,12 +543,14 @@ class GeneralChatWebSocketService:
                             _scenario_ctx = {
                                 "ride_hailing_suppress_tts_until_cards": _ride_hailing_suppress_tts_until_cards,
                                 "ride_hailing_pushed_confirm_cards": _pushed_ride_confirm_cards_this_turn,
+                                "user_message": user_message,
                             }
                             if _scenario:
                                 action = _scenario.on_tool_result(
                                     tool_name, tool_result, tool_args, _scenario_ctx
                                 )
                                 if action and action.tts_to_say and enable_tts:
+                                    await self._emit_message_delta_for_sentence(websocket, action.tts_to_say)
                                     await self._send_json(websocket, {
                                         "type": "sentence_complete",
                                         "sentence": action.tts_to_say,
@@ -530,11 +565,16 @@ class GeneralChatWebSocketService:
                                         _ride_hailing_suppress_tts_until_cards = True
                             else:
                                 if enable_tts:
-                                    profile_tts = (
-                                        "已查到您的电话号码，正在为您查询车型与价格。"
-                                        if _cached_phone_from_get_user_profile
-                                        else "请提供您的电话号码，以便为您叫车。"
-                                    )
+                                    from ty_mem_agent.server.scenarios.ride_hailing import user_only_said_destination
+                                    if _cached_phone_from_get_user_profile and user_only_said_destination(user_message):
+                                        profile_tts = "已查到您的电话号码。请问您的上车地点是哪里？"
+                                    else:
+                                        profile_tts = (
+                                            "已查到您的电话号码，正在为您查询车型与价格。"
+                                            if _cached_phone_from_get_user_profile
+                                            else "请提供您的电话号码，以便为您叫车。"
+                                        )
+                                    await self._emit_message_delta_for_sentence(websocket, profile_tts)
                                     await self._send_json(websocket, {
                                         "type": "sentence_complete",
                                         "sentence": profile_tts,
@@ -665,6 +705,7 @@ class GeneralChatWebSocketService:
                                     ride_confirm_tts = self._get_ride_confirm_tts_text(
                                         "车型。", _last_ride_origin, _last_ride_destination
                                     ) or "已为您查询到几种车型与预估价格，请确认起终点无误后选择一种车型。"
+                                await self._emit_message_delta_for_sentence(websocket, ride_confirm_tts)
                                 await self._send_json(websocket, {
                                     "type": "sentence_complete",
                                     "sentence": ride_confirm_tts,
@@ -675,10 +716,13 @@ class GeneralChatWebSocketService:
                                     text=ride_confirm_tts,
                                     tts_config=tts_cfg,
                                 )
-                            # 若为本轮推送的订单成功卡片，则后台轮询订单状态，司机接单后推送司机卡片并 TTS
+                                _ride_confirm_tts_sent_this_turn = True
+                                _last_ride_confirm_tts_sent = ride_confirm_tts
+                            # 若为本轮推送的订单成功卡片，则记录订单号并后台轮询订单状态，司机接单后推送司机卡片并 TTS
                             for card in (ride_cards or []):
                                 data = card.get("data") or {}
                                 if data.get("stage") == "success" and data.get("order_id"):
+                                    self.chat_manager.set_last_ride_order_id(session_id, data["order_id"])
                                     asyncio.create_task(self._poll_ride_order_until_driver(
                                         websocket=websocket,
                                         session_id=session_id,
@@ -789,7 +833,46 @@ class GeneralChatWebSocketService:
                                 except Exception as e:
                                     logger.warning(f"⚠️ 待办卡片删除失败: {e}")
 
-                        # 其余工具（POI、天气、get_user_profile、get_current_location 等）默认不生成卡片；
+                        # 高德天气 MCP：从 maps_weather 结果生成天气卡片并推送
+                        weather_card = build_weather_card_from_amap_result(
+                            tool_name=tool_name or "",
+                            tool_result=result_for_extract if tool_result is not None else "{}",
+                            user_id=user_id,
+                        )
+                        if weather_card:
+                            try:
+                                card_manager.create_card(
+                                    event_id=0,
+                                    user_id=user_id,
+                                    card_type=weather_card.get("card_type", "weather"),
+                                    title=weather_card.get("title", "天气"),
+                                    subtitle=weather_card.get("subtitle"),
+                                    icon=weather_card.get("icon"),
+                                    data=weather_card.get("data", {}),
+                                    source=weather_card.get("source", "通用聊天-高德天气"),
+                                    expires_at=weather_card.get("expires_at"),
+                                    card_id=weather_card.get("card_id"),
+                                )
+                                self.chat_manager.add_card_to_session(session_id=session_id, card=weather_card)
+                                await self._send_json(websocket, {
+                                    "type": "rich_card",
+                                    "card_id": weather_card.get("card_id"),
+                                    "card_type": weather_card.get("card_type"),
+                                    "title": weather_card.get("title"),
+                                    "subtitle": weather_card.get("subtitle"),
+                                    "icon": weather_card.get("icon"),
+                                    "data": weather_card.get("data", {}),
+                                    "source": weather_card.get("source"),
+                                    "created_at": weather_card.get("created_at"),
+                                    "updated_at": weather_card.get("updated_at"),
+                                    "expires_at": weather_card.get("expires_at"),
+                                    "timestamp": datetime.now().isoformat(),
+                                })
+                                logger.info(f"🎴 天气卡片已创建并推送: {weather_card.get('card_type')} - {weather_card.get('title')}")
+                            except Exception as e:
+                                logger.warning(f"⚠️ 天气卡片创建失败: {e}")
+
+                        # 其余工具（POI、get_user_profile 等）默认不生成卡片；
                         # 若以后需要某类工具生成卡片，可在此按 tool_name 单独处理。
             
             # 处理剩余的未完成句子（如果启用了TTS）
@@ -1036,6 +1119,19 @@ class GeneralChatWebSocketService:
         
         return False
 
+    async def _emit_message_delta_for_sentence(self, websocket: WebSocket, sentence: str) -> None:
+        """
+        协议约定：凡要发送 sentence_complete/语音 的句子，必须先通过 message_delta 输出，
+        供客户端做字幕/流式展示。服务端注入的句子在发 sentence_complete 前必须调用本方法。
+        """
+        if not sentence or not sentence.strip():
+            return
+        await self._send_json(websocket, {
+            "type": "message_delta",
+            "content": sentence.strip(),
+            "timestamp": datetime.now().isoformat(),
+        })
+
     def _is_meaningful_tts_sentence(self, text: str) -> bool:
         """
         判断文本是否值得做 TTS 播报，过滤无意义片段（如 ".."、单独标点等）。
@@ -1242,6 +1338,7 @@ class GeneralChatWebSocketService:
                     logger.info(f"🎴 打车卡片已创建并推送: {card.get('card_type')} - {card.get('title')}")
                     data = card.get("data") or {}
                     if data.get("stage") == "success" and data.get("order_id"):
+                        self.chat_manager.set_last_ride_order_id(session_id, data["order_id"])
                         asyncio.create_task(self._poll_ride_order_until_driver(
                             websocket=websocket,
                             session_id=session_id,
@@ -1255,12 +1352,13 @@ class GeneralChatWebSocketService:
                     logger.warning(f"⚠️ 打车卡片创建失败: {e}")
         self.chat_manager.clear_pending_ride(session_id)
         tts_text = "已为您叫车，请稍候。"
+        await self._emit_message_delta_for_sentence(websocket, tts_text)
+        await self._send_json(websocket, {
+            "type": "sentence_complete",
+            "sentence": tts_text,
+            "timestamp": datetime.now().isoformat(),
+        })
         if enable_tts and tts_config:
-            await self._send_json(websocket, {
-                "type": "sentence_complete",
-                "sentence": tts_text,
-                "timestamp": datetime.now().isoformat(),
-            })
             await self._generate_and_send_audio(
                 websocket=websocket,
                 text=tts_text,
@@ -1283,6 +1381,100 @@ class GeneralChatWebSocketService:
         logger.info("✅ 打车确认已处理：已直接调用 taxi_create_order 并完成推送")
         return True
     
+    def _is_ride_cancel_message(self, message: str) -> bool:
+        """判断用户消息是否为「取消叫车/取消订单」意图"""
+        if not message or not message.strip():
+            return False
+        s = message.strip()
+        cancel_keywords = ("取消", "不叫车", "不要叫车", "不用叫车", "取消订单", "取消叫车", "取消这个订单", "取消这个叫车")
+        return any(k in s for k in cancel_keywords)
+    
+    async def _handle_ride_cancel_and_call_mcp(
+        self,
+        websocket: WebSocket,
+        session_id: str,
+        user_id: int,
+        order_id: str,
+        enable_tts: bool,
+        tts_config: Optional[TTSConfig],
+    ) -> bool:
+        """
+        用户要求取消订单时直接调用 Didi-Ride-taxi_cancel_order，不经过 Agent。
+        成功则清除 session_last_ride_order_id，发送 TTS 与 done；失败则提示错误。
+        """
+        from ty_mem_agent.mcp_integrations.tool_registry import get_tool_registry
+        registry = get_tool_registry()
+        all_tools = registry.get_all_tools()
+        cancel_tool = None
+        for t in all_tools:
+            if getattr(t, "name", "") == "Didi-Ride-taxi_cancel_order":
+                cancel_tool = t
+                break
+        if not cancel_tool:
+            logger.warning("⚠️ 未找到 Didi-Ride-taxi_cancel_order，无法直接取消订单")
+            return False
+        await self._send_json(websocket, {
+            "type": "generation_started",
+            "timestamp": datetime.now().isoformat(),
+        })
+        params_str = json.dumps({"order_id": order_id}, ensure_ascii=False)
+        try:
+            cancel_result = await asyncio.to_thread(cancel_tool.call, params_str)
+        except Exception as e:
+            logger.error(f"❌ 直接调用 taxi_cancel_order 失败: {e}", exc_info=True)
+            await self._send_cancel_result_and_done(
+                websocket, session_id, f"取消订单失败：{str(e)}", enable_tts, tts_config
+            )
+            return True
+        result_text = str(cancel_result) if not isinstance(cancel_result, (dict, list)) else json.dumps(cancel_result, ensure_ascii=False)
+        await self._send_json(websocket, {
+            "type": "tool_result",
+            "tool_name": "Didi-Ride-taxi_cancel_order",
+            "result": cancel_result,
+            "timestamp": datetime.now().isoformat(),
+        })
+        success = "取消成功" in result_text or "已取消" in result_text
+        if success:
+            self.chat_manager.clear_last_ride_order_id(session_id)
+            tts_text = "已为您取消叫车订单。"
+        else:
+            tts_text = result_text if len(result_text) < 80 else "取消订单失败，请稍后重试或联系客服。"
+        await self._send_cancel_result_and_done(websocket, session_id, tts_text, enable_tts, tts_config)
+        logger.info("✅ 取消订单已处理：已直接调用 taxi_cancel_order")
+        return True
+    
+    async def _send_cancel_result_and_done(
+        self,
+        websocket: WebSocket,
+        session_id: str,
+        content: str,
+        enable_tts: bool,
+        tts_config: Optional[TTSConfig],
+    ) -> None:
+        """发送取消订单后的文案流（message_delta + sentence_complete）、可选 TTS、助手消息和 done 事件"""
+        await self._emit_message_delta_for_sentence(websocket, content)
+        await self._send_json(websocket, {
+            "type": "sentence_complete",
+            "sentence": content,
+            "timestamp": datetime.now().isoformat(),
+        })
+        if enable_tts and tts_config:
+            await self._generate_and_send_audio(websocket=websocket, text=content, tts_config=tts_config)
+        rich_cards = self.chat_manager.get_session_cards(session_id) or []
+        ai_msg = self.chat_manager.add_message(
+            session_id=session_id,
+            role="assistant",
+            content=content,
+            rich_cards=rich_cards,
+        )
+        await self._send_json(websocket, {
+            "type": "done",
+            "message_id": ai_msg.message_id if ai_msg else None,
+            "full_content": content,
+            "total_audio_duration_ms": 0,
+            "timestamp": datetime.now().isoformat(),
+        })
+
     async def _poll_ride_order_until_driver(
         self,
         websocket: WebSocket,
@@ -1359,11 +1551,18 @@ class GeneralChatWebSocketService:
                     tts_text += f"司机{d.get('driver_name')}。"
                 if d.get("car_plate"):
                     tts_text += f"车牌{d.get('car_plate')}。"
+                if tts_text:
+                    await self._emit_message_delta_for_sentence(websocket, tts_text)
+                    await self._send_json(websocket, {
+                        "type": "sentence_complete",
+                        "sentence": tts_text,
+                        "timestamp": datetime.now().isoformat(),
+                    })
                 if enable_tts and tts_text:
                     await self._generate_and_send_audio(websocket, tts_text, tts_config)
             except Exception as e:
                 logger.warning(f"推送司机接单卡片或 TTS 失败: {e}")
-            return
+            break
         logger.debug(f"订单 {order_id} 轮询 {max_polls} 次后未获取到司机信息，停止轮询")
     
     async def _generate_and_send_audio(

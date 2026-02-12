@@ -65,7 +65,7 @@ class Settings(BaseSettings):
     
     # === MCP服务API密钥 ===
     DIDI_API_KEY: Optional[str] = Field(default=None, env="DIDI_API_KEY")
-    DIDI_MCP_MODE: str = Field(default="production", env="DIDI_MCP_MODE")  # production 或 sandbox
+    DIDI_MCP_MODE: str = Field(default="production", env="DIDI_MCP_MODE")  # production | sandbox
     AMAP_TOKEN: Optional[str] = Field(default=None, env="AMAP_TOKEN")
     BOCHA_API_KEY: Optional[str] = Field(default=None, env="BOCHA_API_KEY")
     VARIFLIGHT_API_KEY: Optional[str] = Field(default=None, env="VARIFLIGHT_API_KEY")

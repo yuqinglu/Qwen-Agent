@@ -110,6 +110,9 @@ class GeneralChatManager:
         # pending_ride_dict: estimate_flow_id, from_lng, from_lat, from_name, to_lng, to_lat, to_name, user_phone(可选)
         self.session_pending_ride: Dict[str, Dict[str, Any]] = {}
         
+        # 会话最近一次创建的打车订单号 {session_id: order_id}，用于用户说「取消订单」时直接调 MCP
+        self.session_last_ride_order_id: Dict[str, str] = {}
+        
         self._initialized = True
         logger.info("✅ 通用聊天管理器初始化完成（基于 ConversationManager）")
     
@@ -357,6 +360,21 @@ class GeneralChatManager:
         if session_id in self.session_pending_ride:
             del self.session_pending_ride[session_id]
             logger.debug(f"✅ 清除 pending_ride: session_id={session_id}")
+
+    def set_last_ride_order_id(self, session_id: str, order_id: str) -> None:
+        """记录会话下最近创建的打车订单号（用于取消订单时直接调 MCP）"""
+        self.session_last_ride_order_id[session_id] = str(order_id)
+        logger.debug(f"✅ 记录 last_ride_order_id: session_id={session_id}, order_id={order_id}")
+
+    def get_last_ride_order_id(self, session_id: str) -> Optional[str]:
+        """获取会话下最近创建的打车订单号，不存在返回 None"""
+        return self.session_last_ride_order_id.get(session_id)
+
+    def clear_last_ride_order_id(self, session_id: str) -> None:
+        """取消订单成功后清除会话的最近订单号"""
+        if session_id in self.session_last_ride_order_id:
+            del self.session_last_ride_order_id[session_id]
+            logger.debug(f"✅ 清除 last_ride_order_id: session_id={session_id}")
 
 
 # 全局单例

@@ -13,6 +13,23 @@ from typing import Any, Dict, Optional
 from .base import ScenarioHandler, ScenarioToolResult
 
 
+def user_only_said_destination(user_message: Optional[str]) -> bool:
+    """
+    判断用户是否只说了目的地、未说上车地点（起点）。
+    用于在 get_user_profile 返回后决定播报「正在为您查询车」还是「请问您的上车地点是哪里？」。
+    """
+    if not user_message or not isinstance(user_message, str):
+        return False
+    msg = user_message.strip()
+    # 有明确起点表述则视为已提供起点
+    origin_keywords = ("从", "起点", "上车", "出发", "出发地", "我在", "我在哪", "从哪", "从这儿", "从这里")
+    if any(k in msg for k in origin_keywords):
+        return False
+    # 有「去/到/目的地」且无起点表述，视为只说目的地
+    dest_keywords = ("去", "到", "目的地", "到哪", "去哪")
+    return any(k in msg for k in dest_keywords)
+
+
 class RideHailingScenario(ScenarioHandler):
     """打车场景：只负责「何时 TTS、何时抑制 TTS」，不负责建卡/发卡。"""
 
@@ -36,7 +53,7 @@ class RideHailingScenario(ScenarioHandler):
     ) -> Optional[ScenarioToolResult]:
         if not tool_name:
             return None
-        # get_user_profile：决定播报「已查到/请提供电话」，并抑制后续模型 TTS 直到车型卡片
+        # get_user_profile：决定播报「已查到/请提供电话」或「请问上车地点」
         if tool_name == "get_user_profile" and tool_result is not None:
             tts_to_say = None
             try:
@@ -48,11 +65,16 @@ class RideHailingScenario(ScenarioHandler):
                         ph = profile.get("phone")
                         if ph and str(ph).strip():
                             has_phone = True
-                    tts_to_say = (
-                        "已查到您的电话号码，正在为您查询车型与价格。"
-                        if has_phone
-                        else "请提供您的电话号码，以便为您叫车。"
-                    )
+                    user_msg = context.get("user_message") if isinstance(context, dict) else None
+                    if has_phone and user_only_said_destination(user_msg):
+                        # 用户只说目的地、未说起点：先让用户确认上车地点，不要播「正在为您查询车」
+                        tts_to_say = "已查到您的电话号码。请问您的上车地点是哪里？"
+                    else:
+                        tts_to_say = (
+                            "已查到您的电话号码，正在为您查询车型与价格。"
+                            if has_phone
+                            else "请提供您的电话号码，以便为您叫车。"
+                        )
             except Exception:
                 pass
             if tts_to_say:

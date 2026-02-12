@@ -4,7 +4,7 @@
 包含所有通用聊天相关的HTTP和WebSocket接口
 """
 
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Header, WebSocket, HTTPException, Query
 from pydantic import BaseModel, Field
 from loguru import logger
@@ -18,7 +18,8 @@ from .general_chat_websocket_service import get_general_chat_websocket_service
 class BaseResponse(BaseModel):
     """基础响应"""
     code: int = Field(0, description="状态码，0表示成功")
-    message: str = Field("success", description="响应消息")
+    msg: str = Field("success", description="响应消息")
+    data: Dict[str, Any] = Field(default_factory=dict, description="响应数据")
 
 
 class ChatSessionListItem(BaseModel):
@@ -224,8 +225,8 @@ async def get_chat_sessions(
         
         return GetChatSessionListResponse(
             code=0,
-            message="success",
-            data=session_list
+            msg="success",
+            data=session_list,
         )
         
     except HTTPException:
@@ -234,8 +235,8 @@ async def get_chat_sessions(
         logger.error(f"❌ 获取会话列表失败: {e}", exc_info=True)
         return GetChatSessionListResponse(
             code=1001,
-            message=f"获取会话列表失败: {str(e)}",
-            data=None
+            msg=f"获取会话列表失败: {str(e)}",
+            data={},
         )
 
 
@@ -278,15 +279,15 @@ async def get_chat_session_detail(
         if not session:
             return GetChatSessionDetailResponse(
                 code=1002,
-                message="会话不存在",
-                data=None
+                msg="会话不存在",
+                data={},
             )
         
         if session.user_id != user_id:
             return GetChatSessionDetailResponse(
                 code=1003,
-                message="无权访问此会话",
-                data=None
+                msg="无权访问此会话",
+                data={},
             )
         
         # 构建会话信息
@@ -341,7 +342,7 @@ async def get_chat_session_detail(
         
         return GetChatSessionDetailResponse(
             code=0,
-            message="success",
+            msg="success",
             data=GetChatSessionDetailData(
                 session=session_detail,
                 messages=messages_data,
@@ -357,8 +358,8 @@ async def get_chat_session_detail(
         logger.error(f"❌ 获取会话详情失败: {e}", exc_info=True)
         return GetChatSessionDetailResponse(
             code=1005,
-            message=f"获取会话详情失败: {str(e)}",
-            data=None
+            msg=f"获取会话详情失败: {str(e)}",
+            data={},
         )
 
 
@@ -393,13 +394,13 @@ async def update_session_title(
         if not session:
             return UpdateSessionTitleResponse(
                 code=1002,
-                message="会话不存在"
+                msg="会话不存在",
             )
         
         if session.user_id != user_id:
             return UpdateSessionTitleResponse(
                 code=1003,
-                message="无权访问此会话"
+                msg="无权访问此会话",
             )
         
         # 更新标题
@@ -408,12 +409,14 @@ async def update_session_title(
         if success:
             return UpdateSessionTitleResponse(
                 code=0,
-                message="success"
+                msg="success",
+                data={},
             )
         else:
             return UpdateSessionTitleResponse(
                 code=1004,
-                message="更新标题失败"
+                msg="更新标题失败",
+                data={},
             )
         
     except HTTPException:
@@ -422,7 +425,8 @@ async def update_session_title(
         logger.error(f"❌ 更新会话标题失败: {e}", exc_info=True)
         return UpdateSessionTitleResponse(
             code=1005,
-            message=f"更新会话标题失败: {str(e)}"
+            msg=f"更新会话标题失败: {str(e)}",
+            data={},
         )
 
 
@@ -453,13 +457,15 @@ async def delete_session(
         if not session:
             return DeleteSessionResponse(
                 code=1002,
-                message="会话不存在"
+                msg="会话不存在",
+                data={},
             )
         
         if session.user_id != user_id:
             return DeleteSessionResponse(
                 code=1003,
-                message="无权访问此会话"
+                msg="无权访问此会话",
+                data={},
             )
         
         # 删除会话
@@ -468,12 +474,14 @@ async def delete_session(
         if success:
             return DeleteSessionResponse(
                 code=0,
-                message="success"
+                msg="success",
+                data={},
             )
         else:
             return DeleteSessionResponse(
                 code=1004,
-                message="删除会话失败"
+                msg="删除会话失败",
+                data={},
             )
         
     except HTTPException:
@@ -482,7 +490,8 @@ async def delete_session(
         logger.error(f"❌ 删除会话失败: {e}", exc_info=True)
         return DeleteSessionResponse(
             code=1006,
-            message=f"删除会话失败: {str(e)}"
+            msg=f"删除会话失败: {str(e)}",
+            data={},
         )
 
 
@@ -513,15 +522,15 @@ async def get_rich_cards(
         if not session:
             return GetRichCardsResponse(
                 code=1002,
-                message="会话不存在",
-                data=None
+                msg="会话不存在",
+                data={},    
             )
         
         if session.user_id != user_id:
             return GetRichCardsResponse(
                 code=1003,
-                message="无权访问此会话",
-                data=None
+                msg="无权访问此会话",
+                data={},   
             )
         
         # 获取卡片列表
@@ -530,13 +539,13 @@ async def get_rich_cards(
         if cards is None:
             return GetRichCardsResponse(
                 code=1004,
-                message="获取卡片失败",
-                data=None
+                msg="获取卡片失败",
+                data={},
             )
         
         return GetRichCardsResponse(
             code=0,
-            message="success",
+            msg="success",
             data=cards
         )
         
@@ -546,8 +555,8 @@ async def get_rich_cards(
         logger.error(f"❌ 获取富媒体卡片失败: {e}", exc_info=True)
         return GetRichCardsResponse(
             code=1006,
-            message=f"获取富媒体卡片失败: {str(e)}",
-            data=None
+            msg=f"获取富媒体卡片失败: {str(e)}",
+            data={},
         )
 
 
