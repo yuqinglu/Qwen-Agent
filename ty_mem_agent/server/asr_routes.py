@@ -391,9 +391,10 @@ def register_asr_websocket(app):
     注册ASR WebSocket端点到FastAPI应用
     
     必须通过app实例注册，因为APIRouter不支持WebSocket
+    路径使用 /agent 前缀，与其它 APP API 及 Higress 路由保持一致，便于网关转发。
     """
     
-    @app.websocket("/api/v1/asr/stream")
+    @app.websocket("/agent/api/v1/asr/stream")
     async def asr_stream_websocket(websocket: WebSocket):
         """
         实时流式语音识别 WebSocket 端点
@@ -645,7 +646,7 @@ def register_asr_routes(app):
     
     包括：
     - HTTP接口（/api/v1/asr/...）
-    - WebSocket接口（/api/v1/asr/stream）
+    - WebSocket接口（/agent/api/v1/asr/stream）
     """
     # 设置WebSocket日志过滤器（过滤BINARY消息）
     setup_websocket_log_filter()
