@@ -1089,10 +1089,95 @@ def _normalize_card_data(card_data: Dict, source: str = "unknown", user_id: int 
     return normalize_card_data(card_data, source, user_id)
 
 
+def _pick_forecast_index_by_llm(user_query: str, forecasts: List[Dict[str, Any]]) -> Optional[int]:
+    """
+    使用小模型根据用户问题在多天预报中选择最匹配的一天索引，避免依赖易碎的正则/关键词规则。
+    仅传递日期等必要信息，控制 token 量。
+    """
+    try:
+        q = (user_query or "").strip()
+        if not q or not forecasts:
+            return None
+
+        # 构造简短的日期列表，供模型选择
+        items: List[str] = []
+        for i, f in enumerate(forecasts):
+            date_str = (f.get("date") or "").strip()
+            # 兼容部分嵌套在 casts[0].date 的格式
+            if not date_str:
+                casts = f.get("casts") or []
+                if isinstance(casts, list) and casts:
+                    date_str = (casts[0].get("date") or "").strip()
+            items.append(f"{i}: {date_str or '未知日期'}")
+        dates_block = "\n".join(items)
+
+        # 延用现有 LLM 配置，规划/路由类任务使用 qwen-plus 降低成本
+        from ty_mem_agent.config.settings import get_llm_config
+        from qwen_agent.llm import get_chat_model
+        from qwen_agent.llm.schema import Message, USER, SYSTEM
+
+        llm_config = get_llm_config()
+        if llm_config.get("model_type") == "qwen_dashscope":
+            llm_config = {**llm_config, "model": "qwen-plus"}
+        llm = get_chat_model(llm_config)
+
+        today_str = datetime.now().date().isoformat()
+        system_prompt = (
+            "你是一个助手，根据用户的自然语言问题和给定的天气预报日期列表，"
+            "选出最符合用户问题的一天的索引（0 开始）。"
+            "要理解相对日期（如今天、明天、后天、本周五、本周末、this Friday、tomorrow 等），"
+            "根据今天的日期推断是哪一天，然后在列表中选出对应日期的索引。"
+            "只需要在输出中返回一个阿拉伯数字索引，不要返回其他文字。"
+        )
+        user_content = (
+            f"今天日期是：{today_str}。\n"
+            f"用户的问题是：「{q}」。\n"
+            f"可选的预报日期列表如下（格式：索引: 日期）：\n{dates_block}\n\n"
+            f"请你根据用户的问题和今天日期，在上面的列表中选出最合适的一天，"
+            f"只输出对应的索引数字（0 到 {len(forecasts) - 1}），不要输出其他任何内容。"
+        )
+
+        response_text = ""
+        for responses in llm.chat(
+            messages=[
+                Message(role=SYSTEM, content=system_prompt),
+                Message(role=USER, content=user_content),
+            ],
+            stream=False,
+        ):
+            if not responses:
+                continue
+            last = responses[-1] if isinstance(responses, list) else responses
+            if hasattr(last, "content") and last.content:
+                response_text = last.content if isinstance(last.content, str) else str(last.content)
+                break
+
+        if not response_text:
+            return None
+
+        # 提取第一个连续数字串作为索引（避免直接依赖正则）
+        digits = ""
+        for ch in response_text.strip():
+            if ch.isdigit():
+                digits += ch
+            elif digits:
+                break
+        if not digits:
+            return None
+        idx = int(digits)
+        if 0 <= idx < len(forecasts):
+            return idx
+        return None
+    except Exception as e:
+        logger.debug(f"通过 LLM 选择天气预报日期失败: {e}")
+        return None
+
+
 def build_weather_card_from_amap_result(
     tool_name: str,
     tool_result: Any,
     user_id: int = None,
+    user_query: Optional[str] = None,
 ) -> Optional[Dict]:
     """
     从高德天气 MCP 工具结果（amap_maps-maps_weather）构建天气富媒体卡片。
@@ -1132,8 +1217,16 @@ def build_weather_card_from_amap_result(
         # 高德预报：forecasts 为每日对象数组（顶层 city，forecasts[].date/dayweather/daytemp 等）
         if "forecasts" in data and isinstance(data["forecasts"], list) and len(data["forecasts"]) > 0:
             city = data.get("city") or ""
-            first = data["forecasts"][0]
-            # 格式1：forecasts[0] 直接是某日（含 dayweather/date）
+            forecasts = data["forecasts"]
+
+            # 默认使用第 1 天；若提供了用户问题，则通过小模型在 forecasts 中选择最匹配的一天
+            first = forecasts[0]
+            if user_query:
+                idx = _pick_forecast_index_by_llm(user_query, forecasts)
+                if idx is not None and 0 <= idx < len(forecasts):
+                    first = forecasts[idx]
+
+            # 格式1：forecasts[i] 直接是某日（含 dayweather/date）
             if "dayweather" in first or "date" in first:
                 dayweather = first.get("dayweather", "")
                 nightweather = first.get("nightweather", "")

@@ -58,23 +58,26 @@ class RideHailingScenario(ScenarioHandler):
             tts_to_say = None
             try:
                 res = tool_result if isinstance(tool_result, dict) else json.loads(str(tool_result))
-                if isinstance(res, dict) and res.get("success"):
-                    profile = res.get("profile") if isinstance(res.get("profile"), dict) else None
-                    has_phone = False
-                    if profile and profile.get("phone"):
-                        ph = profile.get("phone")
-                        if ph and str(ph).strip():
-                            has_phone = True
-                    user_msg = context.get("user_message") if isinstance(context, dict) else None
-                    if has_phone and user_only_said_destination(user_msg):
-                        # 用户只说目的地、未说起点：先让用户确认上车地点，不要播「正在为您查询车」
-                        tts_to_say = "已查到您的电话号码。请问您的上车地点是哪里？"
+                if isinstance(res, dict):
+                    if res.get("success"):
+                        profile = res.get("profile") if isinstance(res.get("profile"), dict) else None
+                        has_phone = False
+                        if profile and profile.get("phone"):
+                            ph = profile.get("phone")
+                            if ph and str(ph).strip():
+                                has_phone = True
+                        user_msg = context.get("user_message") if isinstance(context, dict) else None
+                        if has_phone and user_only_said_destination(user_msg):
+                            tts_to_say = "已查到您的电话号码。请问您的上车地点是哪里？"
+                        else:
+                            tts_to_say = (
+                                "已查到您的电话号码，正在为您查询车型与价格。"
+                                if has_phone
+                                else "请提供您的电话号码，以便为您叫车。"
+                            )
                     else:
-                        tts_to_say = (
-                            "已查到您的电话号码，正在为您查询车型与价格。"
-                            if has_phone
-                            else "请提供您的电话号码，以便为您叫车。"
-                        )
+                        # success 为 false（如未找到用户画像）：主动向用户索要电话，不要静默结束
+                        tts_to_say = "请提供您的电话号码，以便为您叫车。"
             except Exception:
                 pass
             if tts_to_say:

@@ -381,6 +381,44 @@ def extract_api_routes_from_design() -> List[Dict[str, Any]]:
             'module': 'ASR'
         },
         
+        # 通用聊天接口（无 event_id，与待办聊天区分）
+        {
+            'path': '/api/v1/chat/ws',
+            'method': 'WS',
+            'description': '通用聊天 WebSocket（实时聊天、TTS 等）',
+            'module': '通用聊天'
+        },
+        {
+            'path': '/api/v1/chat/sessions',
+            'method': 'GET',
+            'description': '获取通用聊天会话列表',
+            'module': '通用聊天'
+        },
+        {
+            'path': '/api/v1/chat/sessions/{session_id}',
+            'method': 'GET',
+            'description': '获取通用聊天会话详情（含历史消息）',
+            'module': '通用聊天'
+        },
+        {
+            'path': '/api/v1/chat/sessions/{session_id}/title',
+            'method': 'POST',
+            'description': '更新通用聊天会话标题',
+            'module': '通用聊天'
+        },
+        {
+            'path': '/api/v1/chat/sessions/{session_id}/delete',
+            'method': 'POST',
+            'description': '删除通用聊天会话',
+            'module': '通用聊天'
+        },
+        {
+            'path': '/api/v1/chat/sessions/{session_id}/cards',
+            'method': 'GET',
+            'description': '获取通用聊天会话的富媒体卡片',
+            'module': '通用聊天'
+        },
+        
         # 待办创建接口
         {
             'path': '/api/v1/todo/quick-create',

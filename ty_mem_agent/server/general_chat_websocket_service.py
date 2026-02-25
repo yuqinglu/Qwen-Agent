@@ -17,6 +17,8 @@ from .tts_service import get_tts_service, TTSConfig
 from .smart_sentence_splitter import get_sentence_splitter
 from .user_manager import user_manager
 from .scenarios import get_scenario_for_message
+from .skills import get_skill_registry_lazy
+from .todo_chat_sse_service import ExecutionStep
 from ty_mem_agent.agents.ty_memory_agent import TYMemoryAgent
 from qwen_agent.llm.schema import Message, USER
 
@@ -257,6 +259,9 @@ class GeneralChatWebSocketService:
         tts_config = message.get("tts_config", {})
         client_type = message.get("client_type", "app")  # app 或 glasses
         deep_thinking = message.get("deep_thinking", False)
+        # 仅 APP 端支持深度思考，眼镜端强制关闭
+        if client_type != "app":
+            deep_thinking = False
         
         logger.info(f"📥 收到用户消息: user_id={user_id}, session_id={session_id}, "
                    f"message_len={len(user_message)}, enable_tts={enable_tts}, "
@@ -370,6 +375,65 @@ class GeneralChatWebSocketService:
                 "type": "generation_started",
                 "timestamp": datetime.now().isoformat()
             })
+            enable_deep_thinking = bool(deep_thinking and client_type == "app")
+            thinking_steps: List[ExecutionStep] = []
+            business_actions_done: List[str] = []
+            plan_result: Optional[Dict[str, Any]] = None
+            if enable_deep_thinking:
+                # 深度思考模式：先调用大模型做任务规划；多轮对话时传入最近几轮，避免把简短回复（如「万科锦绣滨江」）误判成新意图
+                from .deep_thinking_planner import plan_with_llm
+                recent_dialogue: List[Dict[str, str]] = []
+                if session and getattr(session, "messages", None):
+                    # 最近 6 条（约 3 轮），不含本条用户消息
+                    recent = session.messages[-6:] if len(session.messages) > 6 else session.messages
+                    for msg in recent:
+                        recent_dialogue.append({"role": getattr(msg, "role", "user"), "content": getattr(msg, "content", "") or ""})
+                try:
+                    plan_result = await asyncio.wait_for(
+                        asyncio.to_thread(plan_with_llm, user_message or "", 15.0, recent_dialogue),
+                        timeout=18.0,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("深度思考规划超时，使用模板")
+                    plan_result = None
+                except Exception as e:
+                    logger.warning(f"深度思考规划失败: {e}，使用模板")
+                    plan_result = None
+                if plan_result and plan_result.get("plan_text") and plan_result.get("steps"):
+                    plan_text = plan_result["plan_text"]
+                    thinking_steps = []
+                    for i, s in enumerate(plan_result["steps"], start=1):
+                        step_type = (s.get("type") or "tool").strip().lower()
+                        if step_type not in ("analysis", "tool", "generate", "update"):
+                            step_type = "tool"
+                        desc = (s.get("desc") or "").strip() or "执行该步骤"
+                        thinking_steps.append(ExecutionStep(i, step_type, desc))
+                    if thinking_steps:
+                        thinking_steps[0].update_status("running", desc=thinking_steps[0].desc, progress=0.1)
+                else:
+                    # 规划失败或返回无效时退回通用模板（不提及具体业务场景以免张冠李戴）
+                    preview = (user_message or "").strip()
+                    if len(preview) > 40:
+                        preview = preview[:40] + "…"
+                    analysis_desc = f"理解您的问题并制定处理方案" if not preview else f"分析「{preview}」的具体需求"
+                    thinking_steps = [
+                        ExecutionStep(1, "analysis", analysis_desc),
+                        ExecutionStep(2, "tool", "按需查询和获取相关信息"),
+                        ExecutionStep(3, "generate", "整理信息并给出回复"),
+                    ]
+                    thinking_steps[0].update_status("running", desc=analysis_desc, progress=0.1)
+                    plan_text = f"正在分析您的问题并规划处理步骤。" if not preview else f"正在分析「{preview}」，规划处理步骤。"
+                await self._send_json(websocket, {
+                    "type": "thinking",
+                    "step": "plan",
+                    "content": plan_text,
+                    "timestamp": datetime.now().isoformat(),
+                })
+                await self._send_json(websocket, {
+                    "type": "plan_update",
+                    "steps": [s.to_dict() for s in thinking_steps],
+                    "timestamp": datetime.now().isoformat(),
+                })
             
             # 若是新会话首轮：并发生成标题，标题就绪即推 title_updated，便于 APP 尽早展示会话标题
             if session and len(session.messages) == 1:
@@ -404,6 +468,7 @@ class GeneralChatWebSocketService:
             # 流式调用Agent
             full_response = ""
             current_sentence = ""
+            thinking_step_index = 0
             
             # 准备TTS配置
             tts_cfg = None
@@ -431,7 +496,10 @@ class GeneralChatWebSocketService:
             # 本回合是否进入某场景（打车等），用于委托 TTS/抑制 决策
             _scenario = get_scenario_for_message(user_message)
             
-            async for chunk in self._stream_agent_response(agent, history_messages, deep_thinking):
+            async for chunk in self._stream_agent_response(
+                agent, history_messages, deep_thinking,
+                plan_result=plan_result if enable_deep_thinking and plan_result else None,
+            ):
                 chunk_type = chunk.get("type")
                 
                 if chunk_type == "delta":
@@ -504,6 +572,44 @@ class GeneralChatWebSocketService:
                     tool_result = chunk.get("result")
                     tool_args = chunk.get("tool_args")  # cancel 时用于从参数取 eventId
                     
+                    # 深度思考模式：将每次工具完成视为执行计划中的进度更新
+                    if enable_deep_thinking and thinking_steps:
+                        thinking_step_index += 1
+                        short_desc = get_skill_registry_lazy().get_business_short(tool_name)
+                        business_actions_done.append("已" + short_desc)
+                        # 按 type 找到对应的步骤并更新，不硬编码索引
+                        for s in thinking_steps:
+                            if s.type == "analysis" and s.status != "completed":
+                                s.update_status("completed", progress=1.0)
+                                break
+                        # 更新 tool 步骤进度：优先保留规划器给出的具体 desc，只在无内容时用 skills 兜底
+                        for s in thinking_steps:
+                            if s.type == "tool":
+                                cur = s.progress or 0.0
+                                new_prog = min(cur + 0.3, 0.95)
+                                original_desc = s.desc or ""
+                                if original_desc and not original_desc.startswith("正在"):
+                                    running_desc = f"正在{original_desc}"
+                                elif original_desc:
+                                    running_desc = original_desc
+                                else:
+                                    running_desc = f"正在{short_desc}…"
+                                s.update_status("running", desc=running_desc, progress=new_prog)
+                                break
+
+                        thinking_content = get_skill_registry_lazy().get_thinking_after_result(tool_name, tool_result)
+                        await self._send_json(websocket, {
+                            "type": "thinking",
+                            "step": thinking_step_index,
+                            "content": thinking_content,
+                            "timestamp": datetime.now().isoformat(),
+                        })
+                        await self._send_json(websocket, {
+                            "type": "plan_update",
+                            "steps": [s.to_dict() for s in thinking_steps],
+                            "timestamp": datetime.now().isoformat(),
+                        })
+                    
                     # 发送工具结果事件
                     await self._send_json(websocket, {
                         "type": "tool_result",
@@ -549,18 +655,20 @@ class GeneralChatWebSocketService:
                                 action = _scenario.on_tool_result(
                                     tool_name, tool_result, tool_args, _scenario_ctx
                                 )
-                                if action and action.tts_to_say and enable_tts:
-                                    await self._emit_message_delta_for_sentence(websocket, action.tts_to_say)
-                                    await self._send_json(websocket, {
-                                        "type": "sentence_complete",
-                                        "sentence": action.tts_to_say,
-                                        "timestamp": datetime.now().isoformat(),
-                                    })
-                                    await self._generate_and_send_audio(
-                                        websocket=websocket,
-                                        text=action.tts_to_say,
-                                        tts_config=tts_cfg,
-                                    )
+                                if action and action.tts_to_say:
+                                    if enable_tts:
+                                        await self._emit_message_delta_for_sentence(websocket, action.tts_to_say)
+                                        await self._send_json(websocket, {
+                                            "type": "sentence_complete",
+                                            "sentence": action.tts_to_say,
+                                            "timestamp": datetime.now().isoformat(),
+                                        })
+                                        await self._generate_and_send_audio(
+                                            websocket=websocket,
+                                            text=action.tts_to_say,
+                                            tts_config=tts_cfg,
+                                        )
+                                    full_response += "\n\n" + action.tts_to_say
                                     if action.suppress_tts_until_cards:
                                         _ride_hailing_suppress_tts_until_cards = True
                             else:
@@ -585,6 +693,7 @@ class GeneralChatWebSocketService:
                                         text=profile_tts,
                                         tts_config=tts_cfg,
                                     )
+                                    full_response += "\n\n" + profile_tts
                                     _ride_hailing_suppress_tts_until_cards = True
 
                         # 滴滴打车 MCP：三阶段流程（确认订单、执行中、成功）
@@ -833,11 +942,12 @@ class GeneralChatWebSocketService:
                                 except Exception as e:
                                     logger.warning(f"⚠️ 待办卡片删除失败: {e}")
 
-                        # 高德天气 MCP：从 maps_weather 结果生成天气卡片并推送
+                        # 高德天气 MCP：从 maps_weather 结果生成天气卡片并推送（结合用户原始问题选择合适日期，如“明天重庆天气”选用明日预报）
                         weather_card = build_weather_card_from_amap_result(
                             tool_name=tool_name or "",
                             tool_result=result_for_extract if tool_result is not None else "{}",
                             user_id=user_id,
+                            user_query=user_message,
                         )
                         if weather_card:
                             try:
@@ -938,6 +1048,38 @@ class GeneralChatWebSocketService:
                     "total_audio_duration_ms": 0,
                     "timestamp": datetime.now().isoformat()
                 })
+            # 深度思考模式：在 done 之后把所有未完成步骤标为 completed，并生成收尾 thinking
+            if enable_deep_thinking and thinking_steps:
+                def _completed_desc(step: ExecutionStep) -> str:
+                    d = step.desc or ""
+                    if d.startswith("正在"):
+                        d = d[2:].rstrip("…").rstrip("...").strip()
+                        return f"已完成{d}" if d else "已完成"
+                    return d if d else "已完成"
+                for s in thinking_steps:
+                    if s.status != "completed":
+                        s.update_status("completed", desc=_completed_desc(s), progress=1.0)
+                await self._send_json(websocket, {
+                    "type": "plan_update",
+                    "steps": [s.to_dict() for s in thinking_steps],
+                    "timestamp": datetime.now().isoformat(),
+                })
+                # 用规划器生成的 plan_text 和实际执行的业务动作做收尾，不用固定模板
+                original_plan = plan_result.get("plan_text", "") if plan_result else ""
+                if business_actions_done and original_plan:
+                    summary_text = f"深度思考完成。本次规划：{original_plan}。实际执行：{'、'.join(business_actions_done)}，已整合信息给出回复。"
+                elif business_actions_done:
+                    summary_text = f"深度思考完成。{'、'.join(business_actions_done)}，已整合信息给出回复。"
+                elif original_plan:
+                    summary_text = f"深度思考完成。{original_plan}，已直接给出回复。"
+                else:
+                    summary_text = "深度思考完成，已给出回复。"
+                await self._send_json(websocket, {
+                    "type": "thinking",
+                    "step": "summary",
+                    "content": summary_text,
+                    "timestamp": datetime.now().isoformat(),
+                })
             
         except Exception as e:
             logger.error(f"❌ 处理消息失败: {e}", exc_info=True)
@@ -951,21 +1093,39 @@ class GeneralChatWebSocketService:
         self,
         agent: TYMemoryAgent,
         messages: List[Dict],
-        deep_thinking: bool = False
+        deep_thinking: bool = False,
+        plan_result: Optional[Dict[str, Any]] = None,
     ):
         """
-        流式调用Agent并yield响应
+        流式调用Agent并yield响应。
+        若传入 plan_result（深度思考规划），会将其注入到当前用户消息中，使执行按规划进行（ReAct 式）。
         
         Args:
             agent: TY Memory Agent实例
             messages: 历史消息
-            deep_thinking: 是否启用深度思考（ReAct）
-            
+            deep_thinking: 是否启用深度思考
+            plan_result: 规划结果 {"plan_text": str, "steps": [...]}，非空时会拼入最后一条用户消息，引导 Agent 按规划执行
         Yields:
             响应chunk
         """
         try:
-            # 转换消息格式
+            # 深拷贝，避免修改调用方传入的 messages
+            messages = [{"role": m["role"], "content": m["content"]} for m in messages]
+            if plan_result and plan_result.get("plan_text") and plan_result.get("steps"):
+                # 将规划说明 + 各步骤详情注入到当前用户消息末尾，使 Agent 按规划执行（ReAct 串联）
+                steps_lines = "\n".join(
+                    f"  第{i}步（{s.get('type','tool')}）：{s.get('desc','')}"
+                    for i, s in enumerate(plan_result["steps"], start=1)
+                )
+                plan_block = (
+                    f"\n\n【本回合执行规划】\n{plan_result['plan_text']}\n"
+                    f"具体步骤如下：\n{steps_lines}\n"
+                    "请严格按上述步骤顺序执行，每一步完成后再进行下一步。"
+                )
+                for i in range(len(messages) - 1, -1, -1):
+                    if messages[i].get("role") == "user":
+                        messages[i] = {"role": "user", "content": messages[i]["content"] + plan_block}
+                        break
             qwen_messages = [
                 Message(role=msg["role"], content=msg["content"])
                 for msg in messages
