@@ -407,7 +407,8 @@ class GeneralChatWebSocketService:
                         if step_type not in ("analysis", "tool", "generate", "update"):
                             step_type = "tool"
                         desc = (s.get("desc") or "").strip() or "执行该步骤"
-                        thinking_steps.append(ExecutionStep(i, step_type, desc))
+                        title = (s.get("title") or "").strip() or None
+                        thinking_steps.append(ExecutionStep(i, step_type, desc, title=title))
                     if thinking_steps:
                         thinking_steps[0].update_status("running", desc=thinking_steps[0].desc, progress=0.1)
                 else:
@@ -417,9 +418,9 @@ class GeneralChatWebSocketService:
                         preview = preview[:40] + "…"
                     analysis_desc = f"理解您的问题并制定处理方案" if not preview else f"分析「{preview}」的具体需求"
                     thinking_steps = [
-                        ExecutionStep(1, "analysis", analysis_desc),
-                        ExecutionStep(2, "tool", "按需查询和获取相关信息"),
-                        ExecutionStep(3, "generate", "整理信息并给出回复"),
+                        ExecutionStep(1, "analysis", analysis_desc, title="分析需求"),
+                        ExecutionStep(2, "tool", "按需查询和获取相关信息", title="调用工具"),
+                        ExecutionStep(3, "generate", "整理信息并给出回复", title="生成回复"),
                     ]
                     thinking_steps[0].update_status("running", desc=analysis_desc, progress=0.1)
                     plan_text = f"正在分析您的问题并规划处理步骤。" if not preview else f"正在分析「{preview}」，规划处理步骤。"
@@ -1029,8 +1030,41 @@ class GeneralChatWebSocketService:
                     content=final_content,
                     rich_cards=rich_cards
                 )
-                
-                # 发送完成事件
+
+                # 深度思考模式：在 done 之前把所有未完成步骤标为 completed，并生成收尾 thinking
+                if enable_deep_thinking and thinking_steps:
+                    def _completed_desc(step: ExecutionStep) -> str:
+                        d = step.desc or ""
+                        if d.startswith("正在"):
+                            d = d[2:].rstrip("…").rstrip("...").strip()
+                            return f"已完成{d}" if d else "已完成"
+                        return d if d else "已完成"
+                    for s in thinking_steps:
+                        if s.status != "completed":
+                            s.update_status("completed", desc=_completed_desc(s), progress=1.0)
+                    await self._send_json(websocket, {
+                        "type": "plan_update",
+                        "steps": [s.to_dict() for s in thinking_steps],
+                        "timestamp": datetime.now().isoformat(),
+                    })
+                    # 用规划器生成的 plan_text 和实际执行的业务动作做收尾，不用固定模板
+                    original_plan = plan_result.get("plan_text", "") if plan_result else ""
+                    if business_actions_done and original_plan:
+                        summary_text = f"深度思考完成。本次规划：{original_plan}。实际执行：{'、'.join(business_actions_done)}，已整合信息给出回复。"
+                    elif business_actions_done:
+                        summary_text = f"深度思考完成。{'、'.join(business_actions_done)}，已整合信息给出回复。"
+                    elif original_plan:
+                        summary_text = f"深度思考完成。{original_plan}，已直接给出回复。"
+                    else:
+                        summary_text = "深度思考完成，已给出回复。"
+                    await self._send_json(websocket, {
+                        "type": "thinking",
+                        "step": "summary",
+                        "content": summary_text,
+                        "timestamp": datetime.now().isoformat(),
+                    })
+
+                # 发送完成事件（确保 done 始终在最后）
                 await self._send_json(websocket, {
                     "type": "done",
                     "message_id": ai_msg.message_id if ai_msg else None,
@@ -1041,44 +1075,43 @@ class GeneralChatWebSocketService:
             
             else:
                 # 没有生成内容
+                if enable_deep_thinking and thinking_steps:
+                    def _completed_desc(step: ExecutionStep) -> str:
+                        d = step.desc or ""
+                        if d.startswith("正在"):
+                            d = d[2:].rstrip("…").rstrip("...").strip()
+                            return f"已完成{d}" if d else "已完成"
+                        return d if d else "已完成"
+                    for s in thinking_steps:
+                        if s.status != "completed":
+                            s.update_status("completed", desc=_completed_desc(s), progress=1.0)
+                    await self._send_json(websocket, {
+                        "type": "plan_update",
+                        "steps": [s.to_dict() for s in thinking_steps],
+                        "timestamp": datetime.now().isoformat(),
+                    })
+                    original_plan = plan_result.get("plan_text", "") if plan_result else ""
+                    if business_actions_done and original_plan:
+                        summary_text = f"深度思考完成。本次规划：{original_plan}。实际执行：{'、'.join(business_actions_done)}，已整合信息给出回复。"
+                    elif business_actions_done:
+                        summary_text = f"深度思考完成。{'、'.join(business_actions_done)}，已整合信息给出回复。"
+                    elif original_plan:
+                        summary_text = f"深度思考完成。{original_plan}，已直接给出回复。"
+                    else:
+                        summary_text = "深度思考完成，已给出回复。"
+                    await self._send_json(websocket, {
+                        "type": "thinking",
+                        "step": "summary",
+                        "content": summary_text,
+                        "timestamp": datetime.now().isoformat(),
+                    })
+
                 await self._send_json(websocket, {
                     "type": "done",
                     "message_id": None,
                     "full_content": "",
                     "total_audio_duration_ms": 0,
                     "timestamp": datetime.now().isoformat()
-                })
-            # 深度思考模式：在 done 之后把所有未完成步骤标为 completed，并生成收尾 thinking
-            if enable_deep_thinking and thinking_steps:
-                def _completed_desc(step: ExecutionStep) -> str:
-                    d = step.desc or ""
-                    if d.startswith("正在"):
-                        d = d[2:].rstrip("…").rstrip("...").strip()
-                        return f"已完成{d}" if d else "已完成"
-                    return d if d else "已完成"
-                for s in thinking_steps:
-                    if s.status != "completed":
-                        s.update_status("completed", desc=_completed_desc(s), progress=1.0)
-                await self._send_json(websocket, {
-                    "type": "plan_update",
-                    "steps": [s.to_dict() for s in thinking_steps],
-                    "timestamp": datetime.now().isoformat(),
-                })
-                # 用规划器生成的 plan_text 和实际执行的业务动作做收尾，不用固定模板
-                original_plan = plan_result.get("plan_text", "") if plan_result else ""
-                if business_actions_done and original_plan:
-                    summary_text = f"深度思考完成。本次规划：{original_plan}。实际执行：{'、'.join(business_actions_done)}，已整合信息给出回复。"
-                elif business_actions_done:
-                    summary_text = f"深度思考完成。{'、'.join(business_actions_done)}，已整合信息给出回复。"
-                elif original_plan:
-                    summary_text = f"深度思考完成。{original_plan}，已直接给出回复。"
-                else:
-                    summary_text = "深度思考完成，已给出回复。"
-                await self._send_json(websocket, {
-                    "type": "thinking",
-                    "step": "summary",
-                    "content": summary_text,
-                    "timestamp": datetime.now().isoformat(),
                 })
             
         except Exception as e:

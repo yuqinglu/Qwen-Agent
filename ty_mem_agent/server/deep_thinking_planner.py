@@ -25,10 +25,13 @@ PLANNER_SYSTEM = """你是一个任务规划助手。根据用户的问题（及
 
 输出要求：
 1. plan_text：一句自然中文，概括助手本回合要为用户做什么，需包含与当前意图相关的关键信息。
-2. steps：2～4步，每步含 type 和 desc（type 为 analysis / tool / generate；desc 简短中文，包含关键信息，避免泛泛而谈）。
+2. steps：2～4步，每步为一个对象，包含：
+   - type：analysis / tool / generate
+   - title：本步骤的小标题，4～12个中文字符左右，例如“分析需求”“查询北京明日天气”“生成最终回复”等
+   - desc：对该步骤的详细描述，需包含用户问题中的关键信息（地名/日期/事项等），避免泛泛而谈
 3. 只输出一个合法 JSON，无其他文字。
 
-{"plan_text":"...","steps":[{"type":"analysis","desc":"..."},{"type":"tool","desc":"..."},{"type":"generate","desc":"..."}]}"""
+{"plan_text":"...","steps":[{"type":"analysis","title":"...","desc":"..."},{"type":"tool","title":"...","desc":"..."},{"type":"generate","title":"...","desc":"..."}]}"""
 
 
 def _extract_json_from_content(content: str) -> Optional[Dict[str, Any]]:
@@ -76,7 +79,7 @@ def plan_with_llm(
                          用于多轮场景下理解简短回复（如用户只回「万科锦绣滨江」表示上车地点）。
 
     Returns:
-        {"plan_text": str, "steps": [{"type": str, "desc": str}, ...]} 或 None（失败时）
+        {"plan_text": str, "steps": [{"type": str, "title": str, "desc": str}, ...]} 或 None（失败时）
     """
     if not user_message or not user_message.strip():
         return None
@@ -140,7 +143,18 @@ def plan_with_llm(
             if t not in allowed_types:
                 t = "tool"
             d = (s.get("desc") or "").strip() or "执行该步骤"
-            normalized.append({"type": t, "desc": d})
+            raw_title = (s.get("title") or "").strip()
+            if not raw_title:
+                # 根据类型给一个简短兜底标题
+                if t == "analysis":
+                    raw_title = "分析需求"
+                elif t == "tool":
+                    raw_title = "调用工具"
+                elif t in ("generate", "update"):
+                    raw_title = "生成回复"
+                else:
+                    raw_title = "执行步骤"
+            normalized.append({"type": t, "title": raw_title, "desc": d})
         if len(normalized) < 2:
             return None
         return {"plan_text": plan_text.strip(), "steps": normalized}

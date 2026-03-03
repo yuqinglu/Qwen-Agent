@@ -18,10 +18,18 @@ from qwen_agent.llm.schema import Message, USER
 
 class ExecutionStep:
     """执行步骤"""
-    def __init__(self, step_id: int, step_type: str, desc: str):
+    def __init__(self, step_id: int, step_type: str, desc: str, title: Optional[str] = None):
+        """
+        Args:
+            step_id: 步骤序号
+            step_type: 步骤类型，如 analysis / tool / update / generate
+            desc: 对当前步骤的详细描述（业务化完整句子）
+            title: （可选）步骤小标题，供前端展示，如“分析需求”“调用天气工具”“生成回复”
+        """
         self.id = step_id
         self.type = step_type  # analysis, tool, update, generate
         self.desc = desc
+        self.title = title  # 小标题：简短标签，不影响执行逻辑
         self.status = "pending"  # pending, running, completed, failed
         self.progress = 0.0
         self.error = None
@@ -30,6 +38,7 @@ class ExecutionStep:
         return {
             "id": self.id,
             "type": self.type,
+            "title": self.title,
             "desc": self.desc,
             "status": self.status,
             "progress": self.progress,
@@ -430,19 +439,19 @@ class TodoChatSSEService:
     def _create_dynamic_plan(self, analysis_result: Dict[str, Any]) -> List[ExecutionStep]:
         """根据意图分析动态创建执行计划"""
         steps = [
-            ExecutionStep(1, "analysis", "AI推理与方案制定")
+            ExecutionStep(1, "analysis", "AI推理与方案制定", title="分析需求")
         ]
         
         step_id = 2
         if analysis_result.get("need_tools"):
-            steps.append(ExecutionStep(step_id, "tool", "查询相关服务并生成富媒体卡片"))
+            steps.append(ExecutionStep(step_id, "tool", "查询相关服务并生成富媒体卡片", title="调用工具"))
             step_id += 1
         
         if analysis_result.get("need_update_todo"):
-            steps.append(ExecutionStep(step_id, "update", "更新待办内容"))
+            steps.append(ExecutionStep(step_id, "update", "更新待办内容", title="更新待办"))
             step_id += 1
         
-        steps.append(ExecutionStep(step_id, "generate", "生成回复"))
+        steps.append(ExecutionStep(step_id, "generate", "生成回复", title="生成回复"))
         
         return steps
     
