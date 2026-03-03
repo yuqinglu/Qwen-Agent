@@ -482,6 +482,8 @@ class GeneralChatWebSocketService:
                     language_type=tts_config.get("language_type", settings.TTS_LANGUAGE_TYPE)
                 )
             
+            # 本轮新生成的富媒体卡片（天气/待办/打车等），用于绑定到本轮助手消息
+            new_cards_this_turn: List[Dict[str, Any]] = []
             # 本轮对话中 get_user_profile 返回的 phone，用于同轮后续打车卡片的电话展示
             _cached_phone_from_get_user_profile = None
             # 本轮是否已推送“车型选择”打车卡片（用于 done 时修正 full_content，避免仍以“请提供电话”结尾）
@@ -778,6 +780,7 @@ class GeneralChatWebSocketService:
                                         card_id=card.get("card_id"),
                                     )
                                     self.chat_manager.add_card_to_session(session_id=session_id, card=card)
+                                    new_cards_this_turn.append(card)
                                     await self._send_json(websocket, {
                                         "type": "rich_card",
                                         "card_id": card.get("card_id"),
@@ -880,6 +883,7 @@ class GeneralChatWebSocketService:
                                             card_id=card_or_none.get("card_id"),
                                         )
                                         self.chat_manager.add_card_to_session(session_id=session_id, card=card_or_none)
+                                        new_cards_this_turn.append(card_or_none)
                                         logger.info(f"🎴 待办卡片已创建并推送: event_id={ev_id}, title={card_or_none.get('title')}")
                                     await self._send_json(websocket, {
                                         "type": "rich_card",
@@ -965,6 +969,7 @@ class GeneralChatWebSocketService:
                                     card_id=weather_card.get("card_id"),
                                 )
                                 self.chat_manager.add_card_to_session(session_id=session_id, card=weather_card)
+                                new_cards_this_turn.append(weather_card)
                                 await self._send_json(websocket, {
                                     "type": "rich_card",
                                     "card_id": weather_card.get("card_id"),
@@ -1021,8 +1026,8 @@ class GeneralChatWebSocketService:
                     elif "请提供您的电话号码" in final_content or final_content.endswith("以便为您叫车。"):
                         final_content = "已为您查询到几种车型与预估价格，请确认起终点无误后选择一种车型。"
                 
-                # 获取会话的富媒体卡片
-                rich_cards = self.chat_manager.get_session_cards(session_id) or []
+                # 只将本轮新生成的富媒体卡片绑定到本条助手消息
+                rich_cards = new_cards_this_turn or []
                 
                 ai_msg = self.chat_manager.add_message(
                     session_id=session_id,
@@ -1498,6 +1503,8 @@ class GeneralChatWebSocketService:
             tool_args=create_params,
         )
         card_manager = get_rich_card_manager()
+        # 本次“确认叫车”直接创建订单流程中新生成的卡片，只应绑定到本轮助手消息
+        new_cards: List[Dict[str, Any]] = []
         if ride_cards:
             for card in ride_cards:
                 try:
@@ -1514,6 +1521,7 @@ class GeneralChatWebSocketService:
                         card_id=card.get("card_id"),
                     )
                     self.chat_manager.add_card_to_session(session_id=session_id, card=card)
+                    new_cards.append(card)
                     await self._send_json(websocket, {
                         "type": "rich_card",
                         "card_id": card.get("card_id"),
@@ -1557,12 +1565,12 @@ class GeneralChatWebSocketService:
                 text=tts_text,
                 tts_config=tts_config,
             )
-        rich_cards = self.chat_manager.get_session_cards(session_id) or []
+        # 仅将此次叫车流程中新生成的卡片绑定到本条助手消息
         ai_msg = self.chat_manager.add_message(
             session_id=session_id,
             role="assistant",
             content=tts_text,
-            rich_cards=rich_cards,
+            rich_cards=new_cards or [],
         )
         await self._send_json(websocket, {
             "type": "done",
@@ -1653,12 +1661,12 @@ class GeneralChatWebSocketService:
         })
         if enable_tts and tts_config:
             await self._generate_and_send_audio(websocket=websocket, text=content, tts_config=tts_config)
-        rich_cards = self.chat_manager.get_session_cards(session_id) or []
+        # 取消订单的回复本身不生成新卡片，这里不应把会话中所有历史卡片都挂到本条消息上
         ai_msg = self.chat_manager.add_message(
             session_id=session_id,
             role="assistant",
             content=content,
-            rich_cards=rich_cards,
+            rich_cards=[],
         )
         await self._send_json(websocket, {
             "type": "done",
