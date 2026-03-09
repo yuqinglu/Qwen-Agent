@@ -12,9 +12,11 @@ from typing import Dict, List, Optional, Any, Tuple
 from loguru import logger
 from fastapi import WebSocket, WebSocketDisconnect
 
+from .attachment_extractor import extract_text_from_bytes
 from .general_chat_manager import get_general_chat_manager, SessionWrapper
 from .tts_service import get_tts_service, TTSConfig
 from .smart_sentence_splitter import get_sentence_splitter
+from .ugc_client import get_ugc_client
 from .user_manager import user_manager
 from .scenarios import get_scenario_for_message
 from .skills import get_skill_registry_lazy
@@ -259,6 +261,8 @@ class GeneralChatWebSocketService:
         tts_config = message.get("tts_config", {})
         client_type = message.get("client_type", "app")  # app 或 glasses
         deep_thinking = message.get("deep_thinking", False)
+        # 本轮附件 save_url 列表（由客户端在 use 接口成功后传入）
+        attachments: List[str] = message.get("attachments") or []
         # 仅 APP 端支持深度思考，眼镜端强制关闭
         if client_type != "app":
             deep_thinking = False
@@ -313,7 +317,8 @@ class GeneralChatWebSocketService:
             user_msg = self.chat_manager.add_message(
                 session_id=session_id,
                 role="user",
-                content=user_message
+                content=user_message,
+                attachments=attachments if attachments else None,
             )
             
             if not user_msg:
@@ -446,7 +451,22 @@ class GeneralChatWebSocketService:
             
             # 准备历史消息
             history_messages = self._prepare_history_messages(session)
-            
+
+            # ========== 附件文本提取 & 注入 ==========
+            if attachments:
+                logger.info(f"📎 本轮携带附件 {len(attachments)} 个，开始解析...")
+                resolved = await self._resolve_attachment_texts(attachments)
+                attachment_context = self._build_attachment_context(resolved)
+                if attachment_context and history_messages:
+                    # 在最后一条 user message 的 content 前拼接附件上下文
+                    history_messages[-1]["content"] = (
+                        attachment_context + "\n\n用户问题：" + history_messages[-1]["content"]
+                    )
+                    logger.info(
+                        f"📎 附件上下文已注入，附件数={len(resolved)}，"
+                        f"上下文长度={len(attachment_context)}"
+                    )
+
             # 创建Agent（每次创建新实例以避免状态污染）
             # 如果启用TTS，使用专门优化的系统提示词（要求回答200字符以内）
             if enable_tts:
@@ -1261,6 +1281,120 @@ class GeneralChatWebSocketService:
                 "message": str(e)
             }
     
+    async def _resolve_attachment_texts(
+        self,
+        save_urls: List[str],
+    ) -> List[Dict[str, str]]:
+        """
+        将附件 save_url 列表解析为文本列表：
+        1. 通过 UGC download_external 换取临时下载 URL
+        2. 用 httpx 下载文件二进制
+        3. 调用 attachment_extractor 提取纯文本
+
+        Returns:
+            列表，每项为 {"file_name": ..., "save_url": ..., "text": ...}
+            失败的附件会在 text 中保留说明字符串，不抛出异常（软失败）。
+        """
+        if not save_urls:
+            return []
+
+        import httpx
+
+        ugc = get_ugc_client()
+
+        # 换取预签名下载 URL（同步 h2c，需要放到线程池）
+        try:
+            download_result = await asyncio.to_thread(
+                lambda: ugc.download_external(urls=save_urls, max_age=600)
+            )
+        except Exception as exc:
+            logger.warning(f"附件 UGC download_external 失败: {exc}")
+            return [
+                {"file_name": url.split("/")[-1], "save_url": url, "text": f"(附件下载失败: {exc})"}
+                for url in save_urls
+            ]
+
+        url_list = download_result.get("urlList") or []
+        if not url_list:
+            logger.warning("UGC download_external 返回空 urlList")
+            return [
+                {"file_name": url.split("/")[-1], "save_url": url, "text": "(附件下载地址获取失败)"}
+                for url in save_urls
+            ]
+
+        results: List[Dict[str, str]] = []
+        async with httpx.AsyncClient(timeout=60.0) as http_client:
+            for entry in url_list:
+                save_url = entry.get("url") or entry.get("saveUrl") or ""
+                presigned_url = entry.get("presignedUrl") or entry.get("downloadUrl") or ""
+                file_name = save_url.split("/")[-1].split("?")[0] if save_url else "unknown"
+
+                if not presigned_url:
+                    results.append({"file_name": file_name, "save_url": save_url, "text": "(附件下载地址为空)"})
+                    continue
+
+                try:
+                    resp = await http_client.get(presigned_url)
+                    resp.raise_for_status()
+                    file_bytes = resp.content
+                    content_type = resp.headers.get("content-type", "application/octet-stream")
+                except Exception as exc:
+                    logger.warning(f"下载附件失败 ({file_name}): {exc}")
+                    results.append({"file_name": file_name, "save_url": save_url, "text": f"(附件下载失败: {exc})"})
+                    continue
+
+                try:
+                    text = await extract_text_from_bytes(
+                        content=file_bytes,
+                        content_type=content_type,
+                        file_name=file_name,
+                        max_chars=8000,
+                    )
+                except Exception as exc:
+                    logger.warning(f"附件文本提取失败 ({file_name}): {exc}")
+                    text = f"(附件内容提取失败: {exc})"
+
+                logger.info(f"附件解析完成: {file_name}, 文本长度={len(text)}")
+                results.append({"file_name": file_name, "save_url": save_url, "text": text})
+
+        return results
+
+    @staticmethod
+    def _build_attachment_context(
+        resolved: List[Dict[str, str]],
+        max_total_chars: int = 20000,
+    ) -> str:
+        """
+        将解析后的附件文本列表拼接为上下文块，注入 LLM 的 user message 前。
+
+        格式示例：
+            [附件 1：report.pdf]
+            ---
+            文档正文...
+            ---
+
+            [附件 2：screenshot.png]
+            ---
+            OCR 识别文字...
+            ---
+        """
+        if not resolved:
+            return ""
+
+        blocks: List[str] = []
+        total = 0
+        for i, item in enumerate(resolved, start=1):
+            file_name = item.get("file_name", "unknown")
+            text = item.get("text", "")
+            block = f"[附件 {i}：{file_name}]\n---\n{text}\n---"
+            total += len(text)
+            blocks.append(block)
+            if total >= max_total_chars:
+                blocks.append("（附件内容过多，后续附件已省略）")
+                break
+
+        return "\n\n".join(blocks)
+
     def _prepare_history_messages(self, session: SessionWrapper) -> List[Dict]:
         """
         准备历史消息

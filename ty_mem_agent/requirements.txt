@@ -36,8 +36,11 @@ python-dotenv
 pyyaml
 pydantic-settings
 
-# 服务注册与发现（使用HTTP API，requests已包含在qwen-agent依赖中）
-# nacos-sdk-python  # 可选，如需使用SDK方式可取消注释
+# 服务注册与发现（可选：如需通过 Nacos 发现 Dubbo 服务）
+nacos-sdk-python
+
+# Dubbo Python 客户端（用于直连 Dubbo/FileApplication 等服务）
+dubbo-python
 
 # ===================================================================
 # 已包含在 qwen-agent extras 中的依赖

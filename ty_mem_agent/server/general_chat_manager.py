@@ -209,23 +209,30 @@ class GeneralChatManager:
         session_id: str,
         role: str,
         content: str,
-        rich_cards: Optional[List[Dict]] = None
+        rich_cards: Optional[List[Dict]] = None,
+        attachments: Optional[List[str]] = None,
     ) -> Optional[ConversationMessage]:
         """
         添加消息到会话
-        
+
         Args:
             session_id: 会话ID
             role: 角色 ("user" 或 "assistant")
             content: 消息内容
             rich_cards: 富媒体卡片ID列表（仅AI消息）
-            
+            attachments: 附件 save_url 列表（仅用户消息），存入 metadata 供前端展示
+
         Returns:
             新添加的消息
         """
-        # 将rich_cards作为metadata存储
-        metadata = {"rich_cards": rich_cards} if rich_cards else None
-        
+        metadata: Optional[Dict] = None
+        if rich_cards or attachments:
+            metadata = {}
+            if rich_cards:
+                metadata["rich_cards"] = rich_cards
+            if attachments:
+                metadata["attachments"] = attachments
+
         return self.conv_manager.add_message(
             conversation_id=session_id,
             role=role,
