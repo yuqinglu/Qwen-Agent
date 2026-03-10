@@ -18,10 +18,18 @@ from qwen_agent.llm.schema import Message, USER
 
 class ExecutionStep:
     """执行步骤"""
-    def __init__(self, step_id: int, step_type: str, desc: str):
+    def __init__(self, step_id: int, step_type: str, desc: str, title: Optional[str] = None):
+        """
+        Args:
+            step_id: 步骤序号
+            step_type: 步骤类型，如 analysis / tool / update / generate
+            desc: 对当前步骤的详细描述（业务化完整句子）
+            title: （可选）步骤小标题，供前端展示，如“分析需求”“调用天气工具”“生成回复”
+        """
         self.id = step_id
         self.type = step_type  # analysis, tool, update, generate
         self.desc = desc
+        self.title = title  # 小标题：简短标签，不影响执行逻辑
         self.status = "pending"  # pending, running, completed, failed
         self.progress = 0.0
         self.error = None
@@ -30,6 +38,7 @@ class ExecutionStep:
         return {
             "id": self.id,
             "type": self.type,
+            "title": self.title,
             "desc": self.desc,
             "status": self.status,
             "progress": self.progress,
@@ -72,7 +81,7 @@ class TodoChatSSEService:
             session_id: 会话ID（为空则创建新会话）
             title: 会话标题（仅创建新会话时有效）
             todo_content: 当前待办内容
-            rich_cards: 当前富媒体卡片列表
+            rich_cards: 当前富媒体卡片列表（可选，如果未传或为空则自动从数据库查询）
             
         Yields:
             SSE格式的事件流
@@ -84,7 +93,19 @@ class TodoChatSSEService:
         new_rich_cards = []
         suggestions = []
         
+        # 完整打印用户输入日志（用于调试）
+        logger.info(f"📥 用户消息: event_id={event_id}, user_id={user_id}, session_id={session_id}, content={content}")
+        
         try:
+            # ========== 阶段 0: 自动获取rich_cards（如果客户端未传） ==========
+            if not rich_cards:
+                from ty_mem_agent.server.rich_card_manager import get_rich_card_manager
+                card_manager = get_rich_card_manager()
+                cards = card_manager.get_cards_by_event(event_id=event_id, user_id=user_id)
+                rich_cards = [card.to_dict() for card in cards]
+                if rich_cards:
+                    logger.info(f"📋 自动获取到 {len(rich_cards)} 个富媒体卡片")
+            
             # ========== 阶段 1: 会话初始化 ==========
             session = await self._init_session(
                 event_id, user_id, session_id, title, 
@@ -107,20 +128,80 @@ class TodoChatSSEService:
             )
             
             # ========== 阶段 2: 快速意图分析 ==========
+            is_new_session = session_id is None
             analysis_result = await self._analyze_intent(
-                content, todo_content, rich_cards, session.messages
+                content, todo_content, rich_cards, session.messages,
+                is_new_session=is_new_session
             )
             
             # 确保analysis_result不为None
             if analysis_result is None:
                 logger.error("❌ 意图分析返回None，使用默认值")
                 analysis_result = {
+                    "is_simple_chat": False,
                     "summary": "分析用户需求",
                     "need_tools": True,
                     "need_update_todo": False,
                     "need_suggestions": False,
                     "change_summary": None
                 }
+            
+            # 新会话且用户未提供标题时，使用意图分析生成的标题并推送 title_updated 事件
+            if is_new_session and (not title or title == "新对话"):
+                analyzed_title = analysis_result.get("session_title")
+                if analyzed_title and analyzed_title.strip():
+                    # 清理标题：去除引号、截断长度
+                    session_title = analyzed_title.strip().strip('"\'').replace('\n', ' ')
+                    if len(session_title) > 20:
+                        session_title = session_title[:17] + "..."
+                    self.chat_manager.update_session_title(session.session_id, session_title)
+                    yield self._format_sse_event("title_updated", {
+                        "session_id": session.session_id,
+                        "title": session_title,
+                        "timestamp": datetime.now().isoformat()
+                    })
+                    logger.info(f"📝 新会话标题已更新: {session_title}")
+            
+            # 检查是否是简单聊天
+            is_simple_chat = analysis_result.get("is_simple_chat", False)
+            
+            if is_simple_chat:
+                logger.info(f"💬 意图分析判断为简单聊天，跳过待办处理流程")
+                # 简单聊天模式：直接进行简单回复，不涉及待办、卡片、MCP等
+                
+                # 准备历史消息
+                history = []
+                for msg in session.messages[-10:]:  # 只取最近10条
+                    history.append({
+                        "role": msg.role if hasattr(msg, 'role') else "user",
+                        "content": msg.content if hasattr(msg, 'content') else ""
+                    })
+                
+                # 直接进行简单聊天回复（不涉及待办内容）
+                logger.info(f"💬 生成简单聊天回复")
+                simple_reply = await self._generate_simple_chat_reply(content, history)
+                
+                # 推送回复
+                yield self._format_sse_event("message_delta", {"content": simple_reply})
+                
+                # 保存AI回复消息
+                self.chat_manager.add_message(
+                    session.session_id,
+                    role="assistant",
+                    content=simple_reply
+                )
+                
+                # 推送完成事件
+                duration_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+                yield self._format_sse_event("done", {
+                    "message_id": message_id,
+                    "session_id": session.session_id,
+                    "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                    "duration_ms": duration_ms
+                })
+                
+                logger.info(f"✅ 简单聊天处理完成: session={session.session_id}, duration={duration_ms}ms")
+                return
             
             # 生成执行计划
             steps = self._create_dynamic_plan(analysis_result)
@@ -148,7 +229,7 @@ class TodoChatSSEService:
                 })
             
             # 调用Agent进行推理和执行（实时监控和推送）
-            logger.info(f"🤖 开始AI推理: user_message={content[:50]}...")
+            logger.info(f"🤖 开始AI推理: user_message={content}")
             agent_response = None
             
             async for event in self._run_agent_with_monitoring(
@@ -232,7 +313,7 @@ class TodoChatSSEService:
                         "steps": [step.to_dict() for step in steps]
                     })
                 
-                yield self._format_sse_event("todo_update", {
+                yield self._format_sse_event("todo_content", {
                     "base_version": 1,
                     "new_version": 2,
                     "change_summary": analysis_result.get("change_summary", "AI已更新待办内容"),
@@ -253,7 +334,7 @@ class TodoChatSSEService:
             # ========== 阶段 8: 推送建议待办 ==========
             if suggestions:
                 logger.info(f"💡 推送{len(suggestions)}个待办建议")
-                yield self._format_sse_event("suggestions", suggestions)
+                yield self._format_sse_event("suggested_todos", suggestions)
             
             # ========== 阶段 8: 保存并完成 ==========
             # 保存AI生成的富媒体卡片到RichCardManager
@@ -358,19 +439,19 @@ class TodoChatSSEService:
     def _create_dynamic_plan(self, analysis_result: Dict[str, Any]) -> List[ExecutionStep]:
         """根据意图分析动态创建执行计划"""
         steps = [
-            ExecutionStep(1, "analysis", "AI推理与方案制定")
+            ExecutionStep(1, "analysis", "AI推理与方案制定", title="分析需求")
         ]
         
         step_id = 2
         if analysis_result.get("need_tools"):
-            steps.append(ExecutionStep(step_id, "tool", "查询相关服务并生成富媒体卡片"))
+            steps.append(ExecutionStep(step_id, "tool", "查询相关服务并生成富媒体卡片", title="调用工具"))
             step_id += 1
         
         if analysis_result.get("need_update_todo"):
-            steps.append(ExecutionStep(step_id, "update", "更新待办内容"))
+            steps.append(ExecutionStep(step_id, "update", "更新待办内容", title="更新待办"))
             step_id += 1
         
-        steps.append(ExecutionStep(step_id, "generate", "生成回复"))
+        steps.append(ExecutionStep(step_id, "generate", "生成回复", title="生成回复"))
         
         return steps
     
@@ -584,79 +665,44 @@ class TodoChatSSEService:
             logger.debug(f"提取Thought失败: {e}")
             return None, None
     
-    async def _try_parse_and_push_cards(self, observation: str):
+    async def _try_parse_and_push_cards(self, observation: str, tool_name: str = "工具调用"):
         """
         尝试从observation中解析富媒体卡片（异步生成器）
         
         工具返回的结果可能包含JSON格式的数据，尝试解析为卡片
+        使用统一的卡片提取函数，确保与通用聊天一致
         
+        Args:
+            observation: 工具返回的观察结果
+            tool_name: 工具名称
+            
         Yields:
             rich_card SSE事件
         """
-        import re
-        import json
-        
         try:
-            # 尝试查找JSON内容
-            json_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
-            matches = re.findall(json_pattern, observation)
+            # 使用统一的卡片提取函数
+            from ty_mem_agent.server.rich_card_manager import extract_cards_from_tool_result
+            cards = extract_cards_from_tool_result(
+                tool_name=tool_name,
+                tool_result=observation,
+                user_id=None  # SSE服务中可能没有user_id，使用None
+            )
             
-            for match in matches:
-                try:
-                    data = json.loads(match)
-                    
-                    # 检查是否像是一个卡片数据
-                    if isinstance(data, dict) and any(key in data for key in ['weather', 'temperature', 'city', 'location', 'name', 'address', 'price']):
-                        # 构建简单的卡片
-                        card = {
-                            "card_id": f"card_{uuid.uuid4().hex[:8]}",
-                            "card_type": self._infer_card_type(data),
-                            "title": self._infer_card_title(data),
-                            "data": data,
-                            "source": "工具调用",
-                            "updated_at": datetime.now().isoformat()
-                        }
-                        
-                        logger.info(f"🎴 从工具结果中解析出卡片（类型: {card['card_type']}），立即推送")
-                        yield self._format_sse_event("rich_card", card)
-                        await asyncio.sleep(0.05)  # 短暂延迟
-                        
-                except json.JSONDecodeError:
-                    continue
+            for card in cards:
+                logger.info(f"🎴 从工具结果中解析出卡片（类型: {card['card_type']}），立即推送")
+                yield self._format_sse_event("rich_card", card)
+                await asyncio.sleep(0.05)  # 短暂延迟
                     
         except Exception as e:
             logger.debug(f"解析卡片失败（正常，不是所有工具都返回卡片）: {e}")
-    
-    def _infer_card_type(self, data: dict) -> str:
-        """根据数据内容推断卡片类型"""
-        if any(k in data for k in ['weather', 'temperature']):
-            return 'weather'
-        elif any(k in data for k in ['route', 'distance', 'duration']):
-            return 'navigation'
-        elif any(k in data for k in ['hotel', 'room', 'price']):
-            return 'hotel'
-        elif any(k in data for k in ['flight', 'airline', 'departure']):
-            return 'flight'
-        else:
-            return 'info'
-    
-    def _infer_card_title(self, data: dict) -> str:
-        """根据数据内容推断卡片标题"""
-        if 'city' in data:
-            return f"{data['city']}天气"
-        elif 'name' in data:
-            return data['name']
-        elif 'title' in data:
-            return data['title']
-        else:
-            return "查询结果"
     
     async def _analyze_intent(
         self,
         content: str,
         todo_content: Optional[str],
         rich_cards: Optional[List[Dict]],
-        history_messages: List
+        history_messages: List,
+        is_new_session: bool = False
     ) -> Dict[str, Any]:
         """
         分析用户意图，制定执行计划
@@ -716,16 +762,31 @@ class TodoChatSSEService:
 4. 如果用户基于已有卡片提出新的需求，应该充分利用卡片中的详细信息进行分析
 """
             
+            # 新会话时，在意图分析中同时生成会话标题
+            session_title_instruction = ""
+            session_title_field = ""
+            if is_new_session:
+                session_title_instruction = """
+#### session_title（会话标题）- 仅新会话时需要
+请根据用户消息生成一个简短的会话标题（不超过20个字符）：
+- 简洁概括用户意图或需求，如"明日六点飞香格里拉"、"补充会议议程"
+- 不要使用标点符号
+- 直接输出核心内容
+"""
+                session_title_field = ''',
+    "session_title": "根据用户消息生成的简短会话标题，不超过20字符"'''
+            
             # 构建详细的分析提示词
             analysis_prompt = f"""你是一个智能待办助手的任务规划器，需要深入分析用户需求并制定执行计划。
 
 ## 📋 任务背景
 
 用户正在使用待办管理系统，你需要帮助用户完成待办相关的任务。你的职责是：
-1. 理解用户的真实意图（不仅是字面意思）
-2. 分析需要执行哪些操作
-3. 充分利用已有的信息，避免重复工作
-4. 主动思考用户可能需要但没有明说的帮助
+1. **首先判断**：用户消息是否只是简单的问候语或日常聊天（与待办无关）
+2. 如果不是简单聊天，理解用户的真实意图（不仅是字面意思）
+3. 分析需要执行哪些操作
+4. 充分利用已有的信息，避免重复工作
+5. 主动思考用户可能需要但没有明说的帮助
 
 ## 📊 当前上下文信息
 {history_context}
@@ -756,7 +817,27 @@ class TodoChatSSEService:
   - 当前消息是延续之前的话题还是新的需求？
   - 用户的表达是否依赖之前的上下文？
 
-### 3. 判断需要执行的操作
+## 🎯 第一步：判断是否是简单聊天
+
+**is_simple_chat 判断标准：**
+
+**设为 true（简单聊天）**的情况：
+- 用户消息只是纯粹的问候语、礼貌用语、确认词等，**不涉及任何待办相关操作**
+- 例如："你好"、"谢谢"、"再见"、"好的"、"OK"、"在吗" 等
+
+**设为 false（待办相关）**的情况：
+- 用户消息包含任何待办操作意图，**即使开头有问候语**
+- 例如：
+  * "您好，请帮我优化一下这个待办" → is_simple_chat=false（包含"优化待办"）
+  * "你好，帮我补充会议议程" → is_simple_chat=false（包含"补充议程"）
+  * "谢谢，请查询明天的天气" → is_simple_chat=false（包含"查询天气"）
+
+**重要规则**：
+1. 如果消息中**同时包含问候语和待办操作**，应判断为待办相关（返回 is_simple_chat=false）
+2. 只有**纯粹的问候语或日常聊天**才返回 is_simple_chat=true
+3. **如果 is_simple_chat=true，则后续的 need_tools、need_update_todo、need_suggestions 都必须设为 false**
+
+## 🎯 第二步：如果不是简单聊天，判断需要执行的操作
 
 #### need_tools（是否需要调用外部工具/MCP）
 **设为 true 的情况：**
@@ -789,13 +870,25 @@ class TodoChatSSEService:
 - 当前待办需要前置准备工作（如"开会"需要"准备材料"）
 - 当前待办完成后有后续任务（如"出差"后有"报销"）
 - 基于待办内容，主动发现用户可能遗漏的相关任务
-
+{session_title_instruction}
 **设为 false 的情况：**
 - 用户只是简单的信息查询
 - 待办任务已经很简单明确
 - 用户没有表现出需要帮助规划的意图
 
 ## 💡 分析示例
+
+### 示例0：简单聊天
+用户："你好"
+分析：
+- 意图：纯粹的问候语，不涉及任何待办操作
+- 结果：is_simple_chat=true, need_tools=false, need_update_todo=false, need_suggestions=false
+
+### 示例0.1：问候 + 待办操作
+用户："您好，请帮我优化一下这个待办"
+分析：
+- 意图：虽然开头是问候语，但包含"优化待办"操作
+- 结果：is_simple_chat=false, need_tools=false, need_update_todo=true, need_suggestions=false
 
 ### 示例1：信息查询
 用户："明天天气怎么样？"
@@ -827,12 +920,14 @@ class TodoChatSSEService:
 
 请用JSON格式回复，包含以下字段：
 {{
-    "summary": "对用户意图的深入理解和分析（2-3句话，说明你理解到了什么）",
-    "need_tools": true/false,
-    "need_update_todo": true/false,
-    "need_suggestions": true/false,
+    "is_simple_chat": true/false,  // 是否是简单聊天（问候语等，与待办无关）
+    "summary": "对用户意图的深入理解和分析（2-3句话）。如果是简单聊天，简要说明即可",
+    "need_tools": true/false,  // 如果is_simple_chat=true，则必须为false
+    "need_update_todo": true/false,  // 如果is_simple_chat=true，则必须为false
+    "need_suggestions": true/false,  // 如果is_simple_chat=true，则必须为false
     "change_summary": "如果需要更新待办，简要说明会做哪些更新（如果不需要则为null）",
-    "reasoning": "你的分析推理过程（1-2句话，说明为什么这样判断）"
+    "reasoning": "你的分析推理过程（1-2句话，说明为什么这样判断，特别是is_simple_chat的判断依据）"
+{session_title_field}
 }}
 
 **注意**：
@@ -864,10 +959,25 @@ class TodoChatSSEService:
             json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
             if json_match:
                 analysis_result = json.loads(json_match.group(0))
-                logger.info(f"✅ 意图分析完成: {analysis_result.get('summary', '未知')}")
+                
+                # 确保is_simple_chat字段存在，默认为false
+                if "is_simple_chat" not in analysis_result:
+                    analysis_result["is_simple_chat"] = False
+                    logger.warning("⚠️ LLM返回结果缺少is_simple_chat字段，默认设为false")
+                
+                # 如果是简单聊天，确保其他字段为false
+                if analysis_result.get("is_simple_chat", False):
+                    analysis_result["need_tools"] = False
+                    analysis_result["need_update_todo"] = False
+                    analysis_result["need_suggestions"] = False
+                    logger.info(f"💬 意图分析完成: 简单聊天 - {analysis_result.get('summary', '未知')}")
+                else:
+                    logger.info(f"✅ 意图分析完成: {analysis_result.get('summary', '未知')}")
+                    logger.info(f"   操作判断: 工具={analysis_result.get('need_tools')}, 更新待办={analysis_result.get('need_update_todo')}, 建议={analysis_result.get('need_suggestions')}")
+                
                 if analysis_result.get('reasoning'):
                     logger.info(f"   分析推理: {analysis_result.get('reasoning')}")
-                logger.info(f"   操作判断: 工具={analysis_result.get('need_tools')}, 更新待办={analysis_result.get('need_update_todo')}, 建议={analysis_result.get('need_suggestions')}")
+                
                 return analysis_result
             else:
                 logger.warning("⚠️ AI返回格式不正确，使用关键词匹配")
@@ -896,14 +1006,124 @@ class TodoChatSSEService:
                 if any(kw in content for kw in ["导航", "路线", "怎么去"]) and 'navigation' in existing_card_types and not is_explicit_update:
                     logger.info("💡 检测到已有导航卡片，且用户未明确要求更新")
             
-            return {
+            # 简单判断是否是简单聊天（用于回退）
+            is_simple_chat_fallback = self._is_simple_chat_fallback(content)
+            
+            result = {
+                "is_simple_chat": is_simple_chat_fallback,
                 "summary": "识别用户需求并制定执行计划",
-                "need_tools": need_tools,
-                "need_update_todo": need_update_todo,
-                "need_suggestions": need_suggestions,
-                "change_summary": "添加详细信息" if need_update_todo else None
+                "need_tools": need_tools if not is_simple_chat_fallback else False,
+                "need_update_todo": need_update_todo if not is_simple_chat_fallback else False,
+                "need_suggestions": need_suggestions if not is_simple_chat_fallback else False,
+                "change_summary": "添加详细信息" if need_update_todo and not is_simple_chat_fallback else None
             }
+            # 新会话时使用简单截取作为标题回退
+            if is_new_session:
+                fallback_title = content.strip().replace('\n', ' ').replace('\r', '')[:20]
+                if len(content) > 20:
+                    fallback_title = fallback_title + "..."
+                result["session_title"] = fallback_title if fallback_title else "新对话"
+            return result
     
+    def _is_simple_chat_fallback(self, content_clean: str) -> bool:
+        """
+        回退的简单判断逻辑（当LLM不可用时使用）
+        
+        Args:
+            content_clean: 清理后的用户消息内容
+            
+        Returns:
+            True表示是简单聊天，False表示与待办相关
+        """
+        import re
+        
+        # 常见的纯问候语（不含任何操作意图）
+        pure_simple_chat_patterns = [
+            r'^(你好|您好|hello|hi|hey)$',
+            r'^(早上好|下午好|晚上好|晚安)$',
+            r'^(谢谢|感谢|thanks|thank you)$',
+            r'^(再见|拜拜|bye|goodbye)$',
+            r'^(好的|OK|ok|okay)$',
+            r'^(是的|对的|没错)$',
+            r'^(不是|不对|不是的)$',
+            r'^(\?|？)$',
+            r'^(在吗|在不在)$',
+        ]
+        
+        # 检查是否匹配纯问候语
+        for pattern in pure_simple_chat_patterns:
+            if re.match(pattern, content_clean, re.IGNORECASE):
+                return True
+        
+        # 如果包含待办相关关键词，肯定是待办相关
+        todo_keywords = ['待办', '会议', '任务', '日程', '安排', '计划', '创建', '添加', '修改', '更新', '删除', '查询', '查', '帮', '优化', '完善', '补充']
+        if any(keyword in content_clean for keyword in todo_keywords):
+            return False
+        
+        # 如果内容很短（<=3个字符）且没有待办关键词，可能是简单聊天
+        if len(content_clean) <= 3:
+            return True
+        
+        # 默认视为待办相关（保守策略）
+        return False
+    
+    async def _generate_simple_chat_reply(self, user_message: str, history: List[Dict]) -> str:
+        """
+        生成简单聊天回复（不涉及待办内容）
+        
+        Args:
+            user_message: 用户消息
+            history: 历史消息
+            
+        Returns:
+            AI回复内容
+        """
+        try:
+            # 构建简单的聊天提示词
+            chat_prompt = f"""你是一个友好的AI助手，用户正在与你进行简单的日常聊天。请用友好、简洁的方式回复用户，不需要涉及待办事项相关的内容。
+
+用户说：{user_message}
+
+请给出一个友好的简短回复（1-2句话即可）。"""
+            
+            messages = [Message(role=USER, content=chat_prompt)]
+            
+            # 如果有历史消息，可以加入上下文（但限制数量）
+            if history and len(history) > 0:
+                # 只取最近2轮对话作为上下文
+                recent_history = history[-4:]  # 最近2轮（每轮包含user和assistant）
+                context_lines = []
+                for msg in recent_history:
+                    role_name = "用户" if msg.get("role") == "user" else "助手"
+                    context_lines.append(f"{role_name}: {msg.get('content', '')}")
+                
+                if context_lines:
+                    context_text = "\n".join(context_lines)
+                    chat_prompt = f"""你是一个友好的AI助手，用户正在与你进行简单的日常聊天。以下是最近的对话：
+
+{context_text}
+
+用户最新说：{user_message}
+
+请给出一个友好的简短回复（1-2句话即可），可以结合上下文，但不需要涉及待办事项相关的内容。"""
+                    messages = [Message(role=USER, content=chat_prompt)]
+            
+            # 调用LLM生成回复
+            if not self.agent or not self.agent.llm:
+                raise ValueError("Agent或LLM未初始化")
+            
+            response_text = ""
+            # 使用流式模式（兼容 use_raw_api）
+            for output in self.agent.llm.chat(messages=messages, stream=True):
+                if output and len(output) > 0:
+                    response_text = output[-1].content
+            
+            return response_text.strip() if response_text else "你好！有什么可以帮助你的吗？"
+            
+        except Exception as e:
+            logger.error(f"❌ 生成简单聊天回复失败: {e}")
+            # 回退到简单的默认回复
+            return "你好！我在这里帮助你管理待办事项。如果你想了解或修改当前的待办，可以告诉我具体需求。"
     
     def _format_sse_event(self, event_type: str, data: Any) -> str:
         """格式化SSE事件"""

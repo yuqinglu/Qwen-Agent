@@ -124,7 +124,7 @@ optional = true
 [tool.poetry.group.ty-mem-agent.dependencies]
 # Memory management system
 loguru = "*"
-httpx = "*" 
+httpx = {version = "*", extras = ["http2"]} 
 aiohttp = "*"
 redis = "*"
 
@@ -136,6 +136,14 @@ passlib = {extras = ["bcrypt"], version = "^1.7.4"}
 python-dotenv = "*"
 pyyaml = "*"
 pydantic-settings = "*"
+
+nacos-sdk-python = "*"
+
+# 附件文本提取（文档解析 + 图片 OCR）
+pdfminer-six = "*"
+pdfplumber = "*"
+python-docx = "*"
+python-pptx = "*"
 
 # Web framework dependencies (already in extras but listed for clarity)
 # fastapi = "*"  # Already in code_interpreter extras

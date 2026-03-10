@@ -32,6 +32,7 @@ class UserProfile:
     gender: Optional[str] = None
     location: Optional[str] = None
     home_address: Optional[str] = None  # 家庭住址
+    phone: Optional[str] = None  # 电话号码（用于打车等服务）
     occupation: Optional[str] = None
     interests: List[str] = None
     preferences: Dict[str, Any] = None

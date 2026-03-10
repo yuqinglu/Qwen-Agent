@@ -11,6 +11,7 @@ APP API 路由
 """
 
 import json
+import time
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 from fastapi import APIRouter, HTTPException, Header, status
@@ -20,7 +21,7 @@ from loguru import logger
 
 from ty_mem_agent.server.user_manager import user_manager
 from ty_mem_agent.server.user_id_mapper import UserIdMapper
-from ty_mem_agent.self_defined_tools.todo_tools import TodoExtractorTool
+from ty_mem_agent.tools.todo_tools import TodoExtractorTool
 from ty_mem_agent.mcp_integrations.calendar_mcp_server import CalendarEventManager
 from ty_mem_agent.server.todo_chat_manager import get_todo_chat_manager
 from ty_mem_agent.server.rich_card_manager import get_rich_card_manager, CARD_TYPES
@@ -39,8 +40,8 @@ class QuickCreateTodoRequest(BaseModel):
 class QuickCreateTodoResponse(BaseModel):
     """一句话创建待办响应"""
     code: int = Field(default=0, description="响应码")
-    message: str = Field(default="success", description="响应消息")
-    data: Optional[Dict[str, Any]] = Field(default=None, description="响应数据")
+    msg: str = Field(default="success", description="响应消息")
+    data: Dict[str, Any] = Field(default_factory=dict, description="响应数据")
 
 
 class AIUnderstanding(BaseModel):
@@ -146,8 +147,8 @@ async def quick_create_todo(
             logger.error(f"❌ 提取待办信息失败: {extract_result.get('error')}")
             return QuickCreateTodoResponse(
                 code=1001,
-                message=f"解析失败: {extract_result.get('error', '未知错误')}",
-                data=None
+                msg=f"解析失败: {extract_result.get('error', '未知错误')}",
+                data={},
             )
         
         # 获取提取的信息
@@ -229,8 +230,8 @@ async def quick_create_todo(
         
         return QuickCreateTodoResponse(
             code=0,
-            message="success",
-            data=response_data
+            msg="success",
+            data=response_data,
         )
         
     except HTTPException:
@@ -241,8 +242,8 @@ async def quick_create_todo(
         logger.error(traceback.format_exc())
         return QuickCreateTodoResponse(
             code=500,
-            message=f"服务器错误: {str(e)}",
-            data=None
+            msg=f"服务器错误: {str(e)}",
+            data={},
         )
 
 
@@ -255,8 +256,8 @@ class ExtractTodoParamsRequest(BaseModel):
 class ExtractTodoParamsResponse(BaseModel):
     """提取待办参数响应"""
     code: int = Field(default=0, description="响应码")
-    message: str = Field(default="success", description="响应消息")
-    data: Optional[Dict[str, Any]] = Field(default=None, description="响应数据")
+    msg: str = Field(default="success", description="响应消息")
+    data: Dict[str, Any] = Field(default_factory=dict, description="响应数据")
 
 
 @router.post("/todo/extract-params", response_model=ExtractTodoParamsResponse)
@@ -312,8 +313,8 @@ async def extract_todo_params(
             logger.error(f"❌ 提取待办信息失败: {extract_result.get('error')}")
             return ExtractTodoParamsResponse(
                 code=1001,
-                message=f"解析失败: {extract_result.get('error', '未知错误')}",
-                data=None
+                msg=f"解析失败: {extract_result.get('error', '未知错误')}",
+                data={},
             )
         
         # 获取提取的信息
@@ -363,8 +364,8 @@ async def extract_todo_params(
         
         return ExtractTodoParamsResponse(
             code=0,
-            message="success",
-            data=response_data
+            msg="success",
+            data=response_data,
         )
         
     except HTTPException:
@@ -375,8 +376,8 @@ async def extract_todo_params(
         logger.error(traceback.format_exc())
         return ExtractTodoParamsResponse(
             code=500,
-            message=f"服务器错误: {str(e)}",
-            data=None
+            msg=f"服务器错误: {str(e)}",
+            data={},
         )
 
 
@@ -429,11 +430,11 @@ async def list_todos(
         
         return {
             "code": 0,
-            "message": "success",
+            "msg": "success",
             "data": {
                 "total": len(events),
-                "events": events
-            }
+                "events": events,
+            },
         }
         
     except HTTPException:
@@ -444,8 +445,8 @@ async def list_todos(
         logger.error(traceback.format_exc())
         return {
             "code": 500,
-            "message": f"服务器错误: {str(e)}",
-            "data": None
+            "msg": f"服务器错误: {str(e)}",
+            "data": {},
         }
 
 
@@ -471,8 +472,8 @@ class TodoChatReply(BaseModel):
 class CreateTodoChatSessionResponse(BaseModel):
     """创建待办聊天会话响应"""
     code: int = Field(default=0, description="响应码")
-    message: str = Field(default="success", description="响应消息")
-    data: Optional[Dict[str, Any]] = Field(default=None, description="响应数据")
+    msg: str = Field(default="success", description="响应消息")
+    data: Dict[str, Any] = Field(default_factory=dict, description="响应数据")
 
 
 @router.post("/todo/{event_id}/chat/sessions", response_model=CreateTodoChatSessionResponse)
@@ -560,24 +561,30 @@ async def create_todo_chat_session(
         
         logger.info(f"✅ AI回复生成完成: {parsed_response['content'][:100]}...")
         
-        # 保存AI生成的富媒体卡片到RichCardManager
+        # 保存AI生成的富媒体卡片到RichCardManager（使用统一的规范化函数）
         rich_cards_from_ai = parsed_response.get("rich_cards", [])
         if rich_cards_from_ai:
+            from ty_mem_agent.server.rich_card_manager import normalize_card_data
             card_manager = get_rich_card_manager()
             for card_data in rich_cards_from_ai:
                 try:
+                    # 规范化卡片数据，确保字段完整
+                    normalized_card = normalize_card_data(card_data, source="待办聊天AI", user_id=calendar_user_id)
+                    if not normalized_card:
+                        continue
+                    
                     # 使用已有的card_id（如果存在），否则由RichCardManager生成
-                    card_id = card_data.get("card_id")
+                    card_id = normalized_card.get("card_id")
                     card_manager.create_card(
                         event_id=event_id,
                         user_id=calendar_user_id,
-                        card_type=card_data.get("card_type", "custom"),
-                        title=card_data.get("title", "未命名卡片"),
-                        subtitle=card_data.get("subtitle"),
-                        icon=card_data.get("icon"),
-                        data=card_data.get("data", {}),
-                        source=card_data.get("source"),
-                        expires_at=card_data.get("expires_at"),
+                        card_type=normalized_card.get("card_type", "custom"),
+                        title=normalized_card.get("title", "未命名卡片"),
+                        subtitle=normalized_card.get("subtitle"),
+                        icon=normalized_card.get("icon"),
+                        data=normalized_card.get("data", {}),
+                        source=normalized_card.get("source"),
+                        expires_at=normalized_card.get("expires_at"),
                         card_id=card_id
                     )
                 except Exception as e:
@@ -612,8 +619,8 @@ async def create_todo_chat_session(
         
         return CreateTodoChatSessionResponse(
             code=0,
-            message="success",
-            data=response_data
+            msg="success",
+            data=response_data,
         )
         
     except HTTPException:
@@ -624,8 +631,8 @@ async def create_todo_chat_session(
         logger.error(traceback.format_exc())
         return CreateTodoChatSessionResponse(
             code=500,
-            message=f"服务器错误: {str(e)}",
-            data=None
+            msg=f"服务器错误: {str(e)}",
+            data={},
         )
 
 
@@ -687,13 +694,13 @@ async def list_todo_chat_sessions(
         
         return {
             "code": 0,
-            "message": "success",
+            "msg": "success",
             "data": {
                 "total": total,
                 "page": page,
                 "page_size": page_size,
-                "sessions": session_list
-            }
+                "sessions": session_list,
+            },
         }
         
     except HTTPException:
@@ -704,8 +711,8 @@ async def list_todo_chat_sessions(
         logger.error(traceback.format_exc())
         return {
             "code": 500,
-            "message": f"服务器错误: {str(e)}",
-            "data": None
+            "msg": f"服务器错误: {str(e)}",
+            "data": {},
         }
 
 
@@ -746,16 +753,16 @@ async def get_todo_chat_session(
         if not session:
             return {
                 "code": 404,
-                "message": "会话不存在",
-                "data": None
+                "msg": "会话不存在",
+                "data": {},
             }
         
         # 验证权限
         if session.user_id != calendar_user_id or session.event_id != event_id:
             return {
                 "code": 403,
-                "message": "无权访问此会话",
-                "data": None
+                "msg": "无权访问此会话",
+                "data": {},
             }
         
         # 构建 session 对象（根据API文档格式）
@@ -847,12 +854,12 @@ async def get_todo_chat_session(
         # 构建响应（根据API文档格式）
         return {
             "code": 0,
-            "message": "success",
+            "msg": "success",
             "data": {
                 "session": session_obj,
                 "event": event_obj,
-                "messages": messages if include_messages else None
-            }
+                "messages": messages if include_messages else None,
+            },
         }
         
     except HTTPException:
@@ -863,8 +870,8 @@ async def get_todo_chat_session(
         logger.error(traceback.format_exc())
         return {
             "code": 500,
-            "message": f"服务器错误: {str(e)}",
-            "data": None
+            "msg": f"服务器错误: {str(e)}",
+            "data": {},
         }
 
 
@@ -925,16 +932,16 @@ async def send_todo_chat_message(
         if not session:
             return {
                 "code": 404,
-                "message": "会话不存在",
-                "data": None
+                "msg": "会话不存在",
+                "data": {},
             }
         
         # 验证权限
         if session.user_id != calendar_user_id or session.event_id != event_id:
             return {
                 "code": 403,
-                "message": "无权访问此会话",
-                "data": None
+                "msg": "无权访问此会话",
+                "data": {},
             }
         
         # 添加用户消息
@@ -976,24 +983,30 @@ async def send_todo_chat_message(
         
         logger.info(f"✅ AI回复生成完成: {parsed_response['content'][:100]}...")
         
-        # 保存AI生成的富媒体卡片到RichCardManager
+        # 保存AI生成的富媒体卡片到RichCardManager（使用统一的规范化函数）
         rich_cards_from_ai = parsed_response.get("rich_cards", [])
         if rich_cards_from_ai:
+            from ty_mem_agent.server.rich_card_manager import normalize_card_data
             card_manager = get_rich_card_manager()
             for card_data in rich_cards_from_ai:
                 try:
+                    # 规范化卡片数据，确保字段完整
+                    normalized_card = normalize_card_data(card_data, source="待办聊天AI", user_id=calendar_user_id)
+                    if not normalized_card:
+                        continue
+                    
                     # 使用已有的card_id（如果存在），否则由RichCardManager生成
-                    card_id = card_data.get("card_id")
+                    card_id = normalized_card.get("card_id")
                     card_manager.create_card(
                         event_id=event_id,
                         user_id=calendar_user_id,
-                        card_type=card_data.get("card_type", "custom"),
-                        title=card_data.get("title", "未命名卡片"),
-                        subtitle=card_data.get("subtitle"),
-                        icon=card_data.get("icon"),
-                        data=card_data.get("data", {}),
-                        source=card_data.get("source"),
-                        expires_at=card_data.get("expires_at"),
+                        card_type=normalized_card.get("card_type", "custom"),
+                        title=normalized_card.get("title", "未命名卡片"),
+                        subtitle=normalized_card.get("subtitle"),
+                        icon=normalized_card.get("icon"),
+                        data=normalized_card.get("data", {}),
+                        source=normalized_card.get("source"),
+                        expires_at=normalized_card.get("expires_at"),
                         card_id=card_id
                     )
                 except Exception as e:
@@ -1030,8 +1043,8 @@ async def send_todo_chat_message(
         
         return {
             "code": 0,
-            "message": "success",
-            "data": response_data
+            "msg": "success",
+            "data": response_data,
         }
         
     except HTTPException:
@@ -1042,8 +1055,8 @@ async def send_todo_chat_message(
         logger.error(traceback.format_exc())
         return {
             "code": 500,
-            "message": f"服务器错误: {str(e)}",
-            "data": None
+            "msg": f"服务器错误: {str(e)}",
+            "data": {},
         }
 
 
@@ -1068,8 +1081,12 @@ async def get_todo_chat_messages(
     - **before**: 获取此消息ID之前的消息（用于向上加载更多）
     - **after**: 获取此消息ID之后的消息（用于获取新消息）
     """
+    t0 = time.perf_counter()
+    logger.info(
+        f"📥 get_todo_chat_messages 请求到达: session_id={session_id}, event_id={event_id}, limit={limit}, before={before}, after={after}"
+    )
     logger.info(f"📋 获取会话消息列表: session_id={session_id}, limit={limit}, before={before}, after={after}")
-    
+
     try:
         # 验证用户
         user_info = get_user_by_header(x_user_id)
@@ -1080,22 +1097,30 @@ async def get_todo_chat_messages(
         
         # 获取会话
         session = chat_manager.get_session(session_id)
-        
+
         if not session:
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+            logger.info(
+                f"📤 get_todo_chat_messages 响应返回: code=404, elapsed_ms={elapsed_ms:.2f}, session_id={session_id}"
+            )
             return {
                 "code": 404,
-                "message": "会话不存在",
-                "data": None
+                "msg": "会话不存在",
+                "data": {},
             }
-        
+
         # 验证权限
         if session.user_id != calendar_user_id or session.event_id != event_id:
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+            logger.info(
+                f"📤 get_todo_chat_messages 响应返回: code=403, elapsed_ms={elapsed_ms:.2f}, session_id={session_id}"
+            )
             return {
                 "code": 403,
-                "message": "无权访问此会话",
-                "data": None
+                "msg": "无权访问此会话",
+                "data": {},
             }
-        
+
         # 限制最大数量
         limit = min(limit, 100)
         
@@ -1139,29 +1164,37 @@ async def get_todo_chat_messages(
         else:
             oldest_message_id = None
             newest_message_id = None
-        
+
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        logger.info(
+            f"📤 get_todo_chat_messages 响应返回: code=0, elapsed_ms={elapsed_ms:.2f}, session_id={session_id}, count={len(messages)}"
+        )
         return {
             "code": 0,
-            "message": "success",
+            "msg": "success",
             "data": {
                 "messages": [msg.to_dict() for msg in messages],
                 "has_more": has_more,
                 "oldest_message_id": oldest_message_id,
                 "newest_message_id": newest_message_id,
-                "total": total_count
-            }
+                "total": total_count,
+            },
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
+        elapsed_ms = (time.perf_counter() - t0) * 1000
         logger.error(f"❌ 获取会话消息列表失败: {e}")
         import traceback
         logger.error(traceback.format_exc())
+        logger.info(
+            f"📤 get_todo_chat_messages 响应返回: code=500, elapsed_ms={elapsed_ms:.2f}, session_id={session_id}, error={e!s}"
+        )
         return {
             "code": 500,
-            "message": f"服务器错误: {str(e)}",
-            "data": None
+            "msg": f"服务器错误: {str(e)}",
+            "data": {},
         }
 
 
@@ -1193,16 +1226,16 @@ async def delete_todo_chat_session(
         if not session:
             return {
                 "code": 404,
-                "message": "会话不存在",
-                "data": None
+                "msg": "会话不存在",
+                "data": {},
             }
         
         # 验证权限
         if session.user_id != calendar_user_id or session.event_id != event_id:
             return {
                 "code": 403,
-                "message": "无权删除此会话",
-                "data": None
+                "msg": "无权删除此会话",
+                "data": {},
             }
         
         # 删除会话
@@ -1211,14 +1244,14 @@ async def delete_todo_chat_session(
         if success:
             return {
                 "code": 0,
-                "message": "success",
-                "data": {"deleted": True}
+                "msg": "success",
+                "data": {"deleted": True},
             }
         else:
             return {
                 "code": 500,
-                "message": "删除失败",
-                "data": None
+                "msg": "删除失败",
+                "data": {},
             }
         
     except HTTPException:
@@ -1229,8 +1262,8 @@ async def delete_todo_chat_session(
         logger.error(traceback.format_exc())
         return {
             "code": 500,
-            "message": f"服务器错误: {str(e)}",
-            "data": None
+            "msg": f"服务器错误: {str(e)}",
+            "data": {},
         }
 
 
@@ -1272,16 +1305,16 @@ async def update_todo_chat_session_title(
         if not session:
             return {
                 "code": 404,
-                "message": "会话不存在",
-                "data": None
+                "msg": "会话不存在",
+                "data": {},
             }
         
         # 验证权限
         if session.user_id != calendar_user_id or session.event_id != event_id:
             return {
                 "code": 403,
-                "message": "无权更新此会话",
-                "data": None
+                "msg": "无权更新此会话",
+                "data": {},
             }
         
         # 更新标题
@@ -1290,17 +1323,17 @@ async def update_todo_chat_session_title(
         if success:
             return {
                 "code": 0,
-                "message": "success",
+                "msg": "success",
                 "data": {
                     "session_id": session_id,
-                    "title": request.title
-                }
+                    "title": request.title,
+                },
             }
         else:
             return {
                 "code": 500,
-                "message": "更新失败",
-                "data": None
+                "msg": "更新失败",
+                "data": {},
             }
         
     except HTTPException:
@@ -1311,8 +1344,8 @@ async def update_todo_chat_session_title(
         logger.error(traceback.format_exc())
         return {
             "code": 500,
-            "message": f"服务器错误: {str(e)}",
-            "data": None
+            "msg": f"服务器错误: {str(e)}",
+            "data": {},
         }
 
 
@@ -1711,6 +1744,7 @@ async def todo_chat_stream(
     
     **SSE事件类型**：
     - `session_init`: 会话初始化
+    - `title_updated`: 会话标题更新（仅首次会话且未提供title时，LLM分析意图后推送）
     - `plan_update`: 执行计划更新
     - `rich_card`: 富媒体卡片
     - `message_delta`: 聊天内容增量

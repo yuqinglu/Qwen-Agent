@@ -14,25 +14,38 @@ from ty_mem_agent.mcp_integrations.tool_wrapper import LoggingToolWrapper
 logger = get_logger("DidiMCPServer")
 
 
-def get_didi_mcp_server_config(api_key: Optional[str] = None, mode: str = "production") -> Dict:
+def _resolve_didi_mode(mode: Optional[str] = None) -> str:
+    """
+    解析滴滴 MCP 运行模式。优先级：传入参数 > settings（.env + 环境变量）> 默认 "production"。
+    """
+    if mode is not None and mode.strip():
+        return mode.strip().lower()
+    try:
+        from ty_mem_agent.config.settings import settings
+        return (getattr(settings, 'DIDI_MCP_MODE', None) or 'production').strip().lower()
+    except ImportError:
+        return (os.environ.get('DIDI_MCP_MODE') or 'production').strip().lower()
+
+
+def get_didi_mcp_server_config(api_key: Optional[str] = None, mode: Optional[str] = None) -> Dict:
     """
     获取滴滴 MCP Server 配置
     
     Args:
-        api_key: 滴滴 API Key，如果不提供则从环境变量 DIDI_API_KEY 读取
-        mode: 运行模式，"production" 或 "sandbox"，默认 "production"
+        api_key: 滴滴 API Key，如果不提供则从配置/环境变量 DIDI_API_KEY 读取
+        mode: 运行模式，可选 "production" | "sandbox"。
+              不传时从配置读取：config.settings.DIDI_MCP_MODE 或环境变量 DIDI_MCP_MODE，默认 "production"
         
     Returns:
         MCP Server 配置字典
     """
-    # 优先使用传入的api_key，然后尝试从settings获取，最后从环境变量获取
+    # 优先使用传入的 api_key，然后从 settings，最后从环境变量
     if not api_key:
         try:
             from ty_mem_agent.config.settings import settings
             api_key = getattr(settings, 'DIDI_API_KEY', None)
         except ImportError:
             pass
-        
         if not api_key:
             api_key = os.environ.get('DIDI_API_KEY', '')
     
@@ -43,21 +56,16 @@ def get_didi_mcp_server_config(api_key: Optional[str] = None, mode: str = "produ
             "获取 Key: 访问 https://mcp.didichuxing.com 申请"
         )
     
-    # 获取模式，优先使用传入的mode，然后从settings获取，最后从环境变量获取
-    if mode == "production":
-        try:
-            from ty_mem_agent.config.settings import settings
-            mode = getattr(settings, 'DIDI_MCP_MODE', 'production')
-        except ImportError:
-            mode = os.environ.get('DIDI_MCP_MODE', 'production')
+    # 模式：传入值优先，否则从配置/环境变量 DIDI_MCP_MODE 读取
+    mode = _resolve_didi_mode(mode)
     
-    # 根据模式选择不同的URL
+    # 根据模式选择不同的 URL（仅 "sandbox" 使用沙箱，其余均为 production）
     if mode == "sandbox":
         base_url = "https://mcp.didichuxing.com/mcp-servers-sandbox"
-        logger.info("🔧 使用滴滴 MCP 调试模式")
+        logger.info("🔧 使用滴滴 MCP 调试模式 (sandbox)")
     else:
         base_url = "https://mcp.didichuxing.com/mcp-servers"
-        logger.info("🚀 使用滴滴 MCP 生产模式")
+        logger.info("🚀 使用滴滴 MCP 生产模式 (production)")
     
     config = {
         "mcpServers": {
@@ -100,13 +108,13 @@ class DidiMCPServerManager:
             self.original_tools: List[BaseTool] = []  # 保存原始工具
             self._initialized = True
     
-    def initialize(self, api_key: Optional[str] = None, mode: str = "production") -> None:
+    def initialize(self, api_key: Optional[str] = None, mode: Optional[str] = None) -> None:
         """
         初始化滴滴 MCP Server 连接
         
         Args:
-            api_key: 滴滴 API Key
-            mode: 运行模式，"production" 或 "sandbox"
+            api_key: 滴滴 API Key，不传则从配置/环境变量 DIDI_API_KEY 读取
+            mode: 运行模式 "production" | "sandbox"，不传则从配置 DIDI_MCP_MODE 读取
         """
         # 如果已经初始化过，不重复初始化
         if self.tools:
@@ -191,13 +199,13 @@ class DidiMCPServerManager:
         self.original_tools.clear()
 
 
-def get_didi_mcp_manager(api_key: Optional[str] = None, mode: str = "production") -> DidiMCPServerManager:
+def get_didi_mcp_manager(api_key: Optional[str] = None, mode: Optional[str] = None) -> DidiMCPServerManager:
     """
     获取滴滴 MCP Server 管理器实例
     
     Args:
-        api_key: 滴滴 API Key
-        mode: 运行模式，"production" 或 "sandbox"
+        api_key: 滴滴 API Key，不传则从配置读取
+        mode: 运行模式 "production" | "sandbox"，不传则从配置 DIDI_MCP_MODE 读取
         
     Returns:
         DidiMCPServerManager 实例
@@ -207,13 +215,13 @@ def get_didi_mcp_manager(api_key: Optional[str] = None, mode: str = "production"
     return manager
 
 
-def register_didi_tools(api_key: Optional[str] = None, mode: str = "production") -> List[BaseTool]:
+def register_didi_tools(api_key: Optional[str] = None, mode: Optional[str] = None) -> List[BaseTool]:
     """
     注册滴滴 MCP 工具（只保留打车相关功能）
     
     Args:
-        api_key: 滴滴 API Key
-        mode: 运行模式，"production" 或 "sandbox"
+        api_key: 滴滴 API Key，不传则从配置读取
+        mode: 运行模式 "production" | "sandbox"，不传则从配置 DIDI_MCP_MODE 读取
         
     Returns:
         滴滴打车工具列表

@@ -76,9 +76,12 @@ async def get_todos_list(
             todos = todo_manager.get_pending_todos(user_id, limit=100)
         
         return {
-            "success": True,
-            "count": len(todos),
-            "todos": [todo.to_dict() for todo in todos]
+            "code": 0,
+            "msg": "success",
+            "data": {
+                "count": len(todos),
+                "todos": [todo.to_dict() for todo in todos],
+            },
         }
     except Exception as e:
         logger.error(f"❌ 查询待办失败: {e}")
@@ -109,8 +112,9 @@ async def get_todo_stats(user_id: str):
         logger.info(f"📊 统计结果: {stats}")
         
         return {
-            "success": True,
-            "stats": stats
+            "code": 0,
+            "msg": "success",
+            "data": {"stats": stats},
         }
     except Exception as e:
         logger.error(f"❌ 获取统计信息失败: {e}")
@@ -162,8 +166,9 @@ async def get_calendar_status(user_id: str, start_date: str, end_date: str):
         logger.info(f"📅 日历状态结果: {status_by_date}")
         
         return {
-            "success": True,
-            "status_by_date": status_by_date
+            "code": 0,
+            "msg": "success",
+            "data": {"status_by_date": status_by_date},
         }
     except Exception as e:
         logger.error(f"❌ 获取日历状态失败: {e}")
@@ -181,8 +186,9 @@ async def get_todo(user_id: str, todo_id: int):
             raise HTTPException(status_code=404, detail="待办不存在")
         
         return {
-            "success": True,
-            "todo": todo.to_dict()
+            "code": 0,
+            "msg": "success",
+            "data": {"todo": todo.to_dict()},
         }
     except HTTPException:
         raise
@@ -201,9 +207,12 @@ async def create_todo(user_id: str, request: TodoCreateRequest):
         todo = todo_manager.create_todo(user_id, todo_data)
         
         return {
-            "success": True,
-            "todo": todo.to_dict(),
-            "message": "✅ 待办创建成功"
+            "code": 0,
+            "msg": "success",
+            "data": {
+                "todo": todo.to_dict(),
+                "message": "✅ 待办创建成功",
+            },
         }
     except Exception as e:
         logger.error(f"❌ 创建待办失败: {e}")
@@ -226,8 +235,9 @@ async def update_todo(user_id: str, todo_id: int, request: TodoUpdateRequest):
             raise HTTPException(status_code=404, detail="待办不存在或更新失败")
         
         return {
-            "success": True,
-            "message": "✅ 待办更新成功"
+            "code": 0,
+            "msg": "success",
+            "data": {"message": "✅ 待办更新成功"},
         }
     except HTTPException:
         raise
@@ -247,8 +257,9 @@ async def complete_todo(user_id: str, todo_id: int):
             raise HTTPException(status_code=404, detail="待办不存在")
         
         return {
-            "success": True,
-            "message": "✅ 待办已完成"
+            "code": 0,
+            "msg": "success",
+            "data": {"message": "✅ 待办已完成"},
         }
     except HTTPException:
         raise
@@ -268,8 +279,9 @@ async def delete_todo(user_id: str, todo_id: int):
             raise HTTPException(status_code=404, detail="待办不存在")
         
         return {
-            "success": True,
-            "message": "✅ 待办已删除"
+            "code": 0,
+            "msg": "success",
+            "data": {"message": "✅ 待办已删除"},
         }
     except HTTPException:
         raise

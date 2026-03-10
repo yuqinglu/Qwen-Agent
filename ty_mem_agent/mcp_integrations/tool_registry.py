@@ -44,7 +44,6 @@ class ToolRegistry:
         await self._init_todo_extractor_tool()
         await self._init_calendar_tools()
         await self._init_profile_tools()
-        await self._init_location_tools()
         await self._init_eleme_tools()
         await self._init_feishu_meeting_tools()
         
@@ -292,7 +291,7 @@ class ToolRegistry:
     async def _init_natural_time_tools(self):
         """初始化自然语言时间解析工具"""
         try:
-            from ty_mem_agent.self_defined_tools.natural_time_parser import NaturalTimeParserTool
+            from ty_mem_agent.tools.natural_time_parser import NaturalTimeParserTool
             
             logger.info("🕐 正在初始化自然语言时间解析工具...")
             
@@ -312,7 +311,7 @@ class ToolRegistry:
     async def _init_todo_extractor_tool(self):
         """初始化待办信息提取工具（仅提取，不创建）"""
         try:
-            from ty_mem_agent.self_defined_tools.todo_tools import TodoExtractorTool
+            from ty_mem_agent.tools.todo_tools import TodoExtractorTool
             
             logger.info("📝 正在初始化待办信息提取工具...")
             
@@ -372,7 +371,7 @@ class ToolRegistry:
     async def _init_profile_tools(self):
         """初始化用户画像管理工具"""
         try:
-            from ty_mem_agent.self_defined_tools.profile_tools import (
+            from ty_mem_agent.tools.profile_tools import (
                 UpdateUserProfileTool,
                 GetUserProfileTool
             )
@@ -396,36 +395,10 @@ class ToolRegistry:
             self.connection_status['profile'] = False
             self.tools_cache['profile'] = []
     
-    async def _init_location_tools(self):
-        """初始化位置坐标工具"""
-        try:
-            from ty_mem_agent.self_defined_tools.location_tools import get_location_tools
-            
-            logger.info("📍 正在初始化位置坐标工具...")
-            
-            # 获取位置工具
-            tools = get_location_tools()
-            
-            if tools:
-                self.tools_cache["location"] = tools
-                self.connection_status["location"] = True
-                logger.info(f"✅ 位置坐标工具初始化成功，共 {len(tools)} 个工具")
-                for tool in tools:
-                    logger.debug(f"   - {tool.name}: {tool.description}")
-            else:
-                self.connection_status["location"] = False
-                self.tools_cache["location"] = []
-                logger.warning("⚠️  位置坐标工具初始化失败")
-                
-        except Exception as e:
-            logger.warning(f"⚠️  位置坐标工具初始化失败: {e}")
-            self.connection_status["location"] = False
-            self.tools_cache["location"] = []
-    
     async def _init_eleme_tools(self):
         """初始化饿了么外卖工具"""
         try:
-            from ty_mem_agent.self_defined_tools.eleme_tools import get_eleme_tools
+            from ty_mem_agent.tools.eleme_tools import get_eleme_tools
             
             logger.info("🍔 正在初始化饿了么外卖工具...")
             
@@ -466,7 +439,7 @@ class ToolRegistry:
     async def _init_feishu_meeting_tools(self):
         """初始化飞书会议工具（使用官方 SDK）"""
         try:
-            from ty_mem_agent.self_defined_tools.feishu_meeting_sdk import get_feishu_meeting_sdk_tools
+            from ty_mem_agent.tools.feishu_meeting_sdk import get_feishu_meeting_sdk_tools
             
             logger.info("📅 正在初始化飞书会议工具（SDK版本）...")
             
