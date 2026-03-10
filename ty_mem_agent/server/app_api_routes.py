@@ -21,7 +21,7 @@ from loguru import logger
 
 from ty_mem_agent.server.user_manager import user_manager
 from ty_mem_agent.server.user_id_mapper import UserIdMapper
-from ty_mem_agent.self_defined_tools.todo_tools import TodoExtractorTool
+from ty_mem_agent.tools.todo_tools import TodoExtractorTool
 from ty_mem_agent.mcp_integrations.calendar_mcp_server import CalendarEventManager
 from ty_mem_agent.server.todo_chat_manager import get_todo_chat_manager
 from ty_mem_agent.server.rich_card_manager import get_rich_card_manager, CARD_TYPES

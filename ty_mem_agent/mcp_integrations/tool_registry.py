@@ -291,7 +291,7 @@ class ToolRegistry:
     async def _init_natural_time_tools(self):
         """初始化自然语言时间解析工具"""
         try:
-            from ty_mem_agent.self_defined_tools.natural_time_parser import NaturalTimeParserTool
+            from ty_mem_agent.tools.natural_time_parser import NaturalTimeParserTool
             
             logger.info("🕐 正在初始化自然语言时间解析工具...")
             
@@ -311,7 +311,7 @@ class ToolRegistry:
     async def _init_todo_extractor_tool(self):
         """初始化待办信息提取工具（仅提取，不创建）"""
         try:
-            from ty_mem_agent.self_defined_tools.todo_tools import TodoExtractorTool
+            from ty_mem_agent.tools.todo_tools import TodoExtractorTool
             
             logger.info("📝 正在初始化待办信息提取工具...")
             
@@ -371,7 +371,7 @@ class ToolRegistry:
     async def _init_profile_tools(self):
         """初始化用户画像管理工具"""
         try:
-            from ty_mem_agent.self_defined_tools.profile_tools import (
+            from ty_mem_agent.tools.profile_tools import (
                 UpdateUserProfileTool,
                 GetUserProfileTool
             )
@@ -398,7 +398,7 @@ class ToolRegistry:
     async def _init_eleme_tools(self):
         """初始化饿了么外卖工具"""
         try:
-            from ty_mem_agent.self_defined_tools.eleme_tools import get_eleme_tools
+            from ty_mem_agent.tools.eleme_tools import get_eleme_tools
             
             logger.info("🍔 正在初始化饿了么外卖工具...")
             
@@ -439,7 +439,7 @@ class ToolRegistry:
     async def _init_feishu_meeting_tools(self):
         """初始化飞书会议工具（使用官方 SDK）"""
         try:
-            from ty_mem_agent.self_defined_tools.feishu_meeting_sdk import get_feishu_meeting_sdk_tools
+            from ty_mem_agent.tools.feishu_meeting_sdk import get_feishu_meeting_sdk_tools
             
             logger.info("📅 正在初始化飞书会议工具（SDK版本）...")
             

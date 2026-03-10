@@ -18,8 +18,7 @@ from .tts_service import get_tts_service, TTSConfig
 from .smart_sentence_splitter import get_sentence_splitter
 from .ugc_client import get_ugc_client
 from .user_manager import user_manager
-from .scenarios import get_scenario_for_message
-from .skills import get_skill_registry_lazy
+from .skills import get_skill_registry_lazy, get_scenario_skill
 from .todo_chat_sse_service import ExecutionStep
 from ty_mem_agent.agents.ty_memory_agent import TYMemoryAgent
 from qwen_agent.llm.schema import Message, USER
@@ -517,8 +516,17 @@ class GeneralChatWebSocketService:
             _ride_confirm_tts_sent_this_turn = False
             _last_ride_confirm_tts_sent: Optional[str] = None
             # 本回合是否进入某场景（打车等），用于委托 TTS/抑制 决策
-            _scenario = get_scenario_for_message(user_message)
-            
+            # 传入最近几轮「用户消息文本」作为历史，便于技能做多轮意图识别
+            history_user_texts: List[str] = [
+                m.get("content", "")
+                for m in history_messages
+                if m.get("role") == "user"
+            ]
+            _scenario = get_scenario_skill(user_message, history_messages=history_user_texts)
+            # 本轮订单成功创建后需等待司机接单的订单号（在 done 发送前 await，保证 done 始终最后）
+            _pending_driver_poll_order_id: Optional[str] = None
+            _pending_driver_poll_tts_cfg: Optional[TTSConfig] = None
+
             async for chunk in self._stream_agent_response(
                 agent, history_messages, deep_thinking,
                 plan_result=plan_result if enable_deep_thinking and plan_result else None,
@@ -696,8 +704,8 @@ class GeneralChatWebSocketService:
                                         _ride_hailing_suppress_tts_until_cards = True
                             else:
                                 if enable_tts:
-                                    from ty_mem_agent.server.scenarios.ride_hailing import user_only_said_destination
-                                    if _cached_phone_from_get_user_profile and user_only_said_destination(user_message):
+                                    from ty_mem_agent.server.skills.ride_hailing import _user_only_said_destination
+                                    if _cached_phone_from_get_user_profile and _user_only_said_destination(user_message):
                                         profile_tts = "已查到您的电话号码。请问您的上车地点是哪里？"
                                     else:
                                         profile_tts = (
@@ -832,8 +840,8 @@ class GeneralChatWebSocketService:
                                     action = _scenario.on_tool_result(
                                         tool_name, result_for_extract, tool_args, _scenario_ctx
                                     )
-                                    if action and action.tts_after_ride_confirm_cards:
-                                        ride_confirm_tts = action.tts_after_ride_confirm_cards
+                                    if action and action.tts_after_card:
+                                        ride_confirm_tts = action.tts_after_card
                                 if ride_confirm_tts is None:
                                     ride_confirm_tts = self._get_ride_confirm_tts_text(
                                         "车型。", _last_ride_origin, _last_ride_destination
@@ -851,19 +859,13 @@ class GeneralChatWebSocketService:
                                 )
                                 _ride_confirm_tts_sent_this_turn = True
                                 _last_ride_confirm_tts_sent = ride_confirm_tts
-                            # 若为本轮推送的订单成功卡片，则记录订单号并后台轮询订单状态，司机接单后推送司机卡片并 TTS
+                            # 若为本轮推送的订单成功卡片，记录订单号，在 done 之前 await 轮询，确保司机卡片先于 done 发送
                             for card in (ride_cards or []):
                                 data = card.get("data") or {}
                                 if data.get("stage") == "success" and data.get("order_id"):
                                     self.chat_manager.set_last_ride_order_id(session_id, data["order_id"])
-                                    asyncio.create_task(self._poll_ride_order_until_driver(
-                                        websocket=websocket,
-                                        session_id=session_id,
-                                        user_id=user_id,
-                                        order_id=data["order_id"],
-                                        enable_tts=enable_tts,
-                                        tts_config=tts_cfg,
-                                    ))
+                                    _pending_driver_poll_order_id = data["order_id"]
+                                    _pending_driver_poll_tts_cfg = tts_cfg
                                     break
 
                         # 日历 MCP：待办创建/更新/删除 → 本地待办卡片（无则新建，有则更新/删除）
@@ -1088,6 +1090,23 @@ class GeneralChatWebSocketService:
                         "content": summary_text,
                         "timestamp": datetime.now().isoformat(),
                     })
+
+                # 在发送 done 之前等待司机接单卡片（若有），确保 done 始终是本轮最后一条消息
+                if _pending_driver_poll_order_id:
+                    try:
+                        await asyncio.wait_for(
+                            self._poll_ride_order_until_driver(
+                                websocket=websocket,
+                                session_id=session_id,
+                                user_id=user_id,
+                                order_id=_pending_driver_poll_order_id,
+                                enable_tts=enable_tts,
+                                tts_config=_pending_driver_poll_tts_cfg,
+                            ),
+                            timeout=30.0,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.info("⏱️ 等待司机接单超时（30s），直接发送 done")
 
                 # 发送完成事件（确保 done 始终在最后）
                 await self._send_json(websocket, {
@@ -1420,36 +1439,32 @@ class GeneralChatWebSocketService:
     
     def _is_sentence_complete(self, text: str) -> bool:
         """
-        判断句子是否完成
-        
-        使用简单规则判断（更复杂的可以使用sentence_splitter）
-        
-        Args:
-            text: 文本
-            
-        Returns:
-            是否完成
+        判断句子是否完成（用于触发 TTS）
+
+        仅在完整的句末标点处断句，避免在分号、英文句点等位置切分出短片段导致
+        TTS 对数字范围（如 4-11度）等结构产生误读。同时要求累积文本达到一定长度，
+        过短的片段（如单个标点或孤立词）不单独发往 TTS。
         """
         if not text:
             return False
-        
-        # 检查是否以句号、问号、感叹号结尾
+
         text = text.strip()
         if not text:
             return False
-        
-        # 句子结束标记
-        sentence_endings = ['。', '！', '？', '!', '?', '.', ';', '；']
-        
-        # 检查最后一个字符
-        if text[-1] in sentence_endings:
-            # 额外检查：如果是点号，确保不是小数点
-            if text[-1] == '.':
-                if len(text) >= 2 and text[-2].isdigit():
-                    return False  # 可能是小数点
-            return True
-        
-        return False
+
+        # 仅在真正的句末标点处断句；去掉分号（；;）和英文句点（.），
+        # 避免将含数字范围（如 4-11度）或英文缩写的句子切成小片段
+        sentence_endings = {'。', '！', '？', '!', '?'}
+
+        if text[-1] not in sentence_endings:
+            return False
+
+        # 过短的片段不单独 TTS（例如 "晴。" 只有2字，容易被 TTS 读错语气）
+        MIN_TTS_LEN = 5
+        if len(text) < MIN_TTS_LEN:
+            return False
+
+        return True
 
     async def _emit_message_delta_for_sentence(self, websocket: WebSocket, sentence: str) -> None:
         """
@@ -1639,6 +1654,7 @@ class GeneralChatWebSocketService:
         card_manager = get_rich_card_manager()
         # 本次“确认叫车”直接创建订单流程中新生成的卡片，只应绑定到本轮助手消息
         new_cards: List[Dict[str, Any]] = []
+        _pending_order_id: Optional[str] = None  # 等待司机接单的订单号，done 发送前 await
         if ride_cards:
             for card in ride_cards:
                 try:
@@ -1674,14 +1690,7 @@ class GeneralChatWebSocketService:
                     data = card.get("data") or {}
                     if data.get("stage") == "success" and data.get("order_id"):
                         self.chat_manager.set_last_ride_order_id(session_id, data["order_id"])
-                        asyncio.create_task(self._poll_ride_order_until_driver(
-                            websocket=websocket,
-                            session_id=session_id,
-                            user_id=user_id,
-                            order_id=data["order_id"],
-                            enable_tts=enable_tts,
-                            tts_config=tts_config,
-                        ))
+                        _pending_order_id = data["order_id"]  # 记录待轮询订单，done 前等待司机接单
                         break
                 except Exception as e:
                     logger.warning(f"⚠️ 打车卡片创建失败: {e}")
@@ -1699,6 +1708,22 @@ class GeneralChatWebSocketService:
                 text=tts_text,
                 tts_config=tts_config,
             )
+        # 在发送 done 之前等待司机接单卡片推送完成，确保 done 始终是本轮最后一条消息
+        if _pending_order_id:
+            try:
+                await asyncio.wait_for(
+                    self._poll_ride_order_until_driver(
+                        websocket=websocket,
+                        session_id=session_id,
+                        user_id=user_id,
+                        order_id=_pending_order_id,
+                        enable_tts=enable_tts,
+                        tts_config=tts_config,
+                    ),
+                    timeout=30.0,
+                )
+            except asyncio.TimeoutError:
+                logger.info("⏱️ 等待司机接单超时（30s），直接发送 done")
         # 仅将此次叫车流程中新生成的卡片绑定到本条助手消息
         ai_msg = self.chat_manager.add_message(
             session_id=session_id,

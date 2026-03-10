@@ -1,27 +1,53 @@
 # ===================================================================
 # TY Memory Agent 依赖配置
 # ===================================================================
-# 
-# 注意：本项目已集成到主 qwen-agent 的 Poetry 配置中
-# 使用以下命令安装完整依赖：
-#   poetry install --with ty-mem-agent
 #
-# 或者单独安装TY Memory Agent依赖组：
-#   poetry install --only=ty-mem-agent
+# 推荐使用 Poetry 安装（环境隔离更好，版本锁定更可靠）：
+#   poetry install --with ty-mem-agent --extras "mcp code_interpreter rag"
+#
+# 如果需要同步本文件（在 pyproject.toml 新增依赖后执行）：
+#   poetry export -f requirements.txt \
+#     --with ty-mem-agent \
+#     --extras "mcp code_interpreter rag" \
+#     --without-hashes \
+#     -o ty_mem_agent/requirements.txt
+#
+# 传统 pip 安装（不推荐，无版本锁定）：
+#   pip install -r requirements.txt
 # ===================================================================
 
-# 核心框架 (已在主项目中)
+# ===================================================================
+# 核心框架（qwen-agent 主包 + extras）
+# ===================================================================
 qwen-agent[gui,rag,code_interpreter,mcp]
 
 # ===================================================================
-# TY Memory Agent 专用依赖 (在 poetry 的 ty-mem-agent 组中管理)
+# 主依赖组（pyproject.toml [tool.poetry.dependencies]）
+# ===================================================================
+
+# 文档解析
+openpyxl
+
+# JWT / 认证
+PyJWT
+
+# 时间解析
+dateparser
+jionlp
+parsedatetime
+
+# 飞书 SDK
+lark-oapi
+
+# ===================================================================
+# TY Memory Agent 专用依赖（pyproject.toml [ty-mem-agent] 组）
 # ===================================================================
 
 # 日志系统
 loguru
 
-# HTTP客户端和异步支持
-httpx
+# HTTP 客户端和异步支持
+httpx[http2]
 aiohttp
 
 # 数据库和缓存
@@ -39,26 +65,19 @@ pydantic-settings
 # 服务注册与发现（可选：如需通过 Nacos 发现 Dubbo 服务）
 nacos-sdk-python
 
-# Dubbo Python 客户端（用于直连 Dubbo/FileApplication 等服务）
-dubbo-python
+# 附件文本提取（文档解析 + 图片 OCR）
+pdfminer-six
+pdfplumber
+python-docx
+python-pptx
 
 # ===================================================================
-# 已包含在 qwen-agent extras 中的依赖
+# 已包含在 qwen-agent extras 中的依赖（仅注释说明，无需重复安装）
 # ===================================================================
 # fastapi          (在 code_interpreter extra 中)
-# uvicorn          (在 code_interpreter extra 中) 
+# uvicorn          (在 code_interpreter extra 中)
 # pydantic         (在主依赖中)
 # requests         (在主依赖中)
 # mcp              (在 mcp extra 中)
-
-# ===================================================================
-# 安装说明
-# ===================================================================
-# 1. 完整安装 (推荐):
-#    poetry install --with ty-mem-agent
-#
-# 2. 只安装TY Memory Agent依赖:
-#    poetry install --only=ty-mem-agent  
-#
-# 3. 传统pip安装 (不推荐):
-#    pip install -r requirements.txt
+# pandas           (在 rag / code_interpreter extra 中)
+# pillow           (在 code_interpreter extra 中)

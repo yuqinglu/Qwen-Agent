@@ -10,9 +10,9 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPBearer
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from loguru import logger
 
@@ -25,18 +25,7 @@ from ty_mem_agent.server.conversation_manager import get_conversation_manager
 from qwen_agent.llm.schema import Message, USER, ASSISTANT, FUNCTION
 
 
-# Pydantic模型
-class UserLogin(BaseModel):
-    username: str
-    password: str
-
-
-class UserRegister(BaseModel):
-    username: str
-    password: str
-    email: Optional[str] = None
-
-
+# Pydantic 模型（chat_server.py 内部使用的简单消息模型）
 class ChatMessage(BaseModel):
     content: str
     message_type: str = "text"
@@ -50,38 +39,8 @@ class ChatResponse(BaseModel):
     metadata: Optional[Dict] = None
 
 
-class CreateConversationRequest(BaseModel):
-    title: Optional[str] = "新对话"
-
-
-class UpdateConversationTitleRequest(BaseModel):
-    title: str
-
-
-# 安全相关
-security = HTTPBearer()
-
-
-def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    """获取当前用户"""
-    token = credentials.credentials
-    user_id = user_manager.verify_access_token(token)
-    
-    if not user_id:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication credentials",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    user = user_manager.get_user(user_id)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found"
-        )
-    
-    return user
+# 认证依赖（复用 auth_routes 中的实现，保留本地别名供 _register_calendar_routes 使用）
+from .auth_routes import get_current_user
 
 
 class ChatServer:
@@ -156,440 +115,81 @@ class ChatServer:
     
     def _setup_routes(self):
         """设置路由"""
-        
+
+        # ---- 基础路由（首页、健康检查、静态页面）----
+
         @self.app.get("/")
         async def root():
-            """首页"""
             return {"message": "TY Memory Agent Chat Server", "version": "1.0.0"}
-        
-        @self.app.get("/todos.html", response_class=HTMLResponse)
-        async def todos_page():
-            """待办事项页面"""
-            templates_dir = Path(__file__).parent / "templates"
-            todos_file = templates_dir / "todos.html"
-            
-            if todos_file.exists():
-                with open(todos_file, "r", encoding="utf-8") as f:
-                    return HTMLResponse(f.read())
-            else:
-                return HTMLResponse("<h1>todos.html not found</h1>", status_code=404)
-        
-        @self.app.get("/static/todos.html", response_class=HTMLResponse)
-        async def todos_page_static():
-            """待办事项页面（静态路径兼容）"""
-            return await todos_page()
-        
+
         @self.app.get("/health")
         async def health_check():
-            """健康检查"""
             return {
                 "status": "healthy",
                 "timestamp": datetime.now(),
-                "users": user_manager.get_user_stats()
+                "users": user_manager.get_user_stats(),
             }
-        
-        @self.app.post("/auth/register")
-        async def register(user_data: UserRegister):
-            """用户注册"""
-            user = user_manager.create_user(
-                username=user_data.username,
-                password=user_data.password,
-                email=user_data.email
-            )
-            
-            if not user:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="用户名已存在或注册失败"
-                )
-            
-            return {"message": "注册成功", "user_id": user.user_id}
-        
-        @self.app.post("/auth/login")
-        async def login(login_data: UserLogin):
-            """用户登录"""
-            user = user_manager.authenticate_user(
-                username=login_data.username,
-                password=login_data.password
-            )
-            
-            if not user:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="用户名或密码错误"
-                )
-            
-            # 创建会话和令牌
-            session = user_manager.create_session(user.user_id)
-            token = user_manager.create_access_token(user.user_id)
-            
-            return {
-                "access_token": token,
-                "token_type": "bearer",
-                "user_id": user.user_id,
-                "username": user.username,
-                "session_id": session.session_id if session else None
-            }
-        
-        @self.app.post("/auth/logout")
-        async def logout(current_user = Depends(get_current_user)):
-            """用户登出"""
-            # 结束用户会话
-            session = user_manager.get_user_session(current_user.user_id)
-            if session:
-                user_manager.end_session(session.session_id)
-            
-            # 断开WebSocket连接
-            if current_user.user_id in self.active_connections:
-                await self._disconnect_user(current_user.user_id)
-            
-            return {"message": "登出成功"}
-        
-        @self.app.get("/user/profile")
-        async def get_profile(current_user = Depends(get_current_user)):
-            """获取用户资料"""
-            # 获取用户记忆摘要
-            memory_summary = await self._get_user_memory_summary(current_user.user_id)
-            
-            # 确保有calendar_user_id
-            if not current_user.calendar_user_id:
-                from ty_mem_agent.server.user_id_mapper import UserIdMapper
-                calendar_user_id = UserIdMapper.get_calendar_user_id(current_user.user_id)
-                # 更新用户信息
-                user_manager.db.update_user(current_user.user_id, {
-                    'calendar_user_id': calendar_user_id
-                })
-                # 更新内存中的用户对象
-                current_user.calendar_user_id = calendar_user_id
-            
-            return {
-                "user_id": current_user.user_id,
-                "username": current_user.username,
-                "email": current_user.email,
-                "created_at": current_user.created_at,
-                "last_login": current_user.last_login,
-                "calendar_user_id": current_user.calendar_user_id,
-                "memory_summary": memory_summary
-            }
-        
-        @self.app.get("/user/calendar-id")
-        async def get_calendar_user_id(current_user = Depends(get_current_user)):
-            """获取用户的日历用户ID"""
-            from ty_mem_agent.server.user_id_mapper import UserIdMapper
-            
-            # 先从数据库重新加载用户，确保获取最新的calendar_user_id
-            user_data = user_manager.db.get_user(current_user.user_id)
-            if user_data:
-                # 如果数据库中有calendar_user_id，使用数据库的值
-                calendar_user_id = user_data.get('calendar_user_id')
-                if calendar_user_id:
-                    # 更新内存中的用户对象
-                    current_user.calendar_user_id = calendar_user_id
-                    logger.debug(f"✅ 从数据库加载calendar_user_id: {current_user.user_id} -> {calendar_user_id}")
-                else:
-                    # 如果数据库中没有，生成一个并保存
-                    calendar_user_id = UserIdMapper.get_calendar_user_id(current_user.user_id)
-                    # 更新数据库
-                    user_manager.db.update_user(current_user.user_id, {
-                        'calendar_user_id': calendar_user_id
-                    })
-                    # 更新内存中的用户对象
-                    current_user.calendar_user_id = calendar_user_id
-                    logger.info(f"🔧 生成并保存calendar_user_id: {current_user.user_id} -> {calendar_user_id}")
-            else:
-                # 如果数据库中没有用户数据，生成一个
-                calendar_user_id = UserIdMapper.get_calendar_user_id(current_user.user_id)
-                current_user.calendar_user_id = calendar_user_id
-                logger.warning(f"⚠️ 数据库中没有用户数据，使用生成的calendar_user_id: {calendar_user_id}")
-            
-            # 将calendar_user_id转换为字符串，避免JavaScript精度丢失
-            # JavaScript的Number类型只能安全表示到Number.MAX_SAFE_INTEGER (9007199254740991)
-            # 我们的calendar_user_id都超过了这个范围，必须作为字符串传递
-            return {
-                "calendar_user_id": str(current_user.calendar_user_id)
-            }
-        
-        @self.app.get("/user/stats")
-        async def get_user_stats(current_user = Depends(get_current_user)):
-            """获取用户统计信息"""
-            return user_manager.get_user_stats()
-        
+
+        @self.app.get("/todos.html", response_class=HTMLResponse)
+        async def todos_page():
+            templates_dir = Path(__file__).parent / "templates"
+            todos_file = templates_dir / "todos.html"
+            if todos_file.exists():
+                with open(todos_file, "r", encoding="utf-8") as f:
+                    return HTMLResponse(f.read())
+            return HTMLResponse("<h1>todos.html not found</h1>", status_code=404)
+
+        @self.app.get("/static/todos.html", response_class=HTMLResponse)
+        async def todos_page_static():
+            return await todos_page()
+
+        @self.app.get("/chat/demo")
+        async def chat_demo():
+            html_path = Path(__file__).parent / "templates" / "chat_demo.html"
+            if html_path.exists():
+                with open(html_path, "r", encoding="utf-8") as f:
+                    return HTMLResponse(f.read())
+            return HTMLResponse("<h1>聊天页面模板未找到</h1>", status_code=404)
+
+        # ---- 旧版 WebSocket（已废弃，请使用 /agent/api/v1/chat/ws）----
+
         @self.app.websocket("/ws/{token}")
         async def websocket_endpoint(websocket: WebSocket, token: str):
-            """WebSocket聊天端点"""
-            # 验证令牌
+            """
+            [已废弃] 旧版 WebSocket 聊天端点，保留用于向后兼容。
+            请迁移至新接口：/agent/api/v1/chat/ws
+            """
             user_id = user_manager.verify_access_token(token)
             if not user_id:
                 await websocket.close(code=4001, reason="Invalid token")
                 return
-            
             user = user_manager.get_user(user_id)
             if not user:
                 await websocket.close(code=4002, reason="User not found")
                 return
-            
             await self._handle_websocket_connection(websocket, user)
-        
-        @self.app.get("/chat/demo")
-        async def chat_demo():
-            """聊天演示页面"""
-            # 从外部文件读取HTML
-            html_path = Path(__file__).parent / "templates" / "chat_demo.html"
-            if html_path.exists():
-                with open(html_path, 'r', encoding='utf-8') as f:
-                    return HTMLResponse(f.read())
-            else:
-                return HTMLResponse("<h1>聊天页面模板未找到</h1>", status_code=404)
-        
-        # ==================== 会话管理API ====================
-        
-        @self.app.get("/conversations")
-        async def get_conversations(current_user = Depends(get_current_user)):
-            """获取用户的所有会话列表"""
-            try:
-                conversations = self.conversation_manager.get_user_conversations(
-                    user_id=current_user.user_id,
-                    limit=50
-                )
-                return {
-                    "conversations": conversations,
-                    "total": len(conversations)
-                }
-            except Exception as e:
-                logger.error(f"获取会话列表失败: {e}")
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=str(e)
-                )
-        
-        @self.app.post("/conversations")
-        async def create_conversation(
-            request: CreateConversationRequest,
-            current_user = Depends(get_current_user)
-        ):
-            """创建新会话"""
-            try:
-                conversation = self.conversation_manager.create_conversation(
-                    user_id=current_user.user_id,
-                    title=request.title
-                )
-                
-                # 设置为当前会话
-                self.user_current_conversation[current_user.user_id] = conversation.conversation_id
-                
-                return {
-                    "conversation_id": conversation.conversation_id,
-                    "title": conversation.title,
-                    "created_at": conversation.created_at
-                }
-            except Exception as e:
-                logger.error(f"创建会话失败: {e}")
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=str(e)
-                )
-        
-        @self.app.get("/conversations/{conversation_id}")
-        async def get_conversation(
-            conversation_id: str,
-            current_user = Depends(get_current_user)
-        ):
-            """获取指定会话的详细信息"""
-            try:
-                conversation = self.conversation_manager.get_conversation(conversation_id)
-                
-                if not conversation:
-                    raise HTTPException(
-                        status_code=status.HTTP_404_NOT_FOUND,
-                        detail="会话不存在"
-                    )
-                
-                # 验证会话所有权
-                if conversation.user_id != current_user.user_id:
-                    raise HTTPException(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        detail="无权访问此会话"
-                    )
-                
-                return conversation.to_dict()
-            except HTTPException:
-                raise
-            except Exception as e:
-                logger.error(f"获取会话失败: {e}")
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=str(e)
-                )
-        
-        @self.app.get("/conversations/{conversation_id}/messages")
-        async def get_conversation_messages(
-            conversation_id: str,
-            current_user = Depends(get_current_user)
-        ):
-            """获取指定会话的所有消息"""
-            try:
-                conversation = self.conversation_manager.get_conversation(conversation_id)
-                
-                if not conversation:
-                    raise HTTPException(
-                        status_code=status.HTTP_404_NOT_FOUND,
-                        detail="会话不存在"
-                    )
-                
-                # 验证会话所有权
-                if conversation.user_id != current_user.user_id:
-                    raise HTTPException(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        detail="无权访问此会话"
-                    )
-                
-                messages = self.conversation_manager.get_conversation_messages(conversation_id)
-                return {
-                    "conversation_id": conversation_id,
-                    "messages": messages,
-                    "total": len(messages)
-                }
-            except HTTPException:
-                raise
-            except Exception as e:
-                logger.error(f"获取会话消息失败: {e}")
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=str(e)
-                )
-        
-        @self.app.put("/conversations/{conversation_id}/title")
-        async def update_conversation_title(
-            conversation_id: str,
-            request: UpdateConversationTitleRequest,
-            current_user = Depends(get_current_user)
-        ):
-            """更新会话标题"""
-            try:
-                conversation = self.conversation_manager.get_conversation(conversation_id)
-                
-                if not conversation:
-                    raise HTTPException(
-                        status_code=status.HTTP_404_NOT_FOUND,
-                        detail="会话不存在"
-                    )
-                
-                # 验证会话所有权
-                if conversation.user_id != current_user.user_id:
-                    raise HTTPException(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        detail="无权访问此会话"
-                    )
-                
-                success = self.conversation_manager.update_conversation_title(
-                    conversation_id,
-                    request.title
-                )
-                
-                if success:
-                    return {"message": "标题更新成功", "title": request.title}
-                else:
-                    raise HTTPException(
-                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                        detail="标题更新失败"
-                    )
-            except HTTPException:
-                raise
-            except Exception as e:
-                logger.error(f"更新会话标题失败: {e}")
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=str(e)
-                )
-        
-        @self.app.post("/conversations/{conversation_id}/generate-title")
-        async def generate_conversation_title(
-            conversation_id: str,
-            current_user = Depends(get_current_user)
-        ):
-            """使用AI自动生成会话标题"""
-            try:
-                conversation = self.conversation_manager.get_conversation(conversation_id)
-                
-                if not conversation:
-                    raise HTTPException(
-                        status_code=status.HTTP_404_NOT_FOUND,
-                        detail="会话不存在"
-                    )
-                
-                # 验证会话所有权
-                if conversation.user_id != current_user.user_id:
-                    raise HTTPException(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        detail="无权访问此会话"
-                    )
-                
-                # 获取用户的第一条消息
-                user_messages = [msg for msg in conversation.messages if msg.role == 'user']
-                if not user_messages:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="会话中没有用户消息"
-                    )
-                
-                first_user_message = user_messages[0].content
-                
-                # 使用AI生成标题
-                title = await self._generate_title_with_llm(first_user_message)
-                
-                # 更新标题
-                self.conversation_manager.update_conversation_title(conversation_id, title)
-                
-                return {"title": title, "conversation_id": conversation_id}
-                
-            except HTTPException:
-                raise
-            except Exception as e:
-                logger.error(f"生成会话标题失败: {e}")
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=str(e)
-                )
-        
-        @self.app.delete("/conversations/{conversation_id}")
-        async def delete_conversation(
-            conversation_id: str,
-            current_user = Depends(get_current_user)
-        ):
-            """删除会话"""
-            try:
-                conversation = self.conversation_manager.get_conversation(conversation_id)
-                
-                if not conversation:
-                    raise HTTPException(
-                        status_code=status.HTTP_404_NOT_FOUND,
-                        detail="会话不存在"
-                    )
-                
-                # 验证会话所有权
-                if conversation.user_id != current_user.user_id:
-                    raise HTTPException(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        detail="无权访问此会话"
-                    )
-                
-                success = self.conversation_manager.delete_conversation(conversation_id)
-                
-                if success:
-                    return {"message": "会话删除成功"}
-                else:
-                    raise HTTPException(
-                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                        detail="会话删除失败"
-                    )
-            except HTTPException:
-                raise
-            except Exception as e:
-                logger.error(f"删除会话失败: {e}")
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=str(e)
-                )
+
+        # ---- 认证路由（/auth/*）----
+        from .auth_routes import create_auth_router
+        self.app.include_router(
+            create_auth_router(disconnect_user_callback=self._disconnect_user)
+        )
+
+        # ---- 用户信息路由（/user/*）----
+        from .user_routes import create_user_router
+        self.app.include_router(
+            create_user_router(get_memory_summary_fn=self._get_user_memory_summary)
+        )
+
+        # ---- 旧版会话管理路由（/conversations/*）----
+        from .conversation_routes import create_conversation_router
+        self.app.include_router(
+            create_conversation_router(
+                conversation_manager=self.conversation_manager,
+                user_current_conversation=self.user_current_conversation,
+                generate_title_fn=self._generate_title_with_llm,
+            )
+        )
     
     async def _handle_websocket_connection(self, websocket: WebSocket, user):
         """处理WebSocket连接"""
