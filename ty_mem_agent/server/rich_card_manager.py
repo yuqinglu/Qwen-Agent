@@ -710,37 +710,36 @@ def build_ride_hailing_cards_from_didi_result(
         return None
 
 
-def build_driver_card_from_query_result(
-    order_id: str,
-    query_result: Any,
-) -> Optional[Dict]:
+def _parse_driver_query_info(query_result: Any) -> Optional[Dict]:
     """
-    从 Didi-Ride-taxi_query_order 的返回结果解析司机接单信息，构建「司机已接单」富媒体卡片。
-    支持纯文本（称呼/司机、车型、车牌、电话、距离、预估到达时长）或 JSON。
-    示例文本：
-      司机信息：
-      • 称呼：体验模式司机
-      • 车型：黑 · 奥迪 · A6
-      • 车牌：京TEST2025
-      • 电话：0000000000
-      师傅离上车点还有：2.5 公里，约需8分钟到达。
+    从 taxi_query_order 返回结果解析所有司机/行程字段，供各阶段卡片构建函数共用。
+
+    返回字段：
+        driver_name, car_model, car_plate, driver_phone,
+        distance_km, eta_minutes,
+        is_arrived (bool) — 是否检测到「司机已到达」信号
+    无法解析到任何司机信息时返回 None。
     """
     import re
-    if not order_id or query_result is None:
+
+    if query_result is None:
         return None
-    text = str(query_result) if not isinstance(query_result, dict) else json.dumps(query_result, ensure_ascii=False)
+
+    text = (
+        str(query_result)
+        if not isinstance(query_result, dict)
+        else json.dumps(query_result, ensure_ascii=False)
+    )
     obj = query_result if isinstance(query_result, dict) else None
     if obj is None and isinstance(query_result, str) and query_result.strip().startswith(("{", "[")):
         try:
             obj = json.loads(query_result)
         except Exception:
             pass
-    driver_name = None
-    car_model = None
-    car_plate = None
-    driver_phone = None
-    distance_km = None
-    eta_minutes = None
+
+    driver_name = car_model = car_plate = driver_phone = None
+    distance_km = eta_minutes = None
+
     if obj and isinstance(obj, dict):
         driver_name = obj.get("driver_name") or obj.get("driverName") or obj.get("司机") or obj.get("称呼")
         car_model = obj.get("car_model") or obj.get("carModel") or obj.get("车型") or obj.get("vehicle_info")
@@ -748,9 +747,9 @@ def build_driver_card_from_query_result(
         driver_phone = obj.get("driver_phone") or obj.get("driverPhone") or obj.get("电话")
         distance_km = obj.get("distance_km") or obj.get("distanceKm")
         eta_minutes = obj.get("eta_minutes") or obj.get("etaMinutes")
+
     # 从纯文本解析（MCP 常返回多行文本）
     if not (driver_name and car_plate and driver_phone and car_model):
-        # 称呼：体验模式司机（优先于「司机：」）
         if not driver_name:
             m = re.search(r"称呼[：:]\s*([^\n•]+)", text)
             if m:
@@ -759,17 +758,14 @@ def build_driver_card_from_query_result(
             m = re.search(r"司机[：:]\s*([^\n•]+)", text)
             if m:
                 driver_name = m.group(1).strip()
-        # 车型：黑 · 奥迪 · A6
         if not car_model:
             m = re.search(r"车型[：:]\s*([^\n•]+)", text)
             if m:
                 car_model = m.group(1).strip()
-        # 车牌
         if not car_plate:
             m = re.search(r"车牌[：:]\s*([^\n•]+)", text)
             if m:
                 car_plate = m.group(1).strip()
-        # 电话（司机信息块内的「电话：」）
         if not driver_phone:
             m = re.search(r"[•\s]电话[：:]\s*([^\n]+)", text)
             if m:
@@ -782,7 +778,6 @@ def build_driver_card_from_query_result(
                 for m in re.finditer(r"1[3-9]\d{9}", text):
                     driver_phone = m.group(0)
                     break
-        # 师傅离上车点还有：2.5 公里，约需8分钟到达
         if distance_km is None:
             m = re.search(r"(?:离上车点)?还有[：:]\s*([\d.]+)\s*公里", text)
             if m:
@@ -797,41 +792,182 @@ def build_driver_card_from_query_result(
                     eta_minutes = int(m.group(1))
                 except ValueError:
                     eta_minutes = m.group(1)
+
     if not driver_name and not car_plate and not driver_phone:
         return None
-    subtitle_parts = []
-    if driver_name:
-        subtitle_parts.append(driver_name)
-    if car_model:
-        subtitle_parts.append(car_model)
-    if car_plate:
-        subtitle_parts.append(f"车牌 {car_plate}")
-    if driver_phone:
-        subtitle_parts.append(f"电话 {driver_phone}")
-    if distance_km is not None:
-        subtitle_parts.append(f"{distance_km} 公里")
-    if eta_minutes is not None:
-        subtitle_parts.append(f"约 {eta_minutes} 分钟到达")
-    card_id = f"ride_driver_{order_id}_{uuid.uuid4().hex[:6]}"
-    data = {
-        "order_id": order_id,
-        "stage": "driver_assigned",
+
+    # 检测「司机已到达」信号
+    _arrived_patterns = ("已到达", "已抵达", "等待乘客", "到达上车点", "到达起点", "driver arrived", "已到上车点")
+    is_arrived = any(p in text for p in _arrived_patterns)
+
+    return {
         "driver_name": driver_name,
+        "car_model": car_model,
         "car_plate": car_plate,
         "driver_phone": driver_phone,
+        "distance_km": distance_km,
+        "eta_minutes": eta_minutes,
+        "is_arrived": is_arrived,
     }
-    if car_model is not None:
-        data["car_model"] = car_model
-    if distance_km is not None:
-        data["distance_km"] = distance_km
-    if eta_minutes is not None:
-        data["eta_minutes"] = eta_minutes
+
+
+def build_driver_card_from_query_result(
+    order_id: str,
+    query_result: Any,
+) -> Optional[Dict]:
+    """
+    从 taxi_query_order 结果构建「司机已接单」卡片（stage: driver_assigned）。
+
+    示例文本：
+      司机信息：
+      • 称呼：体验模式司机
+      • 车型：黑 · 奥迪 · A6
+      • 车牌：京TEST2025
+      • 电话：0000000000
+      师傅离上车点还有：2.5 公里，约需8分钟到达。
+    """
+    if not order_id:
+        return None
+    info = _parse_driver_query_info(query_result)
+    if not info:
+        return None
+
+    subtitle_parts = []
+    if info["driver_name"]:
+        subtitle_parts.append(info["driver_name"])
+    if info["car_model"]:
+        subtitle_parts.append(info["car_model"])
+    if info["car_plate"]:
+        subtitle_parts.append(f"车牌 {info['car_plate']}")
+    if info["driver_phone"]:
+        subtitle_parts.append(f"电话 {info['driver_phone']}")
+    if info["distance_km"] is not None:
+        subtitle_parts.append(f"{info['distance_km']} 公里")
+    if info["eta_minutes"] is not None:
+        subtitle_parts.append(f"约 {info['eta_minutes']} 分钟到达")
+
+    data: Dict[str, Any] = {
+        "order_id": order_id,
+        "stage": "driver_assigned",
+        "driver_name": info["driver_name"],
+        "car_plate": info["car_plate"],
+        "driver_phone": info["driver_phone"],
+    }
+    if info["car_model"] is not None:
+        data["car_model"] = info["car_model"]
+    if info["distance_km"] is not None:
+        data["distance_km"] = info["distance_km"]
+    if info["eta_minutes"] is not None:
+        data["eta_minutes"] = info["eta_minutes"]
+
     return {
-        "card_id": card_id,
+        "card_id": f"ride_driver_{order_id}_{uuid.uuid4().hex[:6]}",
         "card_type": "ride_hailing",
         "title": "司机已接单",
         "subtitle": " | ".join(subtitle_parts) if subtitle_parts else "可查看司机与车辆信息",
         "icon": "🚕",
+        "data": data,
+        "source": "Didi-Ride-taxi_query_order",
+        "created_at": datetime.now().isoformat(),
+        "updated_at": datetime.now().isoformat(),
+        "expires_at": None,
+    }
+
+
+def build_driver_approaching_card(
+    order_id: str,
+    query_result: Any,
+) -> Optional[Dict]:
+    """
+    从 taxi_query_order 结果构建「司机即将到达」卡片（stage: driver_approaching）。
+
+    仅当能解析到 eta_minutes 或 distance_km 时才构建，由调用方控制只推送一次。
+    """
+    if not order_id:
+        return None
+    info = _parse_driver_query_info(query_result)
+    if not info:
+        return None
+    if info["eta_minutes"] is None and info["distance_km"] is None:
+        return None
+
+    subtitle_parts = []
+    if info["eta_minutes"] is not None:
+        subtitle_parts.append(f"预计 {info['eta_minutes']} 分钟后到达")
+    if info["distance_km"] is not None:
+        subtitle_parts.append(f"距起点 {info['distance_km']} 公里")
+    if info["driver_name"]:
+        subtitle_parts.append(info["driver_name"])
+    if info["car_plate"]:
+        subtitle_parts.append(f"车牌 {info['car_plate']}")
+
+    data: Dict[str, Any] = {
+        "order_id": order_id,
+        "stage": "driver_approaching",
+        "driver_name": info["driver_name"],
+        "car_plate": info["car_plate"],
+        "driver_phone": info["driver_phone"],
+    }
+    if info["car_model"] is not None:
+        data["car_model"] = info["car_model"]
+    if info["distance_km"] is not None:
+        data["distance_km"] = info["distance_km"]
+    if info["eta_minutes"] is not None:
+        data["eta_minutes"] = info["eta_minutes"]
+
+    return {
+        "card_id": f"ride_approaching_{order_id}_{uuid.uuid4().hex[:6]}",
+        "card_type": "ride_hailing",
+        "title": "司机即将到达",
+        "subtitle": " | ".join(subtitle_parts) if subtitle_parts else "司机正在赶来",
+        "icon": "🚗",
+        "data": data,
+        "source": "Didi-Ride-taxi_query_order",
+        "created_at": datetime.now().isoformat(),
+        "updated_at": datetime.now().isoformat(),
+        "expires_at": None,
+    }
+
+
+def build_driver_arrived_card(
+    order_id: str,
+    query_result: Any,
+) -> Optional[Dict]:
+    """
+    从 taxi_query_order 结果构建「司机已到达起点」卡片（stage: driver_arrived）。
+
+    仅当检测到「到达」信号（已到达/已抵达/等待乘客等）时才构建。
+    """
+    if not order_id:
+        return None
+    info = _parse_driver_query_info(query_result)
+    if not info or not info["is_arrived"]:
+        return None
+
+    subtitle_parts = []
+    if info["driver_name"]:
+        subtitle_parts.append(info["driver_name"])
+    if info["car_plate"]:
+        subtitle_parts.append(f"车牌 {info['car_plate']}")
+    if info["driver_phone"]:
+        subtitle_parts.append(f"电话 {info['driver_phone']}")
+
+    data: Dict[str, Any] = {
+        "order_id": order_id,
+        "stage": "driver_arrived",
+        "driver_name": info["driver_name"],
+        "car_plate": info["car_plate"],
+        "driver_phone": info["driver_phone"],
+    }
+    if info["car_model"] is not None:
+        data["car_model"] = info["car_model"]
+
+    return {
+        "card_id": f"ride_arrived_{order_id}_{uuid.uuid4().hex[:6]}",
+        "card_type": "ride_hailing",
+        "title": "司机已到达起点",
+        "subtitle": " | ".join(subtitle_parts) if subtitle_parts else "请出发上车",
+        "icon": "📍",
         "data": data,
         "source": "Didi-Ride-taxi_query_order",
         "created_at": datetime.now().isoformat(),
