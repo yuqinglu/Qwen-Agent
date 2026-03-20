@@ -195,9 +195,12 @@ class TodoChatSSEService:
                 duration_ms = int((datetime.now() - start_time).total_seconds() * 1000)
                 yield self._format_sse_event("done", {
                     "message_id": message_id,
+                    "full_content": simple_reply,
+                    "total_audio_duration_ms": 0,
+                    "timestamp": datetime.now().isoformat(),
                     "session_id": session.session_id,
                     "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
-                    "duration_ms": duration_ms
+                    "duration_ms": duration_ms,
                 })
                 
                 logger.info(f"✅ 简单聊天处理完成: session={session.session_id}, duration={duration_ms}ms")
@@ -390,9 +393,12 @@ class TodoChatSSEService:
             
             yield self._format_sse_event("done", {
                 "message_id": message_id,
+                "full_content": full_message_content,
+                "total_audio_duration_ms": 0,
+                "timestamp": datetime.now().isoformat(),
                 "session_id": session.session_id,
                 "usage": token_usage,
-                "duration_ms": duration_ms
+                "duration_ms": duration_ms,
             })
             
             logger.info(f"✅ 待办聊天处理完成: session={session.session_id}, duration={duration_ms}ms")
@@ -407,7 +413,10 @@ class TodoChatSSEService:
             })
             yield self._format_sse_event("done", {
                 "message_id": None,
-                "error": True
+                "full_content": "",
+                "total_audio_duration_ms": 0,
+                "timestamp": datetime.now().isoformat(),
+                "error": True,
             })
     
     async def _init_session(
