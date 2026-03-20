@@ -17,6 +17,7 @@ from .general_chat_manager import get_general_chat_manager, SessionWrapper
 from .tts_service import get_tts_service, TTSConfig
 from .smart_sentence_splitter import get_sentence_splitter
 from .ugc_client import get_ugc_client
+from .card_island_client import get_card_island_client
 from .user_manager import user_manager
 from .skills import get_skill_registry_lazy, get_scenario_skill
 from .todo_chat_sse_service import ExecutionStep
@@ -41,7 +42,10 @@ class GeneralChatWebSocketService:
         
         # 当前正在进行的生成任务 {connection_id: asyncio.Task}，用于 interrupt 取消
         self._generation_tasks: Dict[str, asyncio.Task] = {}
-        
+
+        # 订单后台轮询任务 {order_id: asyncio.Task}，与 WebSocket 生命周期解耦
+        self._order_poll_tasks: Dict[str, asyncio.Task] = {}
+
         logger.info("✅ 通用聊天WebSocket服务初始化完成")
     
     async def handle_connection(
@@ -384,7 +388,7 @@ class GeneralChatWebSocketService:
             business_actions_done: List[str] = []
             plan_result: Optional[Dict[str, Any]] = None
             if enable_deep_thinking:
-                # 深度思考模式：先调用大模型做任务规划；多轮对话时传入最近几轮，避免把简短回复（如「万科锦绣滨江」）误判成新意图
+                # 深度思考模式：先调用大模型做任务规划；多轮对话时传入最近几轮，避免把简短回复误判成新意图
                 from .deep_thinking_planner import plan_with_llm
                 recent_dialogue: List[Dict[str, str]] = []
                 if session and getattr(session, "messages", None):
@@ -523,9 +527,6 @@ class GeneralChatWebSocketService:
                 if m.get("role") == "user"
             ]
             _scenario = get_scenario_skill(user_message, history_messages=history_user_texts)
-            # 本轮订单成功创建后需等待司机接单的订单号（在 done 发送前 await，保证 done 始终最后）
-            _pending_driver_poll_order_id: Optional[str] = None
-            _pending_driver_poll_tts_cfg: Optional[TTSConfig] = None
 
             async for chunk in self._stream_agent_response(
                 agent, history_messages, deep_thinking,
@@ -809,20 +810,7 @@ class GeneralChatWebSocketService:
                                     )
                                     self.chat_manager.add_card_to_session(session_id=session_id, card=card)
                                     new_cards_this_turn.append(card)
-                                    await self._send_json(websocket, {
-                                        "type": "rich_card",
-                                        "card_id": card.get("card_id"),
-                                        "card_type": card.get("card_type"),
-                                        "title": card.get("title"),
-                                        "subtitle": card.get("subtitle"),
-                                        "icon": card.get("icon"),
-                                        "data": card.get("data", {}),
-                                        "source": card.get("source"),
-                                        "created_at": card.get("created_at"),
-                                        "updated_at": card.get("updated_at"),
-                                        "expires_at": card.get("expires_at"),
-                                        "timestamp": datetime.now().isoformat(),
-                                    })
+                                    await self._push_rich_card(user_id, card, websocket)
                                     logger.info(f"🎴 打车卡片已创建并推送: {card.get('card_type')} - {card.get('title')}")
                                     if (card.get("data") or {}).get("stage") == "confirm":
                                         _pushed_ride_confirm_cards_this_turn = True
@@ -859,13 +847,23 @@ class GeneralChatWebSocketService:
                                 )
                                 _ride_confirm_tts_sent_this_turn = True
                                 _last_ride_confirm_tts_sent = ride_confirm_tts
-                            # 若为本轮推送的订单成功卡片，记录订单号，在 done 之前 await 轮询，确保司机卡片先于 done 发送
+                            # 若为本轮推送的订单成功卡片，立即启动后台轮询（去重保护）
                             for card in (ride_cards or []):
                                 data = card.get("data") or {}
                                 if data.get("stage") == "success" and data.get("order_id"):
-                                    self.chat_manager.set_last_ride_order_id(session_id, data["order_id"])
-                                    _pending_driver_poll_order_id = data["order_id"]
-                                    _pending_driver_poll_tts_cfg = tts_cfg
+                                    oid = data["order_id"]
+                                    self.chat_manager.set_last_ride_order_id(session_id, oid)
+                                    if oid not in self._order_poll_tasks or self._order_poll_tasks[oid].done():
+                                        self._order_poll_tasks[oid] = asyncio.create_task(
+                                            self._poll_ride_order_background(
+                                                user_id=user_id,
+                                                session_id=session_id,
+                                                order_id=oid,
+                                                enable_tts=enable_tts,
+                                                tts_config=tts_cfg,
+                                            )
+                                        )
+                                        logger.info(f"🚀 订单轮询后台任务已启动: order_id={oid}")
                                     break
 
                         # 日历 MCP：待办创建/更新/删除 → 本地待办卡片（无则新建，有则更新/删除）
@@ -907,20 +905,7 @@ class GeneralChatWebSocketService:
                                         self.chat_manager.add_card_to_session(session_id=session_id, card=card_or_none)
                                         new_cards_this_turn.append(card_or_none)
                                         logger.info(f"🎴 待办卡片已创建并推送: event_id={ev_id}, title={card_or_none.get('title')}")
-                                    await self._send_json(websocket, {
-                                        "type": "rich_card",
-                                        "card_id": card_or_none.get("card_id"),
-                                        "card_type": "todo",
-                                        "title": card_or_none.get("title"),
-                                        "subtitle": card_or_none.get("subtitle"),
-                                        "icon": card_or_none.get("icon"),
-                                        "data": card_or_none.get("data", {}),
-                                        "source": card_or_none.get("source"),
-                                        "created_at": card_or_none.get("created_at"),
-                                        "updated_at": card_or_none.get("updated_at"),
-                                        "expires_at": card_or_none.get("expires_at"),
-                                        "timestamp": datetime.now().isoformat(),
-                                    })
+                                    await self._push_rich_card(user_id, card_or_none, websocket)
                                 except Exception as e:
                                     logger.warning(f"⚠️ 待办卡片创建/更新失败: {e}")
                             elif action == "update" and card_or_none:
@@ -935,20 +920,7 @@ class GeneralChatWebSocketService:
                                             data=card_or_none.get("data"),
                                             source=card_or_none.get("source"),
                                         )
-                                        await self._send_json(websocket, {
-                                            "type": "rich_card",
-                                            "card_id": cid,
-                                            "card_type": "todo",
-                                            "title": card_or_none.get("title"),
-                                            "subtitle": card_or_none.get("subtitle"),
-                                            "icon": card_or_none.get("icon"),
-                                            "data": card_or_none.get("data", {}),
-                                            "source": card_or_none.get("source"),
-                                            "created_at": card_or_none.get("created_at"),
-                                            "updated_at": card_or_none.get("updated_at"),
-                                            "expires_at": card_or_none.get("expires_at"),
-                                            "timestamp": datetime.now().isoformat(),
-                                        })
+                                        await self._push_rich_card(user_id, card_or_none, websocket)
                                         logger.info(f"🎴 待办卡片已更新并推送: event_id={ev_id}")
                                     except Exception as e:
                                         logger.warning(f"⚠️ 待办卡片更新失败: {e}")
@@ -992,20 +964,7 @@ class GeneralChatWebSocketService:
                                 )
                                 self.chat_manager.add_card_to_session(session_id=session_id, card=weather_card)
                                 new_cards_this_turn.append(weather_card)
-                                await self._send_json(websocket, {
-                                    "type": "rich_card",
-                                    "card_id": weather_card.get("card_id"),
-                                    "card_type": weather_card.get("card_type"),
-                                    "title": weather_card.get("title"),
-                                    "subtitle": weather_card.get("subtitle"),
-                                    "icon": weather_card.get("icon"),
-                                    "data": weather_card.get("data", {}),
-                                    "source": weather_card.get("source"),
-                                    "created_at": weather_card.get("created_at"),
-                                    "updated_at": weather_card.get("updated_at"),
-                                    "expires_at": weather_card.get("expires_at"),
-                                    "timestamp": datetime.now().isoformat(),
-                                })
+                                await self._push_rich_card(user_id, weather_card, websocket)
                                 logger.info(f"🎴 天气卡片已创建并推送: {weather_card.get('card_type')} - {weather_card.get('title')}")
                             except Exception as e:
                                 logger.warning(f"⚠️ 天气卡片创建失败: {e}")
@@ -1091,24 +1050,7 @@ class GeneralChatWebSocketService:
                         "timestamp": datetime.now().isoformat(),
                     })
 
-                # 在发送 done 之前等待司机接单卡片（若有），确保 done 始终是本轮最后一条消息
-                if _pending_driver_poll_order_id:
-                    try:
-                        await asyncio.wait_for(
-                            self._poll_ride_order_until_driver(
-                                websocket=websocket,
-                                session_id=session_id,
-                                user_id=user_id,
-                                order_id=_pending_driver_poll_order_id,
-                                enable_tts=enable_tts,
-                                tts_config=_pending_driver_poll_tts_cfg,
-                            ),
-                            timeout=30.0,
-                        )
-                    except asyncio.TimeoutError:
-                        logger.info("⏱️ 等待司机接单超时（30s），直接发送 done")
-
-                # 发送完成事件（确保 done 始终在最后）
+                # 发送完成事件
                 await self._send_json(websocket, {
                     "type": "done",
                     "message_id": ai_msg.message_id if ai_msg else None,
@@ -1654,7 +1596,6 @@ class GeneralChatWebSocketService:
         card_manager = get_rich_card_manager()
         # 本次“确认叫车”直接创建订单流程中新生成的卡片，只应绑定到本轮助手消息
         new_cards: List[Dict[str, Any]] = []
-        _pending_order_id: Optional[str] = None  # 等待司机接单的订单号，done 发送前 await
         if ride_cards:
             for card in ride_cards:
                 try:
@@ -1672,25 +1613,24 @@ class GeneralChatWebSocketService:
                     )
                     self.chat_manager.add_card_to_session(session_id=session_id, card=card)
                     new_cards.append(card)
-                    await self._send_json(websocket, {
-                        "type": "rich_card",
-                        "card_id": card.get("card_id"),
-                        "card_type": card.get("card_type"),
-                        "title": card.get("title"),
-                        "subtitle": card.get("subtitle"),
-                        "icon": card.get("icon"),
-                        "data": card.get("data", {}),
-                        "source": card.get("source"),
-                        "created_at": card.get("created_at"),
-                        "updated_at": card.get("updated_at"),
-                        "expires_at": card.get("expires_at"),
-                        "timestamp": datetime.now().isoformat(),
-                    })
+                    await self._push_rich_card(user_id, card, websocket)
                     logger.info(f"🎴 打车卡片已创建并推送: {card.get('card_type')} - {card.get('title')}")
                     data = card.get("data") or {}
                     if data.get("stage") == "success" and data.get("order_id"):
-                        self.chat_manager.set_last_ride_order_id(session_id, data["order_id"])
-                        _pending_order_id = data["order_id"]  # 记录待轮询订单，done 前等待司机接单
+                        oid = data["order_id"]
+                        self.chat_manager.set_last_ride_order_id(session_id, oid)
+                        # 立即启动后台轮询，不等 done 阶段（去重保护）
+                        if oid not in self._order_poll_tasks or self._order_poll_tasks[oid].done():
+                            self._order_poll_tasks[oid] = asyncio.create_task(
+                                self._poll_ride_order_background(
+                                    user_id=user_id,
+                                    session_id=session_id,
+                                    order_id=oid,
+                                    enable_tts=enable_tts,
+                                    tts_config=tts_config,
+                                )
+                            )
+                            logger.info(f"🚀 订单轮询后台任务已启动: order_id={oid}")
                         break
                 except Exception as e:
                     logger.warning(f"⚠️ 打车卡片创建失败: {e}")
@@ -1708,22 +1648,6 @@ class GeneralChatWebSocketService:
                 text=tts_text,
                 tts_config=tts_config,
             )
-        # 在发送 done 之前等待司机接单卡片推送完成，确保 done 始终是本轮最后一条消息
-        if _pending_order_id:
-            try:
-                await asyncio.wait_for(
-                    self._poll_ride_order_until_driver(
-                        websocket=websocket,
-                        session_id=session_id,
-                        user_id=user_id,
-                        order_id=_pending_order_id,
-                        enable_tts=enable_tts,
-                        tts_config=tts_config,
-                    ),
-                    timeout=30.0,
-                )
-            except asyncio.TimeoutError:
-                logger.info("⏱️ 等待司机接单超时（30s），直接发送 done")
         # 仅将此次叫车流程中新生成的卡片绑定到本条助手消息
         ai_msg = self.chat_manager.add_message(
             session_id=session_id,
@@ -1796,6 +1720,33 @@ class GeneralChatWebSocketService:
         success = "取消成功" in result_text or "已取消" in result_text
         if success:
             self.chat_manager.clear_last_ride_order_id(session_id)
+            # 停止后台订单轮询任务（若存在）
+            poll_task = self._order_poll_tasks.pop(order_id, None)
+            if poll_task and not poll_task.done():
+                poll_task.cancel()
+                logger.info(f"🛑 订单取消，后台轮询任务已停止: order_id={order_id}")
+            # 推送取消卡片到 WebSocket + 卡片岛
+            from datetime import datetime as _dt
+            cancel_card = {
+                "card_id": f"ride_cancelled_{order_id}",
+                "card_type": "ride_hailing",
+                "title": "订单已取消",
+                "subtitle": f"订单号: {order_id}",
+                "icon": "🚫",
+                "data": {
+                    "stage": "cancelled",
+                    "order_id": order_id,
+                },
+                "source": "Didi-Ride-taxi_cancel_order",
+                "created_at": _dt.now().isoformat(),
+                "updated_at": _dt.now().isoformat(),
+                "expires_at": None,
+            }
+            try:
+                await self._push_rich_card(user_id, cancel_card, websocket=websocket)
+                logger.info(f"🎴 取消卡片已推送: order_id={order_id}")
+            except Exception as _e:
+                logger.warning(f"⚠️ 取消卡片推送失败: {_e}")
             tts_text = "已为您取消叫车订单。"
         else:
             tts_text = result_text if len(result_text) < 80 else "取消订单失败，请稍后重试或联系客服。"
@@ -1835,95 +1786,152 @@ class GeneralChatWebSocketService:
             "timestamp": datetime.now().isoformat(),
         })
 
-    async def _poll_ride_order_until_driver(
+    async def _poll_ride_order_background(
         self,
-        websocket: WebSocket,
-        session_id: str,
         user_id: int,
+        session_id: str,
         order_id: str,
         enable_tts: bool = False,
         tts_config: Optional[TTSConfig] = None,
-        poll_interval_sec: float = 3.0,
-        max_polls: int = 20,
+        poll_interval_sec: float = 5.0,
+        max_duration_sec: int = 1800,
+        approaching_eta_threshold: int = 5,
     ):
         """
-        订单创建成功后，后台轮询 taxi_query_order；司机接单后推送「司机已接单」卡片并可选 TTS。
+        订单创建成功后的后台轮询任务，与 WebSocket 生命周期完全解耦。
+
+        三阶段状态机：
+          WAITING_ASSIGN  → 等待司机接单，检测到司机信息后推送 driver_assigned 卡片，进入下一阶段
+          WAITING_ARRIVED → 继续轮询：
+              - 当 eta_minutes <= approaching_eta_threshold 且尚未推送过接近卡片时，
+                推送 driver_approaching 卡片（仅一次）
+              - 检测到「司机已到达」信号时推送 driver_arrived 卡片，然后退出
+          超出 max_duration_sec 或任务被取消时直接退出，finally 块负责清理。
         """
         from ty_mem_agent.mcp_integrations.tool_registry import get_tool_registry
         from ty_mem_agent.server.rich_card_manager import (
             build_driver_card_from_query_result,
+            build_driver_approaching_card,
+            build_driver_arrived_card,
             get_rich_card_manager,
         )
+
+        logger.info(f"🔄 订单轮询后台任务启动: order_id={order_id}, user_id={user_id}")
+
         registry = get_tool_registry()
         all_tools = registry.get_all_tools()
-        query_tool = None
-        for t in all_tools:
-            if getattr(t, "name", "") == "Didi-Ride-taxi_query_order":
-                query_tool = t
-                break
+        query_tool = next(
+            (t for t in all_tools if getattr(t, "name", "") == "Didi-Ride-taxi_query_order"),
+            None,
+        )
         if not query_tool:
-            logger.debug("未找到 Didi-Ride-taxi_query_order，跳过订单状态轮询")
+            logger.warning("未找到 Didi-Ride-taxi_query_order，跳过订单状态轮询")
             return
+
         params = json.dumps({"order_id": order_id})
-        for _ in range(max_polls):
-            await asyncio.sleep(poll_interval_sec)
-            try:
-                result = await asyncio.to_thread(query_tool.call, params)
-            except Exception as e:
-                logger.debug(f"轮询订单状态失败: {e}")
-                continue
-            driver_card = build_driver_card_from_query_result(order_id=order_id, query_result=result)
-            if not driver_card:
-                continue
-            try:
-                card_manager = get_rich_card_manager()
-                card_manager.create_card(
-                    event_id=0,
-                    user_id=user_id,
-                    card_type=driver_card.get("card_type", "ride_hailing"),
-                    title=driver_card.get("title", "司机已接单"),
-                    subtitle=driver_card.get("subtitle"),
-                    icon=driver_card.get("icon"),
-                    data=driver_card.get("data", {}),
-                    source=driver_card.get("source", ""),
-                    expires_at=driver_card.get("expires_at"),
-                    card_id=driver_card.get("card_id"),
-                )
-                self.chat_manager.add_card_to_session(session_id=session_id, card=driver_card)
-                await self._send_json(websocket, {
-                    "type": "rich_card",
-                    "card_id": driver_card.get("card_id"),
-                    "card_type": driver_card.get("card_type"),
-                    "title": driver_card.get("title"),
-                    "subtitle": driver_card.get("subtitle"),
-                    "icon": driver_card.get("icon"),
-                    "data": driver_card.get("data", {}),
-                    "source": driver_card.get("source"),
-                    "created_at": driver_card.get("created_at"),
-                    "updated_at": driver_card.get("updated_at"),
-                    "expires_at": driver_card.get("expires_at"),
+        deadline = asyncio.get_event_loop().time() + max_duration_sec
+
+        # 阶段标记
+        phase = "WAITING_ASSIGN"   # → "WAITING_ARRIVED"
+        approaching_pushed = False  # driver_approaching 卡片只推一次
+
+        async def _save_and_push(card: Dict, tts_text: str) -> None:
+            """将卡片存库、绑会话、双通道推送，并可选 TTS（WebSocket 在线时）。"""
+            conn_id = self.user_connections.get(user_id)
+            ws = self.active_connections.get(conn_id) if conn_id else None
+            card_manager = get_rich_card_manager()
+            card_manager.create_card(
+                event_id=0,
+                user_id=user_id,
+                card_type=card.get("card_type", "ride_hailing"),
+                title=card.get("title", ""),
+                subtitle=card.get("subtitle"),
+                icon=card.get("icon"),
+                data=card.get("data", {}),
+                source=card.get("source", ""),
+                expires_at=card.get("expires_at"),
+                card_id=card.get("card_id"),
+            )
+            self.chat_manager.add_card_to_session(session_id=session_id, card=card)
+            await self._push_rich_card(user_id, card, websocket=ws)
+            logger.info(
+                f"🎴 [{card.get('data', {}).get('stage')}] 卡片已推送: "
+                f"order_id={order_id}, ws_online={ws is not None}"
+            )
+            if ws and tts_text:
+                await self._emit_message_delta_for_sentence(ws, tts_text)
+                await self._send_json(ws, {
+                    "type": "sentence_complete",
+                    "sentence": tts_text,
                     "timestamp": datetime.now().isoformat(),
                 })
-                logger.info("🎴 司机已接单卡片已推送")
-                d = driver_card.get("data") or {}
-                tts_text = f"司机已接单。"
-                if d.get("driver_name"):
-                    tts_text += f"司机{d.get('driver_name')}。"
-                if d.get("car_plate"):
-                    tts_text += f"车牌{d.get('car_plate')}。"
-                if tts_text:
-                    await self._emit_message_delta_for_sentence(websocket, tts_text)
-                    await self._send_json(websocket, {
-                        "type": "sentence_complete",
-                        "sentence": tts_text,
-                        "timestamp": datetime.now().isoformat(),
-                    })
-                if enable_tts and tts_text:
-                    await self._generate_and_send_audio(websocket, tts_text, tts_config)
-            except Exception as e:
-                logger.warning(f"推送司机接单卡片或 TTS 失败: {e}")
-            break
-        logger.debug(f"订单 {order_id} 轮询 {max_polls} 次后未获取到司机信息，停止轮询")
+                if enable_tts:
+                    await self._generate_and_send_audio(ws, tts_text, tts_config)
+
+        try:
+            while asyncio.get_event_loop().time() < deadline:
+                await asyncio.sleep(poll_interval_sec)
+
+                try:
+                    result = await asyncio.to_thread(query_tool.call, params)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.debug(f"轮询订单状态失败（将重试）: {exc}")
+                    continue
+
+                try:
+                    if phase == "WAITING_ASSIGN":
+                        card = build_driver_card_from_query_result(
+                            order_id=order_id, query_result=result
+                        )
+                        if card:
+                            d = card.get("data") or {}
+                            tts = "司机已接单。"
+                            if d.get("driver_name"):
+                                tts += f"司机{d['driver_name']}。"
+                            if d.get("car_plate"):
+                                tts += f"车牌{d['car_plate']}。"
+                            if d.get("eta_minutes") is not None:
+                                tts += f"预计{d['eta_minutes']}分钟后到达。"
+                            await _save_and_push(card, tts)
+                            phase = "WAITING_ARRIVED"
+
+                    elif phase == "WAITING_ARRIVED":
+                        # 优先检测「已到达」，到达后立即退出
+                        arrived_card = build_driver_arrived_card(
+                            order_id=order_id, query_result=result
+                        )
+                        if arrived_card:
+                            await _save_and_push(arrived_card, "司机已到达起点，请出发上车。")
+                            break  # 终态，退出轮询
+
+                        # 检测「即将到达」（eta 可用且 <= 阈值），仅推一次
+                        if not approaching_pushed:
+                            approaching_card = build_driver_approaching_card(
+                                order_id=order_id, query_result=result
+                            )
+                            if approaching_card:
+                                d = approaching_card.get("data") or {}
+                                eta = d.get("eta_minutes")
+                                if eta is not None and int(eta) <= approaching_eta_threshold:
+                                    tts = f"司机即将到达，预计{eta}分钟后到达，请做好准备。"
+                                    await _save_and_push(approaching_card, tts)
+                                    approaching_pushed = True
+
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.warning(f"轮询状态处理失败（将重试）: {exc}")
+
+            else:
+                logger.debug(f"订单 {order_id} 轮询超时（{max_duration_sec}s），停止轮询")
+
+        except asyncio.CancelledError:
+            logger.info(f"🛑 订单轮询后台任务被取消: order_id={order_id}")
+        finally:
+            self._order_poll_tasks.pop(order_id, None)
+            logger.debug(f"🧹 订单轮询任务清理完成: order_id={order_id}")
     
     async def _generate_and_send_audio(
         self,
@@ -2091,6 +2099,54 @@ class GeneralChatWebSocketService:
             lambda: self._generate_session_title_sync(user_message or "")
         )
     
+    async def _push_rich_card(
+        self,
+        user_id: int,
+        card: Dict[str, Any],
+        websocket: Optional[WebSocket] = None,
+    ) -> None:
+        """
+        统一卡片推送入口：同时向 WebSocket（在线时）和卡片岛（始终）推送。
+
+        - WebSocket 推送同步执行，失败时向上抛出（由调用方捕获）。
+        - 卡片岛 publish 以 fire-and-forget 方式执行（asyncio.create_task），
+          其失败不影响 WebSocket 推送，仅记录 warning 日志。
+        - detail 字段与 WebSocket rich_card 消息字段完全一致，客户端用同一套代码解析。
+        """
+        # 1) WebSocket 推送
+        if websocket is not None:
+            await self._send_json(websocket, {
+                "type": "rich_card",
+                "card_id": card.get("card_id"),
+                "card_type": card.get("card_type"),
+                "title": card.get("title"),
+                "subtitle": card.get("subtitle"),
+                "icon": card.get("icon"),
+                "data": card.get("data", {}),
+                "source": card.get("source"),
+                "created_at": card.get("created_at"),
+                "updated_at": card.get("updated_at"),
+                "expires_at": card.get("expires_at"),
+                "timestamp": datetime.now().isoformat(),
+            })
+
+        # 2) 卡片岛推送（fire-and-forget）
+        card_type = card.get("card_type") or "unknown"
+        detail = json.dumps(card, ensure_ascii=False)
+
+        async def _publish_to_island():
+            try:
+                await asyncio.to_thread(
+                    get_card_island_client().publish,
+                    user_id,
+                    [{"type": card_type, "detail": detail}],
+                )
+                logger.debug(f"🏝️ 卡片岛推送成功: user_id={user_id}, type={card_type}")
+            except Exception as exc:
+                logger.warning(f"⚠️ 卡片岛推送失败（不影响主流程）: {exc}")
+
+        asyncio.create_task(_publish_to_island())
+
     async def _send_json(self, websocket: WebSocket, data: Dict):
         """
         发送JSON消息
