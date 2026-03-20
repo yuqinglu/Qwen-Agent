@@ -1155,7 +1155,6 @@ async def get_todo_chat_messages(
             messages = messages[-limit:]
         
         # 判断是否还有更多消息
-        total_count = len(session.messages)
         has_more = len(session.messages) > limit
         
         if messages:
@@ -1173,11 +1172,27 @@ async def get_todo_chat_messages(
             "code": 0,
             "msg": "success",
             "data": {
-                "messages": [msg.to_dict() for msg in messages],
+                "session": {
+                    "session_id": session.session_id,
+                    "title": session.title,
+                    "created_at": session.created_at,
+                    "updated_at": session.updated_at,
+                    "message_count": len(session.messages),
+                },
+                "messages": [
+                    {
+                        "message_id": msg.message_id,
+                        "role": msg.role,
+                        "content": msg.content,
+                        "timestamp": msg.timestamp,
+                        "rich_cards": msg.rich_cards if hasattr(msg, "rich_cards") else [],
+                        "attachments": [],
+                    }
+                    for msg in messages
+                ],
                 "has_more": has_more,
                 "oldest_message_id": oldest_message_id,
                 "newest_message_id": newest_message_id,
-                "total": total_count,
             },
         }
 
