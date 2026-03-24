@@ -1793,7 +1793,7 @@ class GeneralChatWebSocketService:
         order_id: str,
         enable_tts: bool = False,
         tts_config: Optional[TTSConfig] = None,
-        poll_interval_sec: float = 5.0,
+        poll_interval_sec: float = 10.0,
         max_duration_sec: int = 1800,
         approaching_eta_threshold: int = 5,
     ):
@@ -1806,7 +1806,8 @@ class GeneralChatWebSocketService:
               - 当 eta_minutes <= approaching_eta_threshold 且尚未推送过接近卡片时，
                 推送 driver_approaching 卡片（仅一次）
               - 检测到「司机已到达」信号时推送 driver_arrived 卡片，然后退出
-          超出 max_duration_sec 或任务被取消时直接退出，finally 块负责清理。
+          超出 max_duration_sec、MCP taxi_query_order 配额/限流（quota exceeded）、
+          或任务被取消时直接退出，finally 块负责清理。
         """
         from ty_mem_agent.mcp_integrations.tool_registry import get_tool_registry
         from ty_mem_agent.server.rich_card_manager import (
@@ -1877,6 +1878,16 @@ class GeneralChatWebSocketService:
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
+                    err_lower = str(exc).lower()
+                    if (
+                        "quota exceeded" in err_lower
+                        or "rate limit exceeded" in err_lower
+                    ):
+                        logger.warning(
+                            f"🛑 订单轮询因 MCP 配额/限流退出，不再重试: "
+                            f"order_id={order_id}, err={exc}"
+                        )
+                        break
                     logger.debug(f"轮询订单状态失败（将重试）: {exc}")
                     continue
 
