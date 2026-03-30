@@ -1718,6 +1718,7 @@ class GeneralChatWebSocketService:
             "timestamp": datetime.now().isoformat(),
         })
         success = "取消成功" in result_text or "已取消" in result_text
+        rich_cards_for_done: Optional[List[Dict[str, Any]]] = None
         if success:
             self.chat_manager.clear_last_ride_order_id(session_id)
             # 停止后台订单轮询任务（若存在）
@@ -1725,8 +1726,6 @@ class GeneralChatWebSocketService:
             if poll_task and not poll_task.done():
                 poll_task.cancel()
                 logger.info(f"🛑 订单取消，后台轮询任务已停止: order_id={order_id}")
-            # 推送取消卡片到 WebSocket + 卡片岛
-            from datetime import datetime as _dt
             cancel_card = {
                 "card_id": f"ride_cancelled_{order_id}",
                 "card_type": "ride_hailing",
@@ -1738,19 +1737,45 @@ class GeneralChatWebSocketService:
                     "order_id": order_id,
                 },
                 "source": "Didi-Ride-taxi_cancel_order",
-                "created_at": _dt.now().isoformat(),
-                "updated_at": _dt.now().isoformat(),
+                "created_at": datetime.now().isoformat(),
+                "updated_at": datetime.now().isoformat(),
                 "expires_at": None,
             }
+            try:
+                from ty_mem_agent.server.rich_card_manager import get_rich_card_manager
+
+                get_rich_card_manager().create_card(
+                    event_id=0,
+                    user_id=user_id,
+                    card_type=cancel_card.get("card_type", "ride_hailing"),
+                    title=cancel_card.get("title", "订单已取消"),
+                    subtitle=cancel_card.get("subtitle"),
+                    icon=cancel_card.get("icon"),
+                    data=cancel_card.get("data", {}),
+                    source=cancel_card.get("source"),
+                    expires_at=cancel_card.get("expires_at"),
+                    card_id=cancel_card.get("card_id"),
+                )
+                self.chat_manager.add_card_to_session(session_id=session_id, card=cancel_card)
+            except Exception as _pe:
+                logger.warning(f"⚠️ 取消卡片持久化失败: {_pe}")
             try:
                 await self._push_rich_card(user_id, cancel_card, websocket=websocket)
                 logger.info(f"🎴 取消卡片已推送: order_id={order_id}")
             except Exception as _e:
                 logger.warning(f"⚠️ 取消卡片推送失败: {_e}")
             tts_text = "已为您取消叫车订单。"
+            rich_cards_for_done = [cancel_card]
         else:
             tts_text = result_text if len(result_text) < 80 else "取消订单失败，请稍后重试或联系客服。"
-        await self._send_cancel_result_and_done(websocket, session_id, tts_text, enable_tts, tts_config)
+        await self._send_cancel_result_and_done(
+            websocket,
+            session_id,
+            tts_text,
+            enable_tts,
+            tts_config,
+            rich_cards=rich_cards_for_done,
+        )
         logger.info("✅ 取消订单已处理：已直接调用 taxi_cancel_order")
         return True
     
@@ -1761,6 +1786,7 @@ class GeneralChatWebSocketService:
         content: str,
         enable_tts: bool,
         tts_config: Optional[TTSConfig],
+        rich_cards: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         """发送取消订单后的文案流（message_delta + sentence_complete）、可选 TTS、助手消息和 done 事件"""
         await self._emit_message_delta_for_sentence(websocket, content)
@@ -1771,12 +1797,11 @@ class GeneralChatWebSocketService:
         })
         if enable_tts and tts_config:
             await self._generate_and_send_audio(websocket=websocket, text=content, tts_config=tts_config)
-        # 取消订单的回复本身不生成新卡片，这里不应把会话中所有历史卡片都挂到本条消息上
         ai_msg = self.chat_manager.add_message(
             session_id=session_id,
             role="assistant",
             content=content,
-            rich_cards=[],
+            rich_cards=rich_cards or [],
         )
         await self._send_json(websocket, {
             "type": "done",
@@ -1793,7 +1818,7 @@ class GeneralChatWebSocketService:
         order_id: str,
         enable_tts: bool = False,
         tts_config: Optional[TTSConfig] = None,
-        poll_interval_sec: float = 5.0,
+        poll_interval_sec: float = 10.0,
         max_duration_sec: int = 1800,
         approaching_eta_threshold: int = 5,
     ):
@@ -1806,7 +1831,8 @@ class GeneralChatWebSocketService:
               - 当 eta_minutes <= approaching_eta_threshold 且尚未推送过接近卡片时，
                 推送 driver_approaching 卡片（仅一次）
               - 检测到「司机已到达」信号时推送 driver_arrived 卡片，然后退出
-          超出 max_duration_sec 或任务被取消时直接退出，finally 块负责清理。
+          超出 max_duration_sec、MCP taxi_query_order 配额/限流（quota exceeded）、
+          或任务被取消时直接退出，finally 块负责清理。
         """
         from ty_mem_agent.mcp_integrations.tool_registry import get_tool_registry
         from ty_mem_agent.server.rich_card_manager import (
@@ -1814,6 +1840,7 @@ class GeneralChatWebSocketService:
             build_driver_approaching_card,
             build_driver_arrived_card,
             get_rich_card_manager,
+            is_taxi_query_order_cancelled_result,
         )
 
         logger.info(f"🔄 订单轮询后台任务启动: order_id={order_id}, user_id={user_id}")
@@ -1836,7 +1863,7 @@ class GeneralChatWebSocketService:
         approaching_pushed = False  # driver_approaching 卡片只推一次
 
         async def _save_and_push(card: Dict, tts_text: str) -> None:
-            """将卡片存库、绑会话、双通道推送，并可选 TTS（WebSocket 在线时）。"""
+            """将卡片存库、绑会话、写入会话消息 metadata、双通道推送，并可选 TTS（WebSocket 在线时）。"""
             conn_id = self.user_connections.get(user_id)
             ws = self.active_connections.get(conn_id) if conn_id else None
             card_manager = get_rich_card_manager()
@@ -1852,7 +1879,19 @@ class GeneralChatWebSocketService:
                 expires_at=card.get("expires_at"),
                 card_id=card.get("card_id"),
             )
-            self.chat_manager.add_card_to_session(session_id=session_id, card=card)
+            added = self.chat_manager.add_card_to_session(session_id=session_id, card=card)
+            if not added:
+                logger.debug(
+                    f"卡片已存在于会话，跳过消息写入与推送: card_id={card.get('card_id')}"
+                )
+                return
+            msg_content = (tts_text or "").strip() or (card.get("title") or "")
+            self.chat_manager.add_message(
+                session_id=session_id,
+                role="assistant",
+                content=msg_content,
+                rich_cards=[card],
+            )
             await self._push_rich_card(user_id, card, websocket=ws)
             logger.info(
                 f"🎴 [{card.get('data', {}).get('stage')}] 卡片已推送: "
@@ -1877,8 +1916,46 @@ class GeneralChatWebSocketService:
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
+                    err_lower = str(exc).lower()
+                    if (
+                        "quota exceeded" in err_lower
+                        or "rate limit exceeded" in err_lower
+                    ):
+                        logger.warning(
+                            f"🛑 订单轮询因 MCP 配额/限流退出，不再重试: "
+                            f"order_id={order_id}, err={exc}"
+                        )
+                        break
                     logger.debug(f"轮询订单状态失败（将重试）: {exc}")
                     continue
+
+                result_text = (
+                    json.dumps(result, ensure_ascii=False)
+                    if isinstance(result, (dict, list))
+                    else str(result)
+                )
+                if is_taxi_query_order_cancelled_result(result_text):
+                    cancel_card = {
+                        "card_id": f"ride_cancelled_{order_id}",
+                        "card_type": "ride_hailing",
+                        "title": "订单已取消",
+                        "subtitle": f"订单号: {order_id}",
+                        "icon": "🚫",
+                        "data": {
+                            "stage": "cancelled",
+                            "order_id": order_id,
+                        },
+                        "source": "Didi-Ride-taxi_query_order",
+                        "created_at": datetime.now().isoformat(),
+                        "updated_at": datetime.now().isoformat(),
+                        "expires_at": None,
+                    }
+                    await _save_and_push(
+                        cancel_card,
+                        "订单已取消，费用将按规则退回。",
+                    )
+                    self.chat_manager.clear_last_ride_order_id(session_id)
+                    break
 
                 try:
                     if phase == "WAITING_ASSIGN":

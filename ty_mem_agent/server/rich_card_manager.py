@@ -811,6 +811,23 @@ def _parse_driver_query_info(query_result: Any) -> Optional[Dict]:
     }
 
 
+def is_taxi_query_order_cancelled_result(text: str) -> bool:
+    """
+    判断 taxi_query_order 返回文案是否表示订单已取消（含用户在其他端取消）。
+    规则偏保守，避免误伤普通对话文案。
+    """
+    if not text or not str(text).strip():
+        return False
+    t = str(text).strip()
+    if "订单已取消" in t:
+        return True
+    if "已取消" in t:
+        hints = ("退款", "费用", "到账", "重新叫车", "原支付")
+        if any(h in t for h in hints):
+            return True
+    return False
+
+
 def build_driver_card_from_query_result(
     order_id: str,
     query_result: Any,
