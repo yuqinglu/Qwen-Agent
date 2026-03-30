@@ -5,6 +5,7 @@
 """
 
 import json
+import time
 import uuid
 import asyncio
 from datetime import datetime
@@ -21,6 +22,11 @@ from .card_island_client import get_card_island_client
 from .user_manager import user_manager
 from .skills import get_skill_registry_lazy, get_scenario_skill
 from .todo_chat_sse_service import ExecutionStep
+from .task_capability_evaluator import quick_pre_check_async
+from .local_execution_inspector import inspect_execution_result
+from .openclaw_client import get_openclaw_client
+from .async_task_manager import get_async_task_manager
+from ty_mem_agent.config.settings import settings as ty_settings
 from ty_mem_agent.agents.ty_memory_agent import TYMemoryAgent
 from qwen_agent.llm.schema import Message, USER
 
@@ -383,6 +389,26 @@ class GeneralChatWebSocketService:
                 "type": "generation_started",
                 "timestamp": datetime.now().isoformat()
             })
+
+            # ========== 3.1 OpenClaw 快速预判 ==========
+            # LLM 多语言识别「周期性/定时」意图并生成 5 段 cron；命中则跳过本地执行直通 OpenClaw
+            if ty_settings.OPENCLAW_ENABLED:
+                _pre_check = await quick_pre_check_async(user_message)
+                if _pre_check.skip_local:
+                    logger.info(
+                        f"[OpenClaw] 快速预判命中，跳过本地执行: "
+                        f"reason={_pre_check.fallback_reason}, schedule={_pre_check.suggested_schedule}"
+                    )
+                    await self._submit_and_notify_openclaw(
+                        websocket=websocket,
+                        user_id=user_id,
+                        session_id=session_id,
+                        message_id=user_msg.message_id,
+                        user_message=user_message,
+                        inspection=_pre_check,
+                    )
+                    return
+
             enable_deep_thinking = bool(deep_thinking and client_type == "app")
             thinking_steps: List[ExecutionStep] = []
             business_actions_done: List[str] = []
@@ -493,6 +519,7 @@ class GeneralChatWebSocketService:
             full_response = ""
             current_sentence = ""
             thinking_step_index = 0
+            _agent_start_time = time.monotonic()  # 用于超时检测
             
             # 准备TTS配置
             tts_cfg = None
@@ -994,6 +1021,39 @@ class GeneralChatWebSocketService:
                             tts_config=tts_cfg
                         )
             
+            # ========== 3.9 OpenClaw 执行结果检测（兜底）==========
+            # 对本地执行结果做三路检测：超时/异常/LLM无能力表述
+            # 命中则自动提交 OpenClaw，让用户异步收到结果
+            if ty_settings.OPENCLAW_ENABLED:
+                _agent_elapsed_ms = (time.monotonic() - _agent_start_time) * 1000
+                try:
+                    _timeout_ms = float(ty_settings.OPENCLAW_LOCAL_EXEC_TIMEOUT_MS)
+                except Exception:
+                    _timeout_ms = 120_000.0
+                _inspection = inspect_execution_result(
+                    local_result=full_response.strip() or None,
+                    error=None,
+                    elapsed_ms=_agent_elapsed_ms,
+                    timeout_ms=_timeout_ms,
+                )
+                if _inspection.should_fallback:
+                    logger.info(
+                        f"[OpenClaw] 本地执行结果触发兜底: reason={_inspection.fallback_reason}, "
+                        f"elapsed_ms={_agent_elapsed_ms:.0f}"
+                    )
+                    # inability_response 时 LLM 已将拒绝文本流式发给用户，无需再发 done
+                    # 直接提交 OpenClaw 并通过 WebSocket 告知用户
+                    await self._submit_and_notify_openclaw(
+                        websocket=websocket,
+                        user_id=user_id,
+                        session_id=session_id,
+                        message_id=user_msg.message_id,
+                        user_message=user_message,
+                        inspection=_inspection,
+                        suppress_done=(not full_response.strip()),
+                    )
+                    return
+
             # ========== 4. 保存AI回复 ==========
             if full_response.strip():
                 # 若本轮已推送车型选择卡片，用一句完整提示作为最终展示（避免“请提供电话”或残句“车型。”）
@@ -2146,6 +2206,176 @@ class GeneralChatWebSocketService:
                 logger.warning(f"⚠️ 卡片岛推送失败（不影响主流程）: {exc}")
 
         asyncio.create_task(_publish_to_island())
+
+    # ------------------------------------------------------------------
+    # OpenClaw 集成：任务提交 + 用户通知
+    # ------------------------------------------------------------------
+
+    async def _submit_and_notify_openclaw(
+        self,
+        websocket: WebSocket,
+        user_id: int,
+        session_id: str,
+        message_id: str,
+        user_message: str,
+        inspection: Any,
+        suppress_done: bool = True,
+    ):
+        """
+        将任务提交给 OpenClaw，并通过 WebSocket 告知用户正在处理。
+
+        Args:
+            websocket: 用户 WebSocket 连接
+            user_id: 用户 ID（calendar_user_id）
+            session_id: 当前会话 ID
+            message_id: 触发任务的用户消息 ID
+            user_message: 用户原始消息文本
+            inspection: InspectionResult（快速预判或执行后检测结果）
+            suppress_done: 是否发送 done 事件（仅当本地无任何输出时才需要发）
+        """
+        if not ty_settings.OPENCLAW_ENABLED:
+            logger.debug("[OpenClaw] OPENCLAW_ENABLED=false，跳过 _submit_and_notify_openclaw")
+            return
+
+        from .local_execution_inspector import InspectionResult
+
+        task_type = getattr(inspection, "openclaw_task_type", "one_time") or "one_time"
+        fallback_reason = getattr(inspection, "fallback_reason", "unknown") or "unknown"
+        schedule = getattr(inspection, "suggested_schedule", None)
+        periodic_desc = getattr(inspection, "periodic_description", None)
+
+        # 生成任务描述（面向 OpenClaw）
+        task_description = self._build_openclaw_task_description(
+            user_message, task_type, schedule, periodic_desc
+        )
+
+        # 1. 持久化任务记录
+        task_manager = get_async_task_manager()
+        task = task_manager.create_task(
+            user_id=user_id,
+            session_id=session_id,
+            message_id=message_id,
+            task_description=task_description,
+            original_message=user_message,
+            task_type=task_type,
+            fallback_reason=fallback_reason,
+            schedule=schedule,
+        )
+
+        # 2. 生成面向用户的确认文本
+        confirm_text = self._build_openclaw_confirm_text(
+            task_type, schedule, periodic_desc, fallback_reason
+        )
+
+        # 3. 通过 WebSocket 告知用户（先发 message_delta，再发 done）
+        await self._send_json(websocket, {
+            "type": "message_delta",
+            "content": confirm_text,
+            "timestamp": datetime.now().isoformat(),
+        })
+
+        # 4. 保存助手回复到会话
+        self.chat_manager.add_message(
+            session_id=session_id,
+            role="assistant",
+            content=confirm_text,
+        )
+
+        # 5. 发送 done 事件（让客户端知道本轮生成结束）
+        await self._send_json(websocket, {
+            "type": "done",
+            "message_id": message_id,
+            "full_content": confirm_text,
+            "total_audio_duration_ms": 0,
+            "timestamp": datetime.now().isoformat(),
+            "openclaw_task_id": task.task_id,
+        })
+
+        # 6. 异步提交 OpenClaw（不阻塞 WebSocket 响应）
+        asyncio.create_task(
+            self._do_submit_openclaw(task.task_id, user_id, task_description, user_message,
+                                     task_type, schedule, fallback_reason, session_id)
+        )
+
+    async def _do_submit_openclaw(
+        self,
+        task_id: str,
+        user_id: int,
+        task_description: str,
+        original_message: str,
+        task_type: str,
+        schedule: Optional[str],
+        fallback_reason: str,
+        session_id: str,
+    ):
+        """后台异步提交任务到 OpenClaw，并更新本地任务状态。"""
+        client = get_openclaw_client()
+        task_manager = get_async_task_manager()
+        result = await client.submit_task(
+            task_id=task_id,
+            user_id=user_id,
+            task_description=task_description,
+            original_message=original_message,
+            task_type=task_type,
+            schedule=schedule,
+            fallback_reason=fallback_reason,
+            session_id=session_id,
+        )
+        if result.get("success"):
+            openclaw_task_id = result.get("openclaw_task_id") or task_id
+            task_manager.update_openclaw_id(task_id, openclaw_task_id)
+            logger.info(f"[OpenClaw] 任务提交成功: task_id={task_id}, openclaw_task_id={openclaw_task_id}")
+        else:
+            task_manager.update_status(task_id, "failed")
+            logger.warning(f"[OpenClaw] 任务提交失败: task_id={task_id}, msg={result.get('message')}")
+
+    def _build_openclaw_task_description(
+        self,
+        user_message: str,
+        task_type: str,
+        schedule: Optional[str],
+        periodic_desc: Optional[str],
+    ) -> str:
+        """为 OpenClaw 生成标准化任务描述。"""
+        parts = [f"用户需求：{user_message}"]
+        if task_type == "periodic":
+            parts.append(f"执行方式：定期执行（{periodic_desc or '按用户要求'}）")
+            if schedule:
+                parts.append(f"调度规则（cron）：{schedule}")
+        elif task_type == "research":
+            parts.append("执行方式：深度调研分析（一次性）")
+        else:
+            parts.append("执行方式：一次性执行")
+        return "\n".join(parts)
+
+    def _build_openclaw_confirm_text(
+        self,
+        task_type: str,
+        schedule: Optional[str],
+        periodic_desc: Optional[str],
+        fallback_reason: str,
+    ) -> str:
+        """构建向用户展示的任务提交确认文本。"""
+        if task_type == "periodic":
+            freq = periodic_desc or "定期"
+            return (
+                f"好的，我已为您创建了一个{freq}执行的任务。"
+                f"任务将按计划自动执行，完成后会通过消息推送将结果发送给您。"
+            )
+        elif fallback_reason == "inability_response":
+            return (
+                "这个任务对我来说有些复杂，我已将它转交给更强大的 AI 助手处理。"
+                "任务完成后会通过消息推送将结果发送给您，请稍候。"
+            )
+        elif fallback_reason == "timeout":
+            return (
+                "这个任务处理时间较长，我已将它转交后台异步处理。"
+                "完成后会通过消息推送将结果发送给您，请稍候。"
+            )
+        else:
+            return (
+                "我已将这个任务提交后台处理，完成后会通过消息推送将结果发送给您，请稍候。"
+            )
 
     async def _send_json(self, websocket: WebSocket, data: Dict):
         """

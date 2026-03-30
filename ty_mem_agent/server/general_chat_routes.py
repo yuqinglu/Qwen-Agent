@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Header, HTTPException, Query, WebSocket
+from fastapi import APIRouter, Header, HTTPException, Query, Request, WebSocket
 from loguru import logger
 from pydantic import BaseModel, Field
 
@@ -20,6 +20,14 @@ from ty_mem_agent.config.settings import settings
 from .general_chat_manager import get_general_chat_manager
 from .general_chat_websocket_service import get_general_chat_websocket_service
 from .ugc_client import get_ugc_client
+from .async_task_manager import get_async_task_manager
+from .openclaw_client import (
+    get_openclaw_client,
+    verify_callback_timestamp,
+    verify_openclaw_signature,
+)
+from .card_island_client import get_card_island_client
+from .rich_card_manager import build_async_task_result_card
 
 
 # ==================== 请求/响应模型 ====================
@@ -826,6 +834,221 @@ async def get_rich_cards(
             msg=f"获取富媒体卡片失败: {str(e)}",
             data={},
         )
+
+
+# ==================== OpenClaw 任务管理 ====================
+
+
+class OpenClawCallbackRequest(BaseModel):
+    """OpenClaw 回调请求体"""
+    task_id: str = Field(..., description="OpenClaw 侧任务 ID（即 openclaw_task_id）")
+    client_task_id: Optional[str] = Field(None, description="我们提交任务时的 client_task_id，OpenClaw 原样透传，用于快速匹配本地任务")
+    status: str = Field(..., description="任务状态：done | failed")
+    result: Optional[str] = Field(None, description="任务执行结果（Markdown 格式）")
+    error_message: Optional[str] = Field(None, description="失败原因（status=failed 时）")
+    next_run_at: Optional[str] = Field(None, description="下次执行时间（ISO 格式，仅周期任务）")
+    executed_at: Optional[str] = Field(None, description="本次执行时间（ISO 格式）")
+
+
+class OpenClawTaskListItem(BaseModel):
+    """OpenClaw 任务列表项"""
+    task_id: str
+    task_type: str
+    status: str
+    task_description: str
+    schedule: Optional[str] = None
+    result_summary: Optional[str] = None
+    next_run_at: Optional[str] = None
+    created_at: str
+    updated_at: str
+
+
+@router.post(
+    "/openclaw/callback",
+    summary="OpenClaw 任务结果回调",
+    description="OpenClaw 任务执行完成后调用此接口，触发卡片岛推送",
+    tags=["OpenClaw"],
+)
+async def openclaw_callback(request: Request):
+    """
+    接收 OpenClaw 的任务执行结果回调。
+    验证 HMAC-SHA256 签名后，更新本地任务状态，并通过卡片岛推送结果给用户。
+    """
+    if not settings.OPENCLAW_ENABLED:
+        # 不读 body、不验签，避免适配层在关闭开关后仍回调时产生无意义处理
+        return {"code": 0, "msg": "ignored: openclaw disabled"}
+
+    # 必须先读原始 body 再解析 JSON，保证与发送方 HMAC 使用的字节流一致
+    raw_body = await request.body()
+    try:
+        body = OpenClawCallbackRequest.model_validate_json(raw_body)
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid json body")
+
+    timestamp = request.headers.get("X-OpenClaw-Timestamp", "")
+    signature = request.headers.get("X-OpenClaw-Signature", "")
+
+    # 配置了密钥时校验时间窗，防止重放（与适配层转发行为一致）
+    from ty_mem_agent.config.settings import settings as _settings
+    if (_settings.OPENCLAW_CALLBACK_SECRET or "").strip():
+        if not verify_callback_timestamp(timestamp):
+            raise HTTPException(status_code=401, detail="回调时间戳无效或已过期")
+
+    if not verify_openclaw_signature(raw_body, timestamp, signature):
+        logger.warning(f"[OpenClaw Callback] 签名验证失败: task_id={body.task_id}")
+        raise HTTPException(status_code=401, detail="签名验证失败")
+
+    task_manager = get_async_task_manager()
+
+    # 根据 client_task_id 或 openclaw_task_id 找到本地任务记录
+    # 优先用 client_task_id（我们自己的 ID，直接命中），回退到 openclaw_task_id 反向查询
+    local_task = None
+    if body.client_task_id:
+        local_task = task_manager.get_task(body.client_task_id)
+    if not local_task:
+        local_task = task_manager.get_task_by_openclaw_id(body.task_id)
+
+    if not local_task:
+        logger.warning(f"[OpenClaw Callback] 找不到本地任务: openclaw_task_id={body.task_id}")
+        return {"code": 0, "msg": "ignored: task not found locally"}
+
+    # 更新任务状态和结果
+    result_text = body.result or body.error_message or ""
+    new_status = "done" if body.status == "done" else "failed"
+    task_manager.update_result(
+        task_id=local_task.task_id,
+        result_summary=result_text,
+        status=new_status,
+        next_run_at=body.next_run_at,
+    )
+
+    # 任务成功时：构建结果卡片并通过卡片岛推送给用户
+    if new_status == "done" and result_text:
+        try:
+            card = build_async_task_result_card(
+                user_id=local_task.user_id,
+                task_id=local_task.task_id,
+                task_description=local_task.task_description,
+                result_markdown=result_text,
+                task_type=local_task.task_type,
+                fallback_reason=local_task.fallback_reason,
+                next_run_at=body.next_run_at,
+                executed_at=body.executed_at,
+                session_id=local_task.session_id,
+            )
+            if card:
+                card_detail = json.dumps(card.to_dict(), ensure_ascii=False)
+                await asyncio.to_thread(
+                    get_card_island_client().publish,
+                    local_task.user_id,
+                    [{"type": "async_task_result", "detail": card_detail}],
+                )
+                logger.info(
+                    f"[OpenClaw Callback] 结果卡片已推送: task_id={local_task.task_id}, "
+                    f"user_id={local_task.user_id}"
+                )
+        except Exception as e:
+            logger.error(f"[OpenClaw Callback] 结果卡片推送失败: {e}", exc_info=True)
+    elif new_status == "failed":
+        # 失败分支当前不推「成功结果」卡片，仅更新本地任务；联调时请看本日志或 GET /openclaw/tasks
+        logger.info(
+            f"[OpenClaw Callback] 任务失败已落库（未推送 async_task_result 卡片）: "
+            f"task_id={local_task.task_id}, user_id={local_task.user_id}, "
+            f"error_message={result_text[:300]!r}"
+        )
+
+    return {"code": 0, "msg": "ok", "task_id": local_task.task_id}
+
+
+@router.get(
+    "/openclaw/tasks",
+    summary="获取用户的 OpenClaw 异步任务列表",
+    tags=["OpenClaw"],
+)
+async def list_openclaw_tasks(
+    user_id: int = Header(..., alias="x-user-id", description="用户ID"),
+    status: Optional[str] = Query(None, description="状态过滤：pending|running|done|failed|cancelled"),
+    limit: int = Query(20, ge=1, le=100, description="每页数量"),
+    offset: int = Query(0, ge=0, description="偏移量"),
+):
+    """
+    获取当前用户提交给 OpenClaw 的异步任务列表。
+    """
+    if not settings.OPENCLAW_ENABLED:
+        return {
+            "code": 0,
+            "msg": "未开启openclaw能力",
+            "data": {"tasks": [], "total": 0},
+        }
+    try:
+        task_manager = get_async_task_manager()
+        tasks = task_manager.list_tasks_by_user(
+            user_id=user_id, status=status, limit=limit, offset=offset
+        )
+        return {
+            "code": 0,
+            "msg": "success",
+            "data": {
+                "tasks": [
+                    OpenClawTaskListItem(
+                        task_id=t.task_id,
+                        task_type=t.task_type,
+                        status=t.status,
+                        task_description=t.task_description,
+                        schedule=t.schedule,
+                        result_summary=t.result_summary,
+                        next_run_at=t.next_run_at,
+                        created_at=t.created_at,
+                        updated_at=t.updated_at,
+                    ).model_dump()
+                    for t in tasks
+                ],
+                "total": len(tasks),
+            },
+        }
+    except Exception as e:
+        logger.error(f"[OpenClaw] 获取任务列表失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete(
+    "/openclaw/tasks/{task_id}",
+    summary="取消 OpenClaw 异步任务",
+    tags=["OpenClaw"],
+)
+async def cancel_openclaw_task(
+    task_id: str,
+    user_id: int = Header(..., alias="x-user-id", description="用户ID"),
+):
+    """
+    取消指定的 OpenClaw 异步任务（包括停止定期执行）。
+    仅任务所有者可操作。
+    """
+    try:
+        task_manager = get_async_task_manager()
+        task = task_manager.get_task(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        if task.user_id != user_id:
+            raise HTTPException(status_code=403, detail="无权操作此任务")
+        if task.status in ("done", "failed", "cancelled"):
+            return {"code": 0, "msg": f"任务已处于终态: {task.status}", "data": {}}
+
+        # 同步取消本地状态
+        task_manager.cancel_task(task_id)
+
+        # 异步取消 OpenClaw 侧任务（开关关闭时仅本地取消）
+        if settings.OPENCLAW_ENABLED and task.openclaw_task_id:
+            asyncio.create_task(
+                get_openclaw_client().cancel_task(task.openclaw_task_id)
+            )
+
+        return {"code": 0, "msg": "任务已取消", "data": {"task_id": task_id}}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[OpenClaw] 取消任务失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ==================== 导出 ====================
