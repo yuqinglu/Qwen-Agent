@@ -475,8 +475,31 @@ def parse_estimate_flow_id_from_taxi_estimate_result(tool_result: Any) -> Option
     return None
 
 
+# 与确认叫车消息解析、滴滴 product_category 展示一致
+RIDE_PRODUCT_CATEGORY_LABELS: Tuple[Tuple[int, str], ...] = (
+    (17, "豪华车"),
+    (8, "专车"),
+    (1, "快车"),
+    (201, "特惠快车"),
+)
+
+
+def vehicle_type_for_product_category(product_category: Any) -> Optional[str]:
+    """将滴滴品类代码转为展示用车种名称；未知代码返回 None。"""
+    if product_category is None or product_category == "":
+        return None
+    try:
+        code = int(product_category)
+    except (TypeError, ValueError):
+        return None
+    for c, label in RIDE_PRODUCT_CATEGORY_LABELS:
+        if c == code:
+            return label
+    return None
+
+
 def parse_estimate_trace_id_from_taxi_estimate_result(tool_result: Any) -> Optional[str]:
-    """
+    r"""
     从 taxi_estimate 工具返回的文本中解析「estimate_trace_id」。
     MCP create_order 必填。若返回中无单独 trace_id，可复用 estimate_flow_id。
     支持格式：estimate_trace_id: xxx / 预估.*trace[_\s]*id[：:]\s*xxx / trace_id[：:]\s*xxx
@@ -507,7 +530,7 @@ def build_ride_hailing_cards_from_didi_result(
 ) -> Optional[List[Dict]]:
     """
     从滴滴打车 MCP 工具结果构建打车卡片，支持三阶段流程：
-    1. 确认订单阶段（taxi_estimate）：生成车型选择卡片（每种车型一张），含起点、终点、价格、车型
+    1. 确认订单阶段（taxi_estimate）：生成**一张**车型选择卡片，data.options 为各车型项，父级 data 含共用起终点等字段
     2. 执行订单阶段（taxi_create_order）：生成"正在叫车"通知卡片
     3. 成功阶段（taxi_create_order 成功）：生成订单详情卡片（车辆信息、订单号等）
     
@@ -554,7 +577,7 @@ def build_ride_hailing_cards_from_didi_result(
         else:
             obj = None
         
-        # 阶段1：价格预估（taxi_estimate）- 生成车型选择卡片（支持纯文本返回）
+        # 阶段1：价格预估（taxi_estimate）- 单张卡片 + data.options（支持纯文本返回）
         if name == "taxi_estimate":
             # 使用原始字符串解析，不依赖 obj（MCP 常返回多行文本）
             result_text = str(tool_result) if tool_result else ""
@@ -572,6 +595,7 @@ def build_ride_hailing_cards_from_didi_result(
             if price_section_match:
                 result_text = price_section_match.group(1)
             
+            options: List[Dict[str, Any]] = []
             lines = result_text.split('\n')
             for line in lines:
                 line = line.strip()
@@ -584,47 +608,52 @@ def build_ride_hailing_cards_from_didi_result(
                     vehicle_type = match.group(1).strip()
                     price = match.group(2) if match.group(2) else None
                     category_code = int(match.group(3))
-                    
-                    card_id = f"ride_option_{category_code}_{uuid.uuid4().hex[:8]}"
-                    subtitle_parts = []
-                    if origin_name and destination_name:
-                        subtitle_parts.append(f"{origin_name} → {destination_name}")
-                    if price:
-                        subtitle_parts.append(f"约{price}元")
-                    if user_phone:
-                        subtitle_parts.append(f"电话: {user_phone}")
-                    
-                    data = {
+                    opt: Dict[str, Any] = {
                         "vehicle_type": vehicle_type,
                         "product_category": category_code,
                         "estimated_price": price,
-                        "phone": user_phone,
-                        "stage": "confirm",
                     }
-                    if origin_name is not None:
-                        data["origin"] = origin_name
-                    if destination_name is not None:
-                        data["destination"] = destination_name
-                    if origin_coords:
-                        data["origin_coords"] = origin_coords
-                    if destination_coords:
-                        data["destination_coords"] = destination_coords
-                    
-                    card = {
-                        "card_id": card_id,
-                        "card_type": "ride_hailing",
-                        "title": vehicle_type,
-                        "subtitle": " | ".join(subtitle_parts) if subtitle_parts else "点击选择",
-                        "icon": "🚕",
-                        "data": data,
-                        "source": tool_name,
-                        "created_at": datetime.now().isoformat(),
-                        "updated_at": datetime.now().isoformat(),
-                        "expires_at": None,
-                    }
-                    cards.append(card)
+                    options.append(opt)
             
-            return cards if cards else None
+            if not options:
+                return None
+
+            card_id = f"ride_options_{uuid.uuid4().hex[:8]}"
+            subtitle_parts: List[str] = []
+            if origin_name and destination_name:
+                subtitle_parts.append(f"{origin_name} → {destination_name}")
+            if user_phone:
+                subtitle_parts.append(f"电话: {user_phone}")
+
+            data: Dict[str, Any] = {
+                "stage": "confirm",
+                "options": options,
+                "selection_ui": "list",
+                "phone": user_phone,
+            }
+            if origin_name is not None:
+                data["origin"] = origin_name
+            if destination_name is not None:
+                data["destination"] = destination_name
+            if origin_coords:
+                data["origin_coords"] = origin_coords
+            if destination_coords:
+                data["destination_coords"] = destination_coords
+
+            card = {
+                "card_id": card_id,
+                "card_type": "ride_hailing",
+                "title": "网约车预估",
+                "subtitle": " | ".join(subtitle_parts) if subtitle_parts else "请选择车型",
+                "icon": "🚕",
+                "data": data,
+                "source": tool_name,
+                "created_at": datetime.now().isoformat(),
+                "updated_at": datetime.now().isoformat(),
+                "expires_at": None,
+            }
+            cards.append(card)
+            return cards
         
         # 仅当非 taxi_create_order 且无 obj 时提前返回（taxi_create_order 可用纯文本）
         if obj is None and name != "taxi_create_order":
@@ -739,6 +768,8 @@ def _parse_driver_query_info(query_result: Any) -> Optional[Dict]:
 
     driver_name = car_model = car_plate = driver_phone = None
     distance_km = eta_minutes = None
+    product_category: Any = None
+    vehicle_type_cat: Optional[str] = None  # 网约车品类展示名（与 car_model 物理车型区分）
 
     if obj and isinstance(obj, dict):
         driver_name = obj.get("driver_name") or obj.get("driverName") or obj.get("司机") or obj.get("称呼")
@@ -747,6 +778,23 @@ def _parse_driver_query_info(query_result: Any) -> Optional[Dict]:
         driver_phone = obj.get("driver_phone") or obj.get("driverPhone") or obj.get("电话")
         distance_km = obj.get("distance_km") or obj.get("distanceKm")
         eta_minutes = obj.get("eta_minutes") or obj.get("etaMinutes")
+        raw_pc = obj.get("product_category") or obj.get("productCategory")
+        if raw_pc is None:
+            raw_pc = obj.get("require_level") or obj.get("requireLevel")
+        if raw_pc is not None:
+            try:
+                product_category = int(raw_pc)
+            except (TypeError, ValueError):
+                product_category = raw_pc
+        vehicle_type_cat = (
+            obj.get("ride_vehicle_type")
+            or obj.get("service_name")
+            or obj.get("serviceName")
+        )
+        if not vehicle_type_cat and isinstance(obj.get("vehicle_type"), str):
+            vt_raw = obj.get("vehicle_type")
+            if vt_raw and vt_raw not in (car_model or ""):
+                vehicle_type_cat = str(vt_raw).strip() or None
 
     # 从纯文本解析（MCP 常返回多行文本）
     if not (driver_name and car_plate and driver_phone and car_model):
@@ -808,7 +856,24 @@ def _parse_driver_query_info(query_result: Any) -> Optional[Dict]:
         "distance_km": distance_km,
         "eta_minutes": eta_minutes,
         "is_arrived": is_arrived,
+        "product_category": product_category,
+        "vehicle_type": vehicle_type_cat,
     }
+
+
+def _merge_ride_category_for_driver(
+    info: Dict[str, Any],
+    ride_meta: Optional[Dict[str, Any]],
+) -> Tuple[Optional[Any], Optional[str]]:
+    """MCP 解析优先，ride_meta 补全缺失的品类/展示车型名。"""
+    pc = info.get("product_category")
+    vt = info.get("vehicle_type")
+    if ride_meta:
+        if pc is None:
+            pc = ride_meta.get("product_category")
+        if not vt:
+            vt = ride_meta.get("vehicle_type")
+    return pc, vt
 
 
 def is_taxi_query_order_cancelled_result(text: str) -> bool:
@@ -831,6 +896,7 @@ def is_taxi_query_order_cancelled_result(text: str) -> bool:
 def build_driver_card_from_query_result(
     order_id: str,
     query_result: Any,
+    ride_meta: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict]:
     """
     从 taxi_query_order 结果构建「司机已接单」卡片（stage: driver_assigned）。
@@ -877,11 +943,21 @@ def build_driver_card_from_query_result(
     if info["eta_minutes"] is not None:
         data["eta_minutes"] = info["eta_minutes"]
 
+    pc, vt = _merge_ride_category_for_driver(info, ride_meta)
+    if pc is not None:
+        data["product_category"] = pc
+    if vt:
+        data["vehicle_type"] = vt
+
+    sub = " | ".join(subtitle_parts) if subtitle_parts else "可查看司机与车辆信息"
+    if vt:
+        sub = f"{vt} · {sub}" if sub else vt
+
     return {
         "card_id": f"ride_driver_{order_id}_{uuid.uuid4().hex[:6]}",
         "card_type": "ride_hailing",
         "title": "司机已接单",
-        "subtitle": " | ".join(subtitle_parts) if subtitle_parts else "可查看司机与车辆信息",
+        "subtitle": sub,
         "icon": "🚕",
         "data": data,
         "source": "Didi-Ride-taxi_query_order",
@@ -894,6 +970,7 @@ def build_driver_card_from_query_result(
 def build_driver_approaching_card(
     order_id: str,
     query_result: Any,
+    ride_meta: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict]:
     """
     从 taxi_query_order 结果构建「司机即将到达」卡片（stage: driver_approaching）。
@@ -932,11 +1009,21 @@ def build_driver_approaching_card(
     if info["eta_minutes"] is not None:
         data["eta_minutes"] = info["eta_minutes"]
 
+    pc, vt = _merge_ride_category_for_driver(info, ride_meta)
+    if pc is not None:
+        data["product_category"] = pc
+    if vt:
+        data["vehicle_type"] = vt
+
+    sub = " | ".join(subtitle_parts) if subtitle_parts else "司机正在赶来"
+    if vt:
+        sub = f"{vt} · {sub}" if sub else vt
+
     return {
         "card_id": f"ride_approaching_{order_id}_{uuid.uuid4().hex[:6]}",
         "card_type": "ride_hailing",
         "title": "司机即将到达",
-        "subtitle": " | ".join(subtitle_parts) if subtitle_parts else "司机正在赶来",
+        "subtitle": sub,
         "icon": "🚗",
         "data": data,
         "source": "Didi-Ride-taxi_query_order",
@@ -949,6 +1036,7 @@ def build_driver_approaching_card(
 def build_driver_arrived_card(
     order_id: str,
     query_result: Any,
+    ride_meta: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict]:
     """
     从 taxi_query_order 结果构建「司机已到达起点」卡片（stage: driver_arrived）。
@@ -979,11 +1067,21 @@ def build_driver_arrived_card(
     if info["car_model"] is not None:
         data["car_model"] = info["car_model"]
 
+    pc, vt = _merge_ride_category_for_driver(info, ride_meta)
+    if pc is not None:
+        data["product_category"] = pc
+    if vt:
+        data["vehicle_type"] = vt
+
+    sub = " | ".join(subtitle_parts) if subtitle_parts else "请出发上车"
+    if vt:
+        sub = f"{vt} · {sub}" if sub else vt
+
     return {
         "card_id": f"ride_arrived_{order_id}_{uuid.uuid4().hex[:6]}",
         "card_type": "ride_hailing",
         "title": "司机已到达起点",
-        "subtitle": " | ".join(subtitle_parts) if subtitle_parts else "请出发上车",
+        "subtitle": sub,
         "icon": "📍",
         "data": data,
         "source": "Didi-Ride-taxi_query_order",
