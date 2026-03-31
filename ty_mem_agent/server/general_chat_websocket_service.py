@@ -756,32 +756,15 @@ class GeneralChatWebSocketService:
                                     _ride_hailing_suppress_tts_until_cards = True
 
                         # 滴滴打车 MCP：三阶段流程（确认订单、执行中、成功）
-                        # 获取用户电话号码（画像优先，同轮 get_user_profile 缓存，否则从本会话最近用户消息中解析）
+                        # 电话：画像多主键兜底 + 会话用户/助手消息 + 同轮 get_user_profile 缓存
                         user_phone = None
                         if tool_name and "Didi-Ride-" in tool_name:
-                            try:
-                                from ty_mem_agent.memory.user_memory import get_integrated_memory
-                                integrated_memory = get_integrated_memory()
-                                profile = integrated_memory.user_manager.get_user_profile(agent_user_id)
-                                if profile and hasattr(profile, 'phone') and profile.phone:
-                                    user_phone = profile.phone
-                            except Exception as e:
-                                logger.debug(f"获取用户电话号码失败（不影响叫车流程）: {e}")
-                            if not user_phone and session_id:
-                                import re
-                                try:
-                                    recent = self.chat_manager.get_session_messages(session_id, limit=10)
-                                    for msg in reversed(recent or []):
-                                        if getattr(msg, "role", None) != "user":
-                                            continue
-                                        content = (getattr(msg, "content", None) or "") or ""
-                                        m = re.search(r"1[3-9]\d{9}", content)
-                                        if m:
-                                            user_phone = m.group(0)
-                                            break
-                                except Exception as e:
-                                    logger.debug(f"从会话消息解析电话失败: {e}")
-                            user_phone = user_phone or _cached_phone_from_get_user_profile
+                            user_phone = self._resolve_ride_user_phone(
+                                session_id=session_id,
+                                calendar_user_id=user_id,
+                                agent_user_id=agent_user_id,
+                                cached_from_profile_tool=_cached_phone_from_get_user_profile,
+                            )
                         
                         ride_cards = build_ride_hailing_cards_from_didi_result(
                             tool_name=tool_name,
@@ -879,7 +862,34 @@ class GeneralChatWebSocketService:
                                 data = card.get("data") or {}
                                 if data.get("stage") == "success" and data.get("order_id"):
                                     oid = data["order_id"]
-                                    self.chat_manager.set_last_ride_order_id(session_id, oid)
+                                    ride_meta = None
+                                    if tool_name == "Didi-Ride-taxi_create_order" and tool_args:
+                                        try:
+                                            args = (
+                                                tool_args
+                                                if isinstance(tool_args, dict)
+                                                else json.loads(str(tool_args))
+                                            )
+                                            if isinstance(args, dict):
+                                                pc = args.get("product_category")
+                                                if pc is not None and str(pc).strip() != "":
+                                                    from ty_mem_agent.server.rich_card_manager import (
+                                                        vehicle_type_for_product_category,
+                                                    )
+
+                                                    ride_meta = {
+                                                        "product_category": int(pc)
+                                                        if str(pc).isdigit()
+                                                        else pc,
+                                                        "vehicle_type": vehicle_type_for_product_category(
+                                                            pc
+                                                        ),
+                                                    }
+                                        except Exception as e:
+                                            logger.debug(f"解析 create_order ride_meta 失败: {e}")
+                                    self.chat_manager.set_last_ride_order_id(
+                                        session_id, oid, ride_meta=ride_meta
+                                    )
                                     if oid not in self._order_poll_tasks or self._order_poll_tasks[oid].done():
                                         self._order_poll_tasks[oid] = asyncio.create_task(
                                             self._poll_ride_order_background(
@@ -1468,6 +1478,67 @@ class GeneralChatWebSocketService:
 
         return True
 
+    def _resolve_ride_user_phone(
+        self,
+        session_id: Optional[str],
+        calendar_user_id: int,
+        agent_user_id: str,
+        cached_from_profile_tool: Optional[str],
+    ) -> Optional[str]:
+        """
+        打车卡片展示用电话：同轮 get_user_profile 工具结果 → 画像库（多 user_id 主键兜底）
+        → 本会话近期消息（用户与助手正文中的 11 位手机号）。
+        """
+        import re
+
+        if cached_from_profile_tool:
+            s = str(cached_from_profile_tool).strip()
+            if s:
+                return s
+        try:
+            from ty_mem_agent.memory.user_memory import get_integrated_memory
+
+            um = get_integrated_memory().user_manager
+            seen = set()
+            candidate_ids = [
+                agent_user_id,
+                f"user_cal_{calendar_user_id}",
+                str(calendar_user_id),
+            ]
+            for cid in candidate_ids:
+                if not cid or cid in seen:
+                    continue
+                seen.add(str(cid))
+                try:
+                    profile = um.get_user_profile(str(cid))
+                except Exception:
+                    continue
+                if not profile:
+                    continue
+                ph = getattr(profile, "phone", None)
+                if ph is not None:
+                    raw = str(ph).strip()
+                    if raw:
+                        return raw
+        except Exception as e:
+            logger.debug(f"从画像解析打车电话失败: {e}")
+
+        if session_id:
+            pat = re.compile(r"\b1[3-9]\d{9}\b")
+            try:
+                recent = self.chat_manager.get_session_messages(session_id, limit=50)
+                for msg in reversed(recent or []):
+                    role = getattr(msg, "role", None)
+                    if role not in ("user", "assistant"):
+                        continue
+                    content = (getattr(msg, "content", None) or "") or ""
+                    m = pat.search(content)
+                    if m:
+                        return m.group(0)
+            except Exception as e:
+                logger.debug(f"从会话消息解析打车电话失败: {e}")
+        return None
+
     async def _emit_message_delta_for_sentence(self, websocket: WebSocket, sentence: str) -> None:
         """
         协议约定：凡要发送 sentence_complete/语音 的句子，必须先通过 message_delta 输出，
@@ -1553,6 +1624,55 @@ class GeneralChatWebSocketService:
         if m:
             phone = m.group(0)
         return (product_category, phone)
+
+    def _ride_meta_from_session_user_messages(
+        self, session_id: str, limit: int = 25
+    ) -> Optional[Dict[str, Any]]:
+        """倒序扫描用户消息，解析车型/品类（次级兜底，供轮询建司机卡）。"""
+        import re
+        from ty_mem_agent.server.rich_card_manager import vehicle_type_for_product_category
+
+        msgs = self.chat_manager.get_session_messages(session_id, limit=limit)
+        if not msgs:
+            return None
+        for msg in reversed(msgs):
+            if getattr(msg, "role", None) != "user":
+                continue
+            content = (getattr(msg, "content", None) or "") or ""
+            pc, _ = self._parse_ride_confirm_from_message(content)
+            if pc is not None:
+                return {
+                    "product_category": pc,
+                    "vehicle_type": vehicle_type_for_product_category(pc),
+                }
+            m = re.search(r"车型[：:]\s*([^\s,，\n]+)", content)
+            if m:
+                piece = m.group(1).strip()
+                for name, code in [
+                    ("豪华车", 17),
+                    ("专车", 8),
+                    ("快车", 1),
+                    ("特惠快车", 201),
+                ]:
+                    if name in piece or piece in name:
+                        return {
+                            "product_category": code,
+                            "vehicle_type": vehicle_type_for_product_category(code),
+                        }
+        return None
+
+    def _resolve_ride_meta_for_poll(
+        self, session_id: str, order_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """会话 meta 优先；order_id 不一致或缺失时扫用户消息。"""
+        oid = str(order_id)
+        meta = self.chat_manager.get_last_ride_meta(session_id)
+        if meta and str(meta.get("order_id")) == oid:
+            return {
+                "product_category": meta.get("product_category"),
+                "vehicle_type": meta.get("vehicle_type"),
+            }
+        return self._ride_meta_from_session_user_messages(session_id)
     
     async def _handle_ride_confirm_and_create_order(
         self,
@@ -1678,7 +1798,19 @@ class GeneralChatWebSocketService:
                     data = card.get("data") or {}
                     if data.get("stage") == "success" and data.get("order_id"):
                         oid = data["order_id"]
-                        self.chat_manager.set_last_ride_order_id(session_id, oid)
+                        from ty_mem_agent.server.rich_card_manager import (
+                            vehicle_type_for_product_category,
+                        )
+
+                        vt = vehicle_type_for_product_category(product_category)
+                        self.chat_manager.set_last_ride_order_id(
+                            session_id,
+                            oid,
+                            ride_meta={
+                                "product_category": product_category,
+                                "vehicle_type": vt,
+                            },
+                        )
                         # 立即启动后台轮询，不等 done 阶段（去重保护）
                         if oid not in self._order_poll_tasks or self._order_poll_tasks[oid].done():
                             self._order_poll_tasks[oid] = asyncio.create_task(
@@ -1917,6 +2049,7 @@ class GeneralChatWebSocketService:
 
         params = json.dumps({"order_id": order_id})
         deadline = asyncio.get_event_loop().time() + max_duration_sec
+        ride_meta = self._resolve_ride_meta_for_poll(session_id, order_id)
 
         # 阶段标记
         phase = "WAITING_ASSIGN"   # → "WAITING_ARRIVED"
@@ -2020,7 +2153,9 @@ class GeneralChatWebSocketService:
                 try:
                     if phase == "WAITING_ASSIGN":
                         card = build_driver_card_from_query_result(
-                            order_id=order_id, query_result=result
+                            order_id=order_id,
+                            query_result=result,
+                            ride_meta=ride_meta,
                         )
                         if card:
                             d = card.get("data") or {}
@@ -2037,7 +2172,9 @@ class GeneralChatWebSocketService:
                     elif phase == "WAITING_ARRIVED":
                         # 优先检测「已到达」，到达后立即退出
                         arrived_card = build_driver_arrived_card(
-                            order_id=order_id, query_result=result
+                            order_id=order_id,
+                            query_result=result,
+                            ride_meta=ride_meta,
                         )
                         if arrived_card:
                             await _save_and_push(arrived_card, "司机已到达起点，请出发上车。")
@@ -2046,7 +2183,9 @@ class GeneralChatWebSocketService:
                         # 检测「即将到达」（eta 可用且 <= 阈值），仅推一次
                         if not approaching_pushed:
                             approaching_card = build_driver_approaching_card(
-                                order_id=order_id, query_result=result
+                                order_id=order_id,
+                                query_result=result,
+                                ride_meta=ride_meta,
                             )
                             if approaching_card:
                                 d = approaching_card.get("data") or {}
