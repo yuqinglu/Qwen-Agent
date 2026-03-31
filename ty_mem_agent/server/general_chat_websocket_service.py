@@ -20,7 +20,7 @@ from .smart_sentence_splitter import get_sentence_splitter
 from .ugc_client import get_ugc_client
 from .card_island_client import get_card_island_client
 from .user_manager import user_manager
-from .skills import get_skill_registry_lazy, get_scenario_skill
+from .skills import get_skill_registry_lazy, get_scenario_skill, resolve_ride_card_user_phone
 from .todo_chat_sse_service import ExecutionStep
 from .task_capability_evaluator import quick_pre_check_async
 from .local_execution_inspector import inspect_execution_result
@@ -546,17 +546,18 @@ class GeneralChatWebSocketService:
             # 本轮已发送过「请确认起终点并选择车型」整句（避免模型尾随输出「车型。」再触发一次重复的 sentence_complete + TTS，且不再下发该尾随 message_delta）
             _ride_confirm_tts_sent_this_turn = False
             _last_ride_confirm_tts_sent: Optional[str] = None
-            # 本回合是否进入某场景（打车等），用于委托 TTS/抑制 决策
-            # 传入最近几轮「用户消息文本」作为历史，便于技能做多轮意图识别
-            history_user_texts: List[str] = [
-                m.get("content", "")
-                for m in history_messages
-                if m.get("role") == "user"
-            ]
-            _scenario = get_scenario_skill(user_message, history_messages=history_user_texts)
+            # 场景识别：传入完整对话历史（user + assistant 两种角色），
+            # 由技能层结合 LLM 判断多轮续接意图（如用户回复上车地点/电话）。
+            # 可能触发 LLM 调用，放入线程池避免阻塞事件循环。
+            _scenario = await asyncio.to_thread(
+                get_scenario_skill, user_message, full_history=history_messages
+            )
+            history_for_agent = self._history_for_agent_with_skill_prefixes(
+                history_messages, _scenario
+            )
 
             async for chunk in self._stream_agent_response(
-                agent, history_messages, deep_thinking,
+                agent, history_for_agent, deep_thinking,
                 plan_result=plan_result if enable_deep_thinking and plan_result else None,
             ):
                 chunk_type = chunk.get("type")
@@ -759,7 +760,8 @@ class GeneralChatWebSocketService:
                         # 电话：画像多主键兜底 + 会话用户/助手消息 + 同轮 get_user_profile 缓存
                         user_phone = None
                         if tool_name and "Didi-Ride-" in tool_name:
-                            user_phone = self._resolve_ride_user_phone(
+                            user_phone = resolve_ride_card_user_phone(
+                                self.chat_manager,
                                 session_id=session_id,
                                 calendar_user_id=user_id,
                                 agent_user_id=agent_user_id,
@@ -1478,66 +1480,36 @@ class GeneralChatWebSocketService:
 
         return True
 
-    def _resolve_ride_user_phone(
+    def _history_for_agent_with_skill_prefixes(
         self,
-        session_id: Optional[str],
-        calendar_user_id: int,
-        agent_user_id: str,
-        cached_from_profile_tool: Optional[str],
-    ) -> Optional[str]:
+        history_messages: List[Dict[str, Any]],
+        scenario: Optional[Any],
+    ) -> List[Dict[str, Any]]:
         """
-        打车卡片展示用电话：同轮 get_user_profile 工具结果 → 画像库（多 user_id 主键兜底）
-        → 本会话近期消息（用户与助手正文中的 11 位手机号）。
+        由当前匹配到的 Skill 在队首插入额外消息（如 system 业务规则），保持服务层与具体业务解耦。
         """
-        import re
-
-        if cached_from_profile_tool:
-            s = str(cached_from_profile_tool).strip()
-            if s:
-                return s
+        out = list(history_messages)
+        if scenario is None:
+            return out
         try:
-            from ty_mem_agent.memory.user_memory import get_integrated_memory
-
-            um = get_integrated_memory().user_manager
-            seen = set()
-            candidate_ids = [
-                agent_user_id,
-                f"user_cal_{calendar_user_id}",
-                str(calendar_user_id),
-            ]
-            for cid in candidate_ids:
-                if not cid or cid in seen:
-                    continue
-                seen.add(str(cid))
-                try:
-                    profile = um.get_user_profile(str(cid))
-                except Exception:
-                    continue
-                if not profile:
-                    continue
-                ph = getattr(profile, "phone", None)
-                if ph is not None:
-                    raw = str(ph).strip()
-                    if raw:
-                        return raw
+            prefixes = scenario.get_agent_message_prefixes()
         except Exception as e:
-            logger.debug(f"从画像解析打车电话失败: {e}")
-
-        if session_id:
-            pat = re.compile(r"\b1[3-9]\d{9}\b")
-            try:
-                recent = self.chat_manager.get_session_messages(session_id, limit=50)
-                for msg in reversed(recent or []):
-                    role = getattr(msg, "role", None)
-                    if role not in ("user", "assistant"):
-                        continue
-                    content = (getattr(msg, "content", None) or "") or ""
-                    m = pat.search(content)
-                    if m:
-                        return m.group(0)
-            except Exception as e:
-                logger.debug(f"从会话消息解析打车电话失败: {e}")
-        return None
+            logger.warning(
+                f"技能 get_agent_message_prefixes 失败 "
+                f"skill_id={getattr(scenario, 'skill_id', '?')}: {e}"
+            )
+            return out
+        for p in reversed(prefixes or []):
+            if not isinstance(p, dict):
+                continue
+            content = (p.get("content") or "").strip()
+            if not content:
+                continue
+            role = (p.get("role") or "system").strip().lower()
+            if role != "system":
+                role = "system"
+            out.insert(0, {"role": role, "content": content})
+        return out
 
     async def _emit_message_delta_for_sentence(self, websocket: WebSocket, sentence: str) -> None:
         """
