@@ -112,6 +112,8 @@ class GeneralChatManager:
         
         # 会话最近一次创建的打车订单号 {session_id: order_id}，用于用户说「取消订单」时直接调 MCP
         self.session_last_ride_order_id: Dict[str, str] = {}
+        # 与上一字段同生命周期：{ session_id: { order_id, product_category?, vehicle_type? } }
+        self.session_last_ride_meta: Dict[str, Dict[str, Any]] = {}
         
         self._initialized = True
         logger.info("✅ 通用聊天管理器初始化完成（基于 ConversationManager）")
@@ -368,20 +370,35 @@ class GeneralChatManager:
             del self.session_pending_ride[session_id]
             logger.debug(f"✅ 清除 pending_ride: session_id={session_id}")
 
-    def set_last_ride_order_id(self, session_id: str, order_id: str) -> None:
-        """记录会话下最近创建的打车订单号（用于取消订单时直接调 MCP）"""
-        self.session_last_ride_order_id[session_id] = str(order_id)
-        logger.debug(f"✅ 记录 last_ride_order_id: session_id={session_id}, order_id={order_id}")
+    def set_last_ride_order_id(
+        self,
+        session_id: str,
+        order_id: str,
+        ride_meta: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """记录会话下最近创建的打车订单号；可选写入同单品类元数据（与 clear 同步清除）。"""
+        oid = str(order_id)
+        self.session_last_ride_order_id[session_id] = oid
+        if ride_meta:
+            m = {**ride_meta, "order_id": oid}
+            self.session_last_ride_meta[session_id] = m
+        else:
+            self.session_last_ride_meta.pop(session_id, None)
+        logger.debug(f"✅ 记录 last_ride_order_id: session_id={session_id}, order_id={oid}")
 
     def get_last_ride_order_id(self, session_id: str) -> Optional[str]:
         """获取会话下最近创建的打车订单号，不存在返回 None"""
         return self.session_last_ride_order_id.get(session_id)
 
+    def get_last_ride_meta(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """获取会话最近一次叫车的品类等元数据（须与当前 order_id 一致时使用方自行校验）。"""
+        return self.session_last_ride_meta.get(session_id)
+
     def clear_last_ride_order_id(self, session_id: str) -> None:
-        """取消订单成功后清除会话的最近订单号"""
-        if session_id in self.session_last_ride_order_id:
-            del self.session_last_ride_order_id[session_id]
-            logger.debug(f"✅ 清除 last_ride_order_id: session_id={session_id}")
+        """取消订单成功后清除会话的最近订单号及关联品类元数据"""
+        self.session_last_ride_order_id.pop(session_id, None)
+        self.session_last_ride_meta.pop(session_id, None)
+        logger.debug(f"✅ 清除 last_ride_order_id / ride_meta: session_id={session_id}")
 
 
 # 全局单例
