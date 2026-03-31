@@ -520,7 +520,7 @@ class GeneralChatWebSocketService:
             current_sentence = ""
             thinking_step_index = 0
             _agent_start_time = time.monotonic()  # 用于超时检测
-            
+
             # 准备TTS配置
             tts_cfg = None
             if enable_tts:
