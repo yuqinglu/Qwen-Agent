@@ -478,22 +478,20 @@ async def get_chat_sessions(
         user_id = get_user_by_header(user_id)
         
         manager = get_general_chat_manager()
-        sessions = manager.get_user_sessions(
-            user_id=user_id,
+        summaries = manager.conv_manager.get_user_conversations(
+            user_id=str(user_id),
             limit=limit,
-            offset=offset
+            offset=offset,
         )
-        
-        # 转换为响应格式
         session_list = [
             ChatSessionListItem(
-                session_id=session.session_id,
-                title=session.title,
-                created_at=session.created_at,
-                updated_at=session.updated_at,
-                message_count=len(session.messages)
+                session_id=s["conversation_id"],
+                title=s["title"],
+                created_at=s["created_at"],
+                updated_at=s["updated_at"],
+                message_count=s["message_count"],
             )
-            for session in sessions
+            for s in summaries
         ]
         
         return GetChatSessionListResponse(
