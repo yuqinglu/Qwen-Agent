@@ -6,7 +6,7 @@
   - 工具匹配层：工具名 → 深度思考步骤文案
   - 交互流程层：多轮叫车交互的 TTS 时机与抑制控制
     · 阶段1：get_user_profile 返回后 → 播报「已查到/请提供电话/请问上车地点」
-    · 阶段2：taxi_estimate 返回、车型卡片推送后 → 播报起终点确认句
+    · 阶段2：taxi_estimate 返回、车型卡片推送后 → 仅一句短引导（价目在卡片上）
     · 阶段2.5：卡片推送之前抑制模型中间输出（避免「北门位置…」等干扰语音）
 """
 
@@ -26,7 +26,8 @@ from .base import Skill, SkillInteractionResult
 PROFILE_TOOL_ENFORCEMENT_MESSAGE = """【打车场景补充规则（本回合有效）】
 1) 若用户本条消息仅提供目的地、明显未提供上车地点或起点信息，不要调用任何工具（包括 get_user_profile），只回复询问上车地点即可。
 2) 除上述情况外，在调用任何地图或滴滴相关工具（含 Didi-Ride-taxi_estimate、taxi_create_order 等）之前，必须先调用一次 get_user_profile。系统中是否已有手机号仅以该工具返回的 JSON 为准；不得因对话里出现过号码、或推测用户已有号码而跳过此工具。
-3) 若 get_user_profile 返回 success 但 profile 中无有效 phone，必须先请用户提供号码并调用 update_user_profile 保存后，再继续叫车相关工具。"""
+3) 若 get_user_profile 返回 success 但 profile 中无有效 phone，必须先请用户提供号码并调用 update_user_profile 保存后，再继续叫车相关工具。
+4) 若已调用 Didi-Ride-taxi_estimate 且界面会展示含车型与预估价的富媒体卡片，你面向用户的正文只保留一句邀请选择车型即可；禁止在正文里重复罗列各档价格、品类代码、预估流程 ID 等卡片上已有的信息。"""
 
 
 def resolve_ride_card_user_phone(
@@ -113,7 +114,7 @@ _RIDE_HAILING_MAP = {
     ),
     "Didi-Ride-taxi_estimate": (
         "查询车型与预估价格",
-        "已获取车型与预估价格。请确认起终点无误后选择一种车型，即可为您下单。",
+        "已展示可选车型与预估，请用户选择。",
     ),
     "Didi-Ride-taxi_create_order": (
         "提交打车订单",
@@ -237,8 +238,8 @@ class RideHailingSkill(Skill):
                 prices = res.get("prices") or res.get("price_list")
                 count = len(prices) if isinstance(prices, list) else 0
                 if count > 0:
-                    return f"已获取到{count}种车型及预估价格。请确认起终点无误后选择车型下单。"
-            return _RIDE_HAILING_MAP.get("Didi-Ride-taxi_estimate", ("", "已获取车型与预估价格。"))[1]
+                    return f"已在界面展示{count}种车型及预估，等待用户选择。"
+            return _RIDE_HAILING_MAP.get("Didi-Ride-taxi_estimate", ("", "已展示车型与预估。"))[1]
 
         for key, (_, thinking) in _RIDE_HAILING_MAP.items():
             if key in name or name == key:
@@ -329,6 +330,8 @@ class RideHailingSkill(Skill):
             return None
 
         if "Didi-Ride-taxi_estimate" in str(tool_name) and tool_args is not None:
+            # 起终点与价目已在 rich_card 展示，文本/语音只保留一句引导即可
+            tts_after = "您想选择哪种车型？"
             origin, destination = None, None
             try:
                 args = tool_args if isinstance(tool_args, dict) else json.loads(str(tool_args))
@@ -337,10 +340,6 @@ class RideHailingSkill(Skill):
                     destination = args.get("to_name")
             except Exception:
                 pass
-            if origin and destination:
-                tts_after = f"起点是{origin}，终点是{destination}，已为您查询到几种车型与预估价格，请确认起终点无误后选择一种车型。"
-            else:
-                tts_after = "已为您查询到几种车型与预估价格，请确认起终点无误后选择一种车型。"
             return SkillInteractionResult(
                 tts_after_card=tts_after,
                 origin=origin,

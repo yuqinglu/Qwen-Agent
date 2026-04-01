@@ -828,8 +828,8 @@ class GeneralChatWebSocketService:
                                         _pushed_ride_confirm_cards_this_turn = True
                                 except Exception as e:
                                     logger.warning(f"⚠️ 打车卡片创建失败: {e}")
-                            # 已推送车型卡片：解除 TTS 抑制，并播报一句「请确认起点终点并选择车型」
-                            if _pushed_ride_confirm_cards_this_turn and enable_tts:
+                            # 已推送车型卡片：解除抑制；无论是否 TTS，均下发一句极简引导（价格在卡片上，勿重复流式复述）
+                            if _pushed_ride_confirm_cards_this_turn:
                                 _ride_hailing_suppress_tts_until_cards = False
                                 ride_confirm_tts = None
                                 if _scenario:
@@ -843,20 +843,20 @@ class GeneralChatWebSocketService:
                                     if action and action.tts_after_card:
                                         ride_confirm_tts = action.tts_after_card
                                 if ride_confirm_tts is None:
-                                    ride_confirm_tts = self._get_ride_confirm_tts_text(
-                                        "车型。", _last_ride_origin, _last_ride_destination
-                                    ) or "已为您查询到几种车型与预估价格，请确认起终点无误后选择一种车型。"
+                                    ride_confirm_tts = "您想选择哪种车型？"
                                 await self._emit_message_delta_for_sentence(websocket, ride_confirm_tts)
-                                await self._send_json(websocket, {
-                                    "type": "sentence_complete",
-                                    "sentence": ride_confirm_tts,
-                                    "timestamp": datetime.now().isoformat(),
-                                })
-                                await self._generate_and_send_audio(
-                                    websocket=websocket,
-                                    text=ride_confirm_tts,
-                                    tts_config=tts_cfg,
-                                )
+                                full_response += "\n\n" + ride_confirm_tts.strip()
+                                if enable_tts:
+                                    await self._send_json(websocket, {
+                                        "type": "sentence_complete",
+                                        "sentence": ride_confirm_tts,
+                                        "timestamp": datetime.now().isoformat(),
+                                    })
+                                    await self._generate_and_send_audio(
+                                        websocket=websocket,
+                                        text=ride_confirm_tts,
+                                        tts_config=tts_cfg,
+                                    )
                                 _ride_confirm_tts_sent_this_turn = True
                                 _last_ride_confirm_tts_sent = ride_confirm_tts
                             # 若为本轮推送的订单成功卡片，立即启动后台轮询（去重保护）
@@ -1071,13 +1071,24 @@ class GeneralChatWebSocketService:
                 # 若本轮已推送车型选择卡片，用一句完整提示作为最终展示（避免“请提供电话”或残句“车型。”）
                 final_content = full_response.strip()
                 if _pushed_ride_confirm_cards_this_turn:
+                    # 卡片已展示价目与流程信息；入库文本保留画像引导等已流式内容，仅截到短引导句，去掉其后误发的冗长复述
+                    short = (_last_ride_confirm_tts_sent or "").strip() or "您想选择哪种车型？"
+                    if final_content.endswith(short):
+                        pass
+                    elif short in final_content:
+                        idx = final_content.rfind(short)
+                        final_content = final_content[: idx + len(short)].strip()
+                    else:
+                        final_content = (
+                            f"{final_content}\n\n{short}".strip() if final_content else short
+                        )
                     fallback = self._get_ride_confirm_tts_text(
                         final_content, _last_ride_origin, _last_ride_destination
                     )
                     if fallback:
                         final_content = fallback
                     elif "请提供您的电话号码" in final_content or final_content.endswith("以便为您叫车。"):
-                        final_content = "已为您查询到几种车型与预估价格，请确认起终点无误后选择一种车型。"
+                        final_content = "您想选择哪种车型？"
                 
                 # 只将本轮新生成的富媒体卡片绑定到本条助手消息
                 rich_cards = new_cards_this_turn or []
@@ -1556,6 +1567,9 @@ class GeneralChatWebSocketService:
         if not fragment or not fragment.strip():
             return None
         s = fragment.strip()
+        # 车型卡片后的标准短问句，勿当作残句扩写
+        if "哪种车型" in s:
+            return None
         # 残句特征：很短且含「车型」，或整段以「车型。」/「选择一种车型。」结尾
         is_ride_fragment = (
             (len(s) <= 12 and "车型" in s)
