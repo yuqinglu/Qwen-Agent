@@ -215,6 +215,13 @@ class Settings(BaseSettings):
         "mcp_selection_strategy": "auto",  # MCP选择策略: auto/manual/router
     }
     
+    # === 通用聊天卡片 TTL（card_display_ttl.yaml）===
+    CARD_TTL_CONFIG_PATH: Optional[str] = Field(
+        default=None,
+        env="CARD_TTL_CONFIG_PATH",
+        description="卡片展示/卡片岛 TTL 配置文件路径；空则使用 ty_mem_agent/config/card_display_ttl.yaml",
+    )
+
     # === 聊天配置 ===
     CHAT_CONFIG: Dict = {
         "max_message_length": 2000,

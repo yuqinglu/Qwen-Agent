@@ -148,10 +148,7 @@ class ChatAttachmentUploadItem(BaseModel):
 
 class ChatAttachmentUploadResponse(BaseResponse):
     """附件上传-申请预签名 URL 响应"""
-    data: Optional[List[ChatAttachmentUploadItem]] = Field(
-        default=None,
-        description="成功时返回列表；业务失败时为 null（勿用 {}，否则与 List 校验冲突）",
-    )
+    data: List[ChatAttachmentUploadItem] = Field(default_factory=list, description="每个文件对应的 save_url 与 upload_url 列表")
 
 
 class ChatAttachmentUseRequest(BaseModel):
@@ -187,10 +184,7 @@ class ChatAttachmentDownloadRequest(BaseModel):
 
 class ChatAttachmentDownloadResponse(BaseResponse):
     """附件预签名下载 URL 响应"""
-    data: Optional[List[ChatAttachmentDownloadItem]] = Field(
-        default=None,
-        description="成功时返回列表；业务失败时为 null",
-    )
+    data: List[ChatAttachmentDownloadItem] = Field(default_factory=list, description="每个保存 URL 对应的下载 URL 列表")
 
 
 # ==================== 辅助函数 ====================
@@ -346,21 +340,12 @@ async def request_chat_attachment_upload(
             )
         )
     except Exception as e:
-        logger.exception("UGC upload 调用失败")
-        return ChatAttachmentUploadResponse(
-            code=5021,
-            msg=f"调用文件服务上传接口失败: {e}",
-            data=None,
-        )
+        raise HTTPException(status_code=500, detail=f"调用文件服务上传接口失败: {e}")
 
     # 解析 UGC 返回的 urlList，映射到 ChatAttachmentUploadItem
     url_list = upload_result.get("urlList")
     if not isinstance(url_list, list):
-        return ChatAttachmentUploadResponse(
-            code=5022,
-            msg="文件服务返回结果缺少 urlList 字段或格式不正确",
-            data=None,
-        )
+        raise HTTPException(status_code=500, detail="文件服务返回结果缺少 urlList 字段或格式不正确")
 
     items: List[ChatAttachmentUploadItem] = []
     for meta, file_url in zip(body.files, url_list):
@@ -377,11 +362,7 @@ async def request_chat_attachment_upload(
         ))
 
     if not items:
-        return ChatAttachmentUploadResponse(
-            code=5023,
-            msg="文件服务未返回任何可用的上传 URL",
-            data=None,
-        )
+        raise HTTPException(status_code=500, detail="文件服务未返回任何可用的上传 URL")
 
     return ChatAttachmentUploadResponse(code=0, msg="success", data=items)
 
@@ -460,19 +441,11 @@ async def get_chat_attachment_download_urls(
         )
     except Exception as e:
         logger.exception("UGC downloadExternal 调用失败")
-        return ChatAttachmentDownloadResponse(
-            code=5021,
-            msg=f"文件服务申请下载 URL 失败: {e}",
-            data=None,
-        )
+        raise HTTPException(status_code=502, detail=f"文件服务申请下载 URL 失败: {e}")
 
     url_list = download_result.get("urlList") or download_result.get("url_list") or []
     if not isinstance(url_list, list):
-        return ChatAttachmentDownloadResponse(
-            code=5022,
-            msg="文件服务返回结果缺少 urlList 或格式不正确",
-            data=None,
-        )
+        raise HTTPException(status_code=502, detail="文件服务返回结果缺少 urlList 或格式不正确")
 
     items: List[ChatAttachmentDownloadItem] = []
     for entry in url_list:
@@ -481,13 +454,6 @@ async def get_chat_attachment_download_urls(
         if not save_url or not download_url:
             continue
         items.append(ChatAttachmentDownloadItem(save_url=save_url, download_url=download_url))
-
-    if not items:
-        return ChatAttachmentDownloadResponse(
-            code=5023,
-            msg="文件服务未返回任何可用的下载 URL",
-            data=None,
-        )
 
     return ChatAttachmentDownloadResponse(code=0, msg="success", data=items)
 
@@ -542,11 +508,11 @@ async def get_chat_sessions(
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception("❌ 获取会话列表失败: {!r}", e)
+        logger.error(f"❌ 获取会话列表失败: {e}", exc_info=True)
         return GetChatSessionListResponse(
             code=1001,
             msg=f"获取会话列表失败: {str(e)}",
-            data=None,
+            data={},
         )
 
 
@@ -590,14 +556,14 @@ async def get_chat_session_detail(
             return GetChatSessionDetailResponse(
                 code=1002,
                 msg="会话不存在",
-                data=None,
+                data={},
             )
         
         if session.user_id != user_id:
             return GetChatSessionDetailResponse(
                 code=1003,
                 msg="无权访问此会话",
-                data=None,
+                data={},
             )
         
         # 构建会话信息
@@ -675,11 +641,11 @@ async def get_chat_session_detail(
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception("❌ 获取会话详情失败: {!r}", e)
+        logger.error(f"❌ 获取会话详情失败: {e}", exc_info=True)
         return GetChatSessionDetailResponse(
             code=1005,
             msg=f"获取会话详情失败: {str(e)}",
-            data=None,
+            data={},
         )
 
 
@@ -742,7 +708,7 @@ async def update_session_title(
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception("❌ 更新会话标题失败: {!r}", e)
+        logger.error(f"❌ 更新会话标题失败: {e}", exc_info=True)
         return UpdateSessionTitleResponse(
             code=1005,
             msg=f"更新会话标题失败: {str(e)}",
@@ -807,7 +773,7 @@ async def delete_session(
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception("❌ 删除会话失败: {!r}", e)
+        logger.error(f"❌ 删除会话失败: {e}", exc_info=True)
         return DeleteSessionResponse(
             code=1006,
             msg=f"删除会话失败: {str(e)}",
@@ -843,14 +809,14 @@ async def get_rich_cards(
             return GetRichCardsResponse(
                 code=1002,
                 msg="会话不存在",
-                data=None,
+                data={},    
             )
         
         if session.user_id != user_id:
             return GetRichCardsResponse(
                 code=1003,
                 msg="无权访问此会话",
-                data=None,
+                data={},   
             )
         
         # 获取卡片列表（与详情接口一致的过期裁剪 + 打车 order 合并）
@@ -862,7 +828,7 @@ async def get_rich_cards(
             return GetRichCardsResponse(
                 code=1004,
                 msg="获取卡片失败",
-                data=None,
+                data={},
             )
         
         return GetRichCardsResponse(
@@ -874,11 +840,11 @@ async def get_rich_cards(
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception("❌ 获取富媒体卡片失败: {!r}", e)
+        logger.error(f"❌ 获取富媒体卡片失败: {e}", exc_info=True)
         return GetRichCardsResponse(
             code=1006,
             msg=f"获取富媒体卡片失败: {str(e)}",
-            data=None,
+            data={},
         )
 
 
@@ -1003,7 +969,7 @@ async def openclaw_callback(request: Request):
                     f"user_id={local_task.user_id}"
                 )
         except Exception as e:
-            logger.exception("[OpenClaw Callback] 结果卡片推送失败: {!r}", e)
+            logger.error(f"[OpenClaw Callback] 结果卡片推送失败: {e}", exc_info=True)
     elif new_status == "failed":
         # 失败分支当前不推「成功结果」卡片，仅更新本地任务；联调时请看本日志或 GET /openclaw/tasks
         logger.info(
@@ -1062,12 +1028,8 @@ async def list_openclaw_tasks(
             },
         }
     except Exception as e:
-        logger.exception("[OpenClaw] 获取任务列表失败: {!r}", e)
-        return {
-            "code": 5001,
-            "msg": f"获取任务列表失败: {e}",
-            "data": {"tasks": [], "total": 0},
-        }
+        logger.error(f"[OpenClaw] 获取任务列表失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.delete(
@@ -1106,8 +1068,8 @@ async def cancel_openclaw_task(
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception("[OpenClaw] 取消任务失败: {!r}", e)
-        return {"code": 5002, "msg": f"取消任务失败: {e}", "data": {}}
+        logger.error(f"[OpenClaw] 取消任务失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ==================== 导出 ====================

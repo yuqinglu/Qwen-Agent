@@ -19,6 +19,7 @@ from .tts_service import get_tts_service, TTSConfig
 from .smart_sentence_splitter import get_sentence_splitter
 from .ugc_client import get_ugc_client
 from .card_island_client import get_card_island_client
+from .card_ttl import ensure_card_expires_at_field, resolve_island_expire_at_unix
 from .user_manager import user_manager
 from .skills import get_skill_registry_lazy, get_scenario_skill, resolve_ride_card_user_phone
 from .todo_chat_sse_service import ExecutionStep
@@ -2375,6 +2376,23 @@ class GeneralChatWebSocketService:
           其失败不影响 WebSocket 推送，仅记录 warning 日志。
         - detail 字段与 WebSocket rich_card 消息字段完全一致，客户端用同一套代码解析。
         """
+        old_exp = card.get("expires_at")
+        ensure_card_expires_at_field(card)
+        new_exp = card.get("expires_at")
+
+        # ensure_card_expires_at_field 可能新填了 expires_at（原来为 None 时），
+        # 同步更新 RichCardManager 落盘记录，保持 /cards API 与推送一致。
+        if old_exp is None and new_exp is not None:
+            card_id = card.get("card_id")
+            if card_id:
+                try:
+                    from ty_mem_agent.server.rich_card_manager import get_rich_card_manager
+                    _rm = get_rich_card_manager()
+                    if _rm.get_card(card_id) is not None:
+                        _rm.update_card(card_id, expires_at=new_exp)
+                except Exception as _exc:
+                    logger.debug(f"同步 RichCardManager expires_at 失败（非阻断）: {_exc}")
+
         # 1) WebSocket 推送
         if websocket is not None:
             await self._send_json(websocket, {
@@ -2395,13 +2413,17 @@ class GeneralChatWebSocketService:
         # 2) 卡片岛推送（fire-and-forget）
         card_type = card.get("card_type") or "unknown"
         detail = json.dumps(card, ensure_ascii=False)
+        exp_at = resolve_island_expire_at_unix(card)
+        island_event: Dict[str, Any] = {"type": card_type, "detail": detail}
+        if exp_at is not None:
+            island_event["expireAt"] = exp_at
 
         async def _publish_to_island():
             try:
                 await asyncio.to_thread(
                     get_card_island_client().publish,
                     user_id,
-                    [{"type": card_type, "detail": detail}],
+                    [island_event],
                 )
                 logger.debug(f"🏝️ 卡片岛推送成功: user_id={user_id}, type={card_type}")
             except Exception as exc:

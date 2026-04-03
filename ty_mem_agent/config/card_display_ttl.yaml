@@ -1,0 +1,29 @@
+# 通用聊天卡片 TTL（秒）。null 表示永不过期（卡片岛不传 expireAt，卡片 expires_at 为 null）
+# island_ttl_seconds：卡片岛 Dubbo publish 的过期时刻 = 推送时 now + ttl
+# message_ttl_seconds：会话历史 rich_cards 展示裁剪用（可与 island 不同）
+# ride_hailing_stage_ttl_seconds：card_type=ride_hailing 时按 data.stage 覆盖对应段落下的 by_card_type
+
+island_ttl_seconds:
+  default: 86400
+  by_card_type:
+    ride_hailing: 172800
+    weather: 86400      # 天气预报当天内有效；如需更短可改为 3600
+    async_task_result: 604800
+    todo: 2592000
+
+message_ttl_seconds:
+  default: 86400
+  by_card_type:
+    ride_hailing: 172800
+    weather: 86400      # 与 island 保持一致；历史消息中天气卡保留 24h
+    async_task_result: 604800
+    todo: 2592000
+
+ride_hailing_stage_ttl_seconds:
+  confirm: 1800
+  executing: 600
+  success: 86400
+  driver_assigned: 86400
+  driver_approaching: 3600
+  driver_arrived: 172800
+  cancelled: 86400

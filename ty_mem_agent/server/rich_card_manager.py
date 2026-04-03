@@ -1651,27 +1651,10 @@ def _infer_card_icon(card_type: str) -> Optional[str]:
 
 
 def _infer_card_expires_at(data: Dict, card_type: str) -> Optional[str]:
-    """推断卡片过期时间"""
-    from datetime import datetime, timedelta
-    
-    if card_type == 'weather':
-        # 天气卡片通常当天有效
-        if 'date' in data:
-            try:
-                date_obj = datetime.fromisoformat(data['date'].replace('Z', '+00:00'))
-                # 设置为当天23:59:59
-                expires_at = date_obj.replace(hour=23, minute=59, second=59)
-                return expires_at.isoformat()
-            except:
-                pass
-        # 默认24小时后过期
-        expires_at = datetime.now() + timedelta(hours=24)
-        return expires_at.isoformat()
-    elif card_type in ['navigation', 'ride_hailing']:
-        # 导航和打车信息通常1小时后过期
-        expires_at = datetime.now() + timedelta(hours=1)
-        return expires_at.isoformat()
-
+    """
+    卡片过期时间由 card_display_ttl.yaml 统一管理，此处统一返回 None。
+    实际 expires_at 由 card_ttl.ensure_card_expires_at_field 在推送阶段根据配置写入。
+    """
     return None
 
 
