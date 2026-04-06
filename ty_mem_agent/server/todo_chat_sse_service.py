@@ -404,7 +404,7 @@ class TodoChatSSEService:
             logger.info(f"✅ 待办聊天处理完成: session={session.session_id}, duration={duration_ms}ms")
             
         except Exception as e:
-            logger.error(f"❌ 待办聊天处理失败: {e}", exc_info=True)
+            logger.exception("❌ 待办聊天处理失败: {!r}", e)
             yield self._format_sse_event("error", {
                 "code": 500,
                 "message": "处理失败",

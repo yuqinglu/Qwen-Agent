@@ -12,6 +12,8 @@ from datetime import datetime
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, status
 from fastapi.security import HTTPBearer
 from fastapi.middleware.cors import CORSMiddleware
+
+from .request_timing_middleware import RequestTimingMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from loguru import logger
@@ -68,7 +70,12 @@ class ChatServer:
             allow_methods=["*"],
             allow_headers=["*"],
         )
-        
+        # 后添加的中间件更靠近路由：记录进入应用时间与 handler 链耗时（便于对比网络/Nginx）
+        self.app.add_middleware(
+            RequestTimingMiddleware,
+            skip_paths=("/health",),
+        )
+
         # WebSocket连接管理
         self.active_connections: Dict[str, WebSocket] = {}
         self.user_agents: Dict[str, TYMemoryAgent] = {}

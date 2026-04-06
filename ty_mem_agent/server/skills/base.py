@@ -115,6 +115,22 @@ class Skill(ABC):
         """
         return self.applies_to(current_message)
 
+    def applies_to_with_full_history(
+        self,
+        full_history: List[Dict[str, str]],
+        current_message: str,
+    ) -> bool:
+        """
+        结合完整对话历史（含 user 和 assistant 消息）判断当前消息是否属于本技能场景。
+
+        默认实现：从 full_history 提取 user 文本，委托给 applies_to_with_history，
+        保持向后兼容。需要感知 assistant 上下文或使用 LLM 分析的技能应重写本方法。
+        """
+        user_texts = [
+            m.get("content", "") for m in full_history if m.get("role") == "user"
+        ]
+        return self.applies_to_with_history(user_texts, current_message)
+
     def on_tool_result(
         self,
         tool_name: str,
@@ -136,6 +152,14 @@ class Skill(ABC):
         无状态技能保持默认值 True 即可，无需重写。
         """
         return True
+
+    def get_agent_message_prefixes(self) -> List[Dict[str, str]]:
+        """
+        本回合调用 LLM 前，插入到历史消息列表**最前面**的额外消息（通常为 role=system）。
+        通用聊天服务按列表顺序从前往后 prepend（先插入的条目离用户消息最近）。
+        默认无补充；业务规则（如叫车前必须先 get_user_profile）由具体 Skill 实现。
+        """
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -217,28 +241,42 @@ class SkillRegistry:
     # 交互流程层接口（替代原 scenarios.get_scenario_for_message）
     # ------------------------------------------------------------------
 
-    def get_scenario_skill(self, user_message: str, history: Optional[List[str]] = None) -> Optional[Skill]:
+    def get_scenario_skill(
+        self,
+        user_message: str,
+        history: Optional[List[str]] = None,
+        full_history: Optional[List[Dict[str, str]]] = None,
+    ) -> Optional[Skill]:
         """
-        根据用户首条消息判断是否进入某技能的交互流程。
-        若匹配则返回该技能，否则返回 None。
+        根据对话历史判断是否进入某技能的交互流程，若匹配则返回该技能。
+
+        优先级：full_history（完整 user+assistant 轮次，可走 LLM 分类）>
+               history（仅 user 消息文本）> 仅当前消息。
         """
         if not user_message or not user_message.strip():
             return None
         msg = user_message.strip()
 
-        # 若提供了历史消息，则优先使用多轮语境感知的接口
+        if full_history is not None:
+            for s in self._skills:
+                try:
+                    if s.applies_to_with_full_history(full_history, msg):
+                        return s
+                except Exception:
+                    if s.applies_to(msg):
+                        return s
+            return None
+
         if history is not None:
             for s in self._skills:
                 try:
                     if s.applies_to_with_history(history, msg):
                         return s
                 except TypeError:
-                    # 兼容旧实现（某些技能可能尚未定义该方法）
                     if s.applies_to(msg):
                         return s
             return None
 
-        # 否则退回到仅基于当前消息的判定
         for s in self._skills:
             if s.applies_to(msg):
                 return s

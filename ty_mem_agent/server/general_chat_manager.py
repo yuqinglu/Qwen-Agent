@@ -141,15 +141,8 @@ class GeneralChatManager:
             user_id=str(user_id),
             title=title
         )
-        
-        # 替换会话ID为通用聊天格式
         old_id = conversation.conversation_id
-        conversation.conversation_id = conversation_id
-        
-        # 更新内部缓存
-        self.conv_manager.conversations[conversation_id] = conversation
-        if old_id in self.conv_manager.conversations:
-            del self.conv_manager.conversations[old_id]
+        self.conv_manager.rename_conversation_id(old_id, conversation_id)
         
         # 初始化卡片列表
         self.session_cards[conversation_id] = []
@@ -179,19 +172,16 @@ class GeneralChatManager:
         Returns:
             会话列表（按更新时间倒序）
         """
-        # 委托给 ConversationManager
         summaries = self.conv_manager.get_user_conversations(
             user_id=str(user_id),
-            limit=limit
+            limit=limit,
+            offset=offset,
         )
-        
-        # 获取完整的会话对象并包装
         sessions = []
-        for summary in summaries[offset:offset + limit]:
-            conversation = self.conv_manager.get_conversation(summary['conversation_id'])
+        for summary in summaries:
+            conversation = self.conv_manager.get_conversation(summary["conversation_id"])
             if conversation:
                 sessions.append(SessionWrapper(conversation))
-        
         return sessions
     
     def update_session_title(self, session_id: str, title: str) -> bool:

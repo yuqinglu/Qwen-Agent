@@ -31,7 +31,8 @@ CARD_TYPES = [
     "contact",           # 联系人卡片
     "document",          # 文档卡片
     "link",              # 链接卡片
-    "custom"             # 自定义卡片
+    "custom",            # 自定义卡片
+    "async_task_result"  # 异步任务结果卡片（OpenClaw 执行完成后推送）
 ]
 
 
@@ -1650,26 +1651,104 @@ def _infer_card_icon(card_type: str) -> Optional[str]:
 
 
 def _infer_card_expires_at(data: Dict, card_type: str) -> Optional[str]:
-    """推断卡片过期时间"""
-    from datetime import datetime, timedelta
-    
-    if card_type == 'weather':
-        # 天气卡片通常当天有效
-        if 'date' in data:
-            try:
-                date_obj = datetime.fromisoformat(data['date'].replace('Z', '+00:00'))
-                # 设置为当天23:59:59
-                expires_at = date_obj.replace(hour=23, minute=59, second=59)
-                return expires_at.isoformat()
-            except:
-                pass
-        # 默认24小时后过期
-        expires_at = datetime.now() + timedelta(hours=24)
-        return expires_at.isoformat()
-    elif card_type in ['navigation', 'ride_hailing']:
-        # 导航和打车信息通常1小时后过期
-        expires_at = datetime.now() + timedelta(hours=1)
-        return expires_at.isoformat()
-    
+    """
+    卡片过期时间由 card_display_ttl.yaml 统一管理，此处统一返回 None。
+    实际 expires_at 由 card_ttl.ensure_card_expires_at_field 在推送阶段根据配置写入。
+    """
     return None
+
+
+# ---------------------------------------------------------------------------
+# 异步任务结果卡片构建（OpenClaw 执行完成后使用）
+# ---------------------------------------------------------------------------
+
+def build_async_task_result_card(
+    user_id: int,
+    task_id: str,
+    task_description: str,
+    result_markdown: str,
+    task_type: str = "one_time",
+    fallback_reason: Optional[str] = None,
+    next_run_at: Optional[str] = None,
+    executed_at: Optional[str] = None,
+    session_id: Optional[str] = None,
+) -> Optional[RichCard]:
+    """
+    构建 OpenClaw 任务执行结果卡片。
+
+    Args:
+        user_id: 用户 ID（calendar_user_id）
+        task_id: 我们系统的任务 ID
+        task_description: 任务描述
+        result_markdown: 执行结果（Markdown 格式）
+        task_type: periodic | research | one_time
+        fallback_reason: 触发 OpenClaw 的原因
+        next_run_at: 下次执行时间（仅周期任务）
+        executed_at: 本次执行时间
+        session_id: 关联会话 ID
+
+    Returns:
+        RichCard 对象，若构建失败则返回 None
+    """
+    try:
+        manager = get_rich_card_manager()
+        now = datetime.now().isoformat()
+        exec_time = executed_at or now
+
+        # 标题根据任务类型区分
+        type_labels = {
+            "periodic": "定期任务报告",
+            "research": "调研报告",
+            "one_time": "任务完成",
+        }
+        title = type_labels.get(task_type, "任务完成")
+
+        # 副标题：任务描述截断
+        subtitle = task_description if len(task_description) <= 30 else task_description[:28] + "…"
+
+        # 操作按钮
+        actions = []
+        if task_type == "periodic" and next_run_at:
+            actions.append({
+                "label": f"下次执行: {_format_time_friendly(next_run_at)}",
+                "action": "info",
+            })
+        actions.append({"label": "取消任务", "action": "cancel_task", "task_id": task_id})
+
+        card_data = {
+            "task_id": task_id,
+            "task_description": task_description,
+            "task_type": task_type,
+            "fallback_reason": fallback_reason,
+            "result_markdown": result_markdown,
+            "executed_at": exec_time,
+            "next_run_at": next_run_at,
+            "session_id": session_id,
+            "actions": actions,
+        }
+
+        card = manager.create_card(
+            event_id=0,
+            user_id=user_id,
+            card_type="async_task_result",
+            title=title,
+            subtitle=subtitle,
+            icon="🤖",
+            data=card_data,
+            source="openclaw",
+        )
+        logger.info(f"[RichCardManager] 异步任务结果卡片已创建: card_id={card.card_id}, task_id={task_id}")
+        return card
+    except Exception as e:
+        logger.error(f"[RichCardManager] 构建异步任务结果卡片失败: {e}")
+        return None
+
+
+def _format_time_friendly(iso_str: str) -> str:
+    """将 ISO 时间字符串转为友好显示格式。"""
+    try:
+        dt = datetime.fromisoformat(iso_str)
+        return dt.strftime("%m/%d %H:%M")
+    except Exception:
+        return iso_str
 

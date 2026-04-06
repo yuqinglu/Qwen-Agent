@@ -6,14 +6,89 @@
   - 工具匹配层：工具名 → 深度思考步骤文案
   - 交互流程层：多轮叫车交互的 TTS 时机与抑制控制
     · 阶段1：get_user_profile 返回后 → 播报「已查到/请提供电话/请问上车地点」
-    · 阶段2：taxi_estimate 返回、车型卡片推送后 → 播报起终点确认句
+    · 阶段2：taxi_estimate 返回、车型卡片推送后 → 仅一句短引导（价目在卡片上）
     · 阶段2.5：卡片推送之前抑制模型中间输出（避免「北门位置…」等干扰语音）
 """
 
 import json
+import re
 from typing import Any, Dict, List, Optional
 
+from loguru import logger
+
 from .base import Skill, SkillInteractionResult
+
+
+# ---------------------------------------------------------------------------
+# Agent 注入：与主系统提示「仅目的地则不调用工具」一致，强制以 get_user_profile 为准核对手机号
+# ---------------------------------------------------------------------------
+
+PROFILE_TOOL_ENFORCEMENT_MESSAGE = """【打车场景补充规则（本回合有效）】
+1) 若用户本条消息仅提供目的地、明显未提供上车地点或起点信息，不要调用任何工具（包括 get_user_profile），只回复询问上车地点即可。
+2) 除上述情况外，在调用任何地图或滴滴相关工具（含 Didi-Ride-taxi_estimate、taxi_create_order 等）之前，必须先调用一次 get_user_profile。系统中是否已有手机号仅以该工具返回的 JSON 为准；不得因对话里出现过号码、或推测用户已有号码而跳过此工具。
+3) 若 get_user_profile 返回 success 但 profile 中无有效 phone，必须先请用户提供号码并调用 update_user_profile 保存后，再继续叫车相关工具。
+4) 若已调用 Didi-Ride-taxi_estimate 且界面会展示含车型与预估价的富媒体卡片，你面向用户的正文只保留一句邀请选择车型即可；禁止在正文里重复罗列各档价格、品类代码、预估流程 ID 等卡片上已有的信息。"""
+
+
+def resolve_ride_card_user_phone(
+    chat_manager: Any,
+    session_id: Optional[str],
+    calendar_user_id: int,
+    agent_user_id: str,
+    cached_from_profile_tool: Optional[str],
+) -> Optional[str]:
+    """
+    打车预估/订单卡片展示用电话：同轮 get_user_profile 工具结果 → 画像库（多 user_id 主键）
+    → 本会话近期用户/助手消息中的 11 位手机号。
+    chat_manager 须实现 get_session_messages(session_id, limit=...)。
+    """
+    if cached_from_profile_tool:
+        s = str(cached_from_profile_tool).strip()
+        if s:
+            return s
+    try:
+        from ty_mem_agent.memory.user_memory import get_integrated_memory
+
+        um = get_integrated_memory().user_manager
+        seen = set()
+        candidate_ids = [
+            agent_user_id,
+            f"user_cal_{calendar_user_id}",
+            str(calendar_user_id),
+        ]
+        for cid in candidate_ids:
+            if not cid or cid in seen:
+                continue
+            seen.add(str(cid))
+            try:
+                profile = um.get_user_profile(str(cid))
+            except Exception:
+                continue
+            if not profile:
+                continue
+            ph = getattr(profile, "phone", None)
+            if ph is not None:
+                raw = str(ph).strip()
+                if raw:
+                    return raw
+    except Exception as e:
+        logger.debug(f"从画像解析打车电话失败: {e}")
+
+    if session_id and chat_manager is not None:
+        pat = re.compile(r"\b1[3-9]\d{9}\b")
+        try:
+            recent = chat_manager.get_session_messages(session_id, limit=50)
+            for msg in reversed(recent or []):
+                role = getattr(msg, "role", None)
+                if role not in ("user", "assistant"):
+                    continue
+                content = (getattr(msg, "content", None) or "") or ""
+                m = pat.search(content)
+                if m:
+                    return m.group(0)
+        except Exception as e:
+            logger.debug(f"从会话消息解析打车电话失败: {e}")
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -39,7 +114,7 @@ _RIDE_HAILING_MAP = {
     ),
     "Didi-Ride-taxi_estimate": (
         "查询车型与预估价格",
-        "已获取车型与预估价格。请确认起终点无误后选择一种车型，即可为您下单。",
+        "已展示可选车型与预估，请用户选择。",
     ),
     "Didi-Ride-taxi_create_order": (
         "提交打车订单",
@@ -84,7 +159,7 @@ class RideHailingSkill(Skill):
     打车技能：滴滴、高德地点、用户手机号。
 
     交互流程层：
-      - applies_to 检测叫车意图关键词
+      - 场景/意图由主力大模型结合对话判断（无关键字匹配）
       - on_tool_result 在 get_user_profile / taxi_estimate 后注入 TTS
       - should_tts_model_output 在卡片推送之前抑制模型中间输出
     """
@@ -163,8 +238,8 @@ class RideHailingSkill(Skill):
                 prices = res.get("prices") or res.get("price_list")
                 count = len(prices) if isinstance(prices, list) else 0
                 if count > 0:
-                    return f"已获取到{count}种车型及预估价格。请确认起终点无误后选择车型下单。"
-            return _RIDE_HAILING_MAP.get("Didi-Ride-taxi_estimate", ("", "已获取车型与预估价格。"))[1]
+                    return f"已在界面展示{count}种车型及预估，等待用户选择。"
+            return _RIDE_HAILING_MAP.get("Didi-Ride-taxi_estimate", ("", "已展示车型与预估。"))[1]
 
         for key, (_, thinking) in _RIDE_HAILING_MAP.items():
             if key in name or name == key:
@@ -184,55 +259,28 @@ class RideHailingSkill(Skill):
     # ------------------------------------------------------------------
 
     def applies_to(self, user_message: str) -> bool:
-        """检测叫车意图关键词（仅基于当前这句话）。"""
+        """无历史时由主力模型判断当前句是否属于叫车场景（注册表异常回退等路径）。"""
         if not user_message or not user_message.strip():
             return False
-        msg = user_message.strip()
-        keywords = ("叫车", "打车", "叫个车", "帮我叫车", "约车", "网约车")
-        return any(k in msg for k in keywords)
+        snippet = f"用户（当前轮）: {user_message.strip()[:800]}"
+        return self._llm_is_ride_hailing_scenario(snippet)
 
     def applies_to_with_history(self, history_messages: List[str], current_message: str) -> bool:
         """
-        结合最近几轮用户消息 + 当前消息判断是否处于打车场景。
-
-        规则：
-        1. 如果当前这句话本身就包含「叫车 / 打车」等关键词 → 直接视为打车场景
-        2. 否则，如果当前这句话是补充电话号码（包含“电话/手机号”等，且能解析出 11 位手机号），
-           且最近几轮用户消息中曾出现过打车意图 → 也视为仍处于打车场景
+        仅有多轮用户文本、无助手侧上下文时，仍用主力模型判断（如未传 full_history 的调用）。
         """
-        # 1）当前消息本身包含打车意图，则直接命中
-        if self.applies_to(current_message):
-            return True
-
-        if not history_messages:
+        cur = (current_message or "").strip()
+        if not cur:
             return False
-
-        msg = (current_message or "").strip()
-        if not msg:
-            return False
-
-        # 2）当前消息是“补充手机号”：
-        #    - 不再强依赖中国大陆 11 位格式
-        #    - 也不强制要求包含「电话/手机号」等关键词
-        #    - 只要本句「明显像一串号码」（数字较多，且整体不太长），并且历史中出现过打车意图，就视为仍在打车场景
-        digits = "".join(ch for ch in msg if ch.isdigit())
-        # 经验阈值：>=6 位数字，且总长度不过长（避免把长串订单号/地址当成手机号）
-        looks_like_phone = len(digits) >= 6 and len(msg) <= 20
-        if not looks_like_phone:
-            # 辅助判定：包含常见电话类关键词时，适当放宽数字长度要求
-            phone_keywords = ("电话", "手机号", "手机号码", "联系电话", "phone", "tel", "mobile")
-            if any(k in msg.lower() for k in phone_keywords):
-                looks_like_phone = len(digits) >= 3
-
-        if looks_like_phone:
-            # 检查最近几轮历史里是否出现过打车意图关键词
-            ride_keywords = ("叫车", "打车", "叫个车", "帮我叫车", "约车", "网约车")
-            for h in history_messages:
-                h_msg = (h or "").strip()
-                if any(k in h_msg for k in ride_keywords):
-                    return True
-
-        return False
+        prior = list(history_messages or [])
+        if prior and prior[-1].strip() == cur:
+            prior = prior[:-1]
+        lines: List[str] = []
+        for h in prior[-16:]:
+            lines.append(f"用户: {(h or '')[:500]}")
+        block = "\n".join(lines) if lines else "(无更早的用户发言)"
+        snippet = f"{block}\n\n用户（当前轮）: {cur[:800]}"
+        return self._llm_is_ride_hailing_scenario(snippet)
 
     def on_tool_result(
         self,
@@ -282,6 +330,8 @@ class RideHailingSkill(Skill):
             return None
 
         if "Didi-Ride-taxi_estimate" in str(tool_name) and tool_args is not None:
+            # 起终点与价目已在 rich_card 展示，文本/语音只保留一句引导即可
+            tts_after = "您想选择哪种车型？"
             origin, destination = None, None
             try:
                 args = tool_args if isinstance(tool_args, dict) else json.loads(str(tool_args))
@@ -290,10 +340,6 @@ class RideHailingSkill(Skill):
                     destination = args.get("to_name")
             except Exception:
                 pass
-            if origin and destination:
-                tts_after = f"起点是{origin}，终点是{destination}，已为您查询到几种车型与预估价格，请确认起终点无误后选择一种车型。"
-            else:
-                tts_after = "已为您查询到几种车型与预估价格，请确认起终点无误后选择一种车型。"
             return SkillInteractionResult(
                 tts_after_card=tts_after,
                 origin=origin,
@@ -309,3 +355,113 @@ class RideHailingSkill(Skill):
         if suppress and not pushed:
             return False
         return True
+
+    def get_agent_message_prefixes(self) -> List[Dict[str, str]]:
+        """注入本回合 system 规则，约束 get_user_profile 与滴滴/地图工具顺序。"""
+        return [{"role": "system", "content": PROFILE_TOOL_ENFORCEMENT_MESSAGE}]
+
+    # ------------------------------------------------------------------
+    # 打车场景识别：主力大模型 + 对话上下文（无关键字规则）
+    # ------------------------------------------------------------------
+
+    def applies_to_with_full_history(
+        self,
+        full_history: List[Dict[str, str]],
+        current_message: str,
+    ) -> bool:
+        """结合 user/assistant 完整轮次，由项目配置的主力模型判定是否处于叫车场景。"""
+        if not current_message or not str(current_message).strip():
+            return False
+        recent = full_history[-20:] if len(full_history) > 20 else full_history
+        lines: List[str] = []
+        for m in recent:
+            role = (m.get("role") or "user").strip().lower()
+            label = "用户" if role == "user" else "助手"
+            lines.append(f"{label}: {(m.get('content') or '')[:500]}")
+        snippet = "\n".join(lines) if lines else f"用户（当前轮）: {str(current_message).strip()[:800]}"
+        return self._llm_is_ride_hailing_scenario(snippet)
+
+    def _parse_ride_hailing_json_flag(self, text: str) -> Optional[bool]:
+        """解析分类模型返回的 JSON 行；解析失败返回 None。"""
+        if not text or not str(text).strip():
+            return None
+        raw = str(text).strip()
+        if raw.startswith("```"):
+            raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
+            raw = re.sub(r"\s*```\s*$", "", raw)
+        try:
+            obj = json.loads(raw)
+            if isinstance(obj, dict) and "in_ride_hailing" in obj:
+                return bool(obj.get("in_ride_hailing"))
+        except Exception:
+            pass
+        return None
+
+    def _llm_is_ride_hailing_scenario(self, dialogue_snippet: str) -> bool:
+        """
+        使用项目 `get_llm_config()` 中的主力模型判断对话片段是否应按网约车/叫车流程处理。
+        失败时保守返回 False。
+        """
+        try:
+            from ty_mem_agent.config.settings import get_llm_config
+            from qwen_agent.llm import get_chat_model
+            from qwen_agent.llm.schema import Message as LLMMessage
+            from qwen_agent.llm.schema import USER as LLM_USER, SYSTEM as LLM_SYSTEM
+
+            llm_config = dict(get_llm_config())
+            llm = get_chat_model(llm_config)
+            # qwen3-max 等会启用 use_raw_api，框架要求 full stream（stream=True, delta_stream=False）
+            use_stream = bool(getattr(llm, "use_raw_api", False))
+
+            system_prompt = (
+                "你是对话场景分类器。根据下面「对话片段」（旧到新，可能含用户与助手），"
+                "判断当前应处理的业务是否属于网约车/叫车相关流程。\n"
+                "属于的情况包括：用户要叫车、去某地、补充上车点或目的地、补充联系方式、"
+                "选择车型或价格档、确认/取消叫车、查询进行中的用车订单等。\n"
+                "不属于的情况包括：与叫车无关的天气、闲聊、纯资讯、与出行叫车无关的地图或搜索等。\n"
+                "请仅依据对话语义与上下文判断，不要臆测未出现的信息。\n"
+                "只输出一行 JSON，且必须是以下二者之一，不要输出其他任何字符：\n"
+                '{"in_ride_hailing": true}\n'
+                "或\n"
+                '{"in_ride_hailing": false}'
+            )
+            user_content = f"对话片段：\n{dialogue_snippet}"
+
+            messages = [
+                LLMMessage(role=LLM_SYSTEM, content=system_prompt),
+                LLMMessage(role=LLM_USER, content=user_content),
+            ]
+            response_text = ""
+            out = llm.chat(messages=messages, stream=use_stream, delta_stream=False)
+            if use_stream:
+                for responses in out:
+                    if not responses:
+                        continue
+                    last = responses[-1] if isinstance(responses, list) else responses
+                    if hasattr(last, "content") and last.content:
+                        response_text = (
+                            last.content
+                            if isinstance(last.content, str)
+                            else str(last.content)
+                        )
+            else:
+                responses = out
+                if responses:
+                    last = responses[-1] if isinstance(responses, list) else responses
+                    if hasattr(last, "content") and last.content:
+                        response_text = (
+                            last.content
+                            if isinstance(last.content, str)
+                            else str(last.content)
+                        )
+
+            parsed = self._parse_ride_hailing_json_flag(response_text)
+            result = bool(parsed) if parsed is not None else False
+            logger.debug(
+                f"打车场景 LLM 分类: snippet_len={len(dialogue_snippet)}, "
+                f"raw={response_text[:120]!r}, result={result}"
+            )
+            return result
+        except Exception as e:
+            logger.debug(f"打车场景 LLM 分类失败: {e}")
+            return False

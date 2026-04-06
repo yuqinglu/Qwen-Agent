@@ -53,6 +53,7 @@ class CardIslandClient(BaseDubboTripleClient):
             events:  卡片事件列表，每项包含：
                        - type (str)：卡片类型，如 "weather"
                        - detail (str)：描述字符串或结构化 JSON 序列化后的字符串
+                       - expireAt (int, 可选)：Unix 秒级过期时刻；省略表示由卡片岛按默认处理
 
         Returns:
             包含 events 列表的字典，每项含 id / userId / createTime / type / detail。
@@ -62,17 +63,22 @@ class CardIslandClient(BaseDubboTripleClient):
             f"🔧 调用 CardIslandDubboService.publish: "
             f"userId={user_id}, events={len(events)}"
         )
+        serialized_events = []
+        for e in events:
+            ev: Dict[str, Any] = {
+                "type": e.get("type"),
+                "detail": e.get("detail"),
+            }
+            exp = e.get("expireAt")
+            if exp is not None:
+                ev["expireAt"] = int(exp)
+            serialized_events.append(ev)
+
         return self._request_triple(
             "publish",
             {
                 "userId": user_id,
-                "events": [
-                    {
-                        "type": e.get("type"),
-                        "detail": e.get("detail"),
-                    }
-                    for e in events
-                ],
+                "events": serialized_events,
             },
         )
 

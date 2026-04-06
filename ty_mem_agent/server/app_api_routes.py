@@ -86,8 +86,8 @@ def get_user_by_header(x_user_id: int = Header(..., alias="x-user-id", descripti
     
     if not user:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"无法创建或获取用户: calendar_user_id={x_user_id}"
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"无法创建或获取用户: calendar_user_id={x_user_id}",
         )
     
     # 确保calendar_user_id已设置
@@ -1823,10 +1823,10 @@ async def todo_chat_stream(
         )
         
     except Exception as e:
-        logger.error(f"❌ 待办聊天SSE处理失败: {e}", exc_info=True)
+        logger.exception("❌ 待办聊天SSE处理失败: {!r}", e)
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"处理失败: {str(e)}"
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"处理失败: {str(e)}",
         )
 
 
