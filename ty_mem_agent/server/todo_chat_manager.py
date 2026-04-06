@@ -8,7 +8,7 @@ import json
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple, Set
 from dataclasses import dataclass, asdict, field
 from loguru import logger
 
@@ -112,12 +112,29 @@ class TodoChatManager:
         
         # 内存缓存: {session_id: TodoChatSession}
         self.sessions: Dict[str, TodoChatSession] = {}
+        # (event_id, user_id) -> session_id 集合，避免列表接口全表扫描
+        self._event_user_session_ids: Dict[Tuple[int, int], Set[str]] = {}
         
         # 加载已有会话
         self._load_sessions()
         
         self._initialized = True
         logger.info(f"✅ 待办聊天管理器初始化完成，数据目录: {self.data_dir}")
+    
+    def _index_key(self, event_id: int, user_id: int) -> Tuple[int, int]:
+        return (event_id, user_id)
+    
+    def _index_add_session(self, session: TodoChatSession) -> None:
+        key = self._index_key(session.event_id, session.user_id)
+        self._event_user_session_ids.setdefault(key, set()).add(session.session_id)
+    
+    def _index_remove_session(self, session: TodoChatSession) -> None:
+        key = self._index_key(session.event_id, session.user_id)
+        s = self._event_user_session_ids.get(key)
+        if s:
+            s.discard(session.session_id)
+            if not s:
+                del self._event_user_session_ids[key]
     
     def _load_sessions(self):
         """从文件加载会话"""
@@ -128,6 +145,7 @@ class TodoChatManager:
                         data = json.load(f)
                         session = TodoChatSession.from_dict(data)
                         self.sessions[session.session_id] = session
+                        self._index_add_session(session)
                 except Exception as e:
                     logger.warning(f"⚠️ 加载会话文件失败 {file_path}: {e}")
             
@@ -169,6 +187,7 @@ class TodoChatManager:
         )
         
         self.sessions[session_id] = session
+        self._index_add_session(session)
         self._save_session(session)
         
         logger.info(f"✅ 创建待办聊天会话: {session_id}, event_id={event_id}, user_id={user_id}")
@@ -180,11 +199,11 @@ class TodoChatManager:
     
     def get_sessions_by_event(self, event_id: int, user_id: int) -> List[TodoChatSession]:
         """获取指定待办的所有会话"""
+        key = self._index_key(event_id, user_id)
+        ids = self._event_user_session_ids.get(key, set())
         sessions = [
-            s for s in self.sessions.values()
-            if s.event_id == event_id and s.user_id == user_id
+            self.sessions[sid] for sid in ids if sid in self.sessions
         ]
-        # 按更新时间倒序
         sessions.sort(key=lambda x: x.updated_at, reverse=True)
         return sessions
     
@@ -261,6 +280,7 @@ class TodoChatManager:
         if session_id not in self.sessions:
             return False
         
+        self._index_remove_session(self.sessions[session_id])
         del self.sessions[session_id]
         
         # 删除文件

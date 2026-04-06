@@ -5,6 +5,7 @@
 """
 
 import json
+import time
 import uuid
 import asyncio
 from datetime import datetime
@@ -18,9 +19,15 @@ from .tts_service import get_tts_service, TTSConfig
 from .smart_sentence_splitter import get_sentence_splitter
 from .ugc_client import get_ugc_client
 from .card_island_client import get_card_island_client
+from .card_ttl import ensure_card_expires_at_field, resolve_island_expire_at_unix
 from .user_manager import user_manager
-from .skills import get_skill_registry_lazy, get_scenario_skill
+from .skills import get_skill_registry_lazy, get_scenario_skill, resolve_ride_card_user_phone
 from .todo_chat_sse_service import ExecutionStep
+from .task_capability_evaluator import quick_pre_check_async
+from .local_execution_inspector import inspect_execution_result
+from .openclaw_client import get_openclaw_client
+from .async_task_manager import get_async_task_manager
+from ty_mem_agent.config.settings import settings as ty_settings
 from ty_mem_agent.agents.ty_memory_agent import TYMemoryAgent
 from qwen_agent.llm.schema import Message, USER
 
@@ -383,6 +390,26 @@ class GeneralChatWebSocketService:
                 "type": "generation_started",
                 "timestamp": datetime.now().isoformat()
             })
+
+            # ========== 3.1 OpenClaw 快速预判 ==========
+            # LLM 多语言识别「周期性/定时」意图并生成 5 段 cron；命中则跳过本地执行直通 OpenClaw
+            if ty_settings.OPENCLAW_ENABLED:
+                _pre_check = await quick_pre_check_async(user_message)
+                if _pre_check.skip_local:
+                    logger.info(
+                        f"[OpenClaw] 快速预判命中，跳过本地执行: "
+                        f"reason={_pre_check.fallback_reason}, schedule={_pre_check.suggested_schedule}"
+                    )
+                    await self._submit_and_notify_openclaw(
+                        websocket=websocket,
+                        user_id=user_id,
+                        session_id=session_id,
+                        message_id=user_msg.message_id,
+                        user_message=user_message,
+                        inspection=_pre_check,
+                    )
+                    return
+
             enable_deep_thinking = bool(deep_thinking and client_type == "app")
             thinking_steps: List[ExecutionStep] = []
             business_actions_done: List[str] = []
@@ -493,7 +520,8 @@ class GeneralChatWebSocketService:
             full_response = ""
             current_sentence = ""
             thinking_step_index = 0
-            
+            _agent_start_time = time.monotonic()  # 用于超时检测
+
             # 准备TTS配置
             tts_cfg = None
             if enable_tts:
@@ -519,17 +547,18 @@ class GeneralChatWebSocketService:
             # 本轮已发送过「请确认起终点并选择车型」整句（避免模型尾随输出「车型。」再触发一次重复的 sentence_complete + TTS，且不再下发该尾随 message_delta）
             _ride_confirm_tts_sent_this_turn = False
             _last_ride_confirm_tts_sent: Optional[str] = None
-            # 本回合是否进入某场景（打车等），用于委托 TTS/抑制 决策
-            # 传入最近几轮「用户消息文本」作为历史，便于技能做多轮意图识别
-            history_user_texts: List[str] = [
-                m.get("content", "")
-                for m in history_messages
-                if m.get("role") == "user"
-            ]
-            _scenario = get_scenario_skill(user_message, history_messages=history_user_texts)
+            # 场景识别：传入完整对话历史（user + assistant 两种角色），
+            # 由技能层结合 LLM 判断多轮续接意图（如用户回复上车地点/电话）。
+            # 可能触发 LLM 调用，放入线程池避免阻塞事件循环。
+            _scenario = await asyncio.to_thread(
+                get_scenario_skill, user_message, full_history=history_messages
+            )
+            history_for_agent = self._history_for_agent_with_skill_prefixes(
+                history_messages, _scenario
+            )
 
             async for chunk in self._stream_agent_response(
-                agent, history_messages, deep_thinking,
+                agent, history_for_agent, deep_thinking,
                 plan_result=plan_result if enable_deep_thinking and plan_result else None,
             ):
                 chunk_type = chunk.get("type")
@@ -732,7 +761,8 @@ class GeneralChatWebSocketService:
                         # 电话：画像多主键兜底 + 会话用户/助手消息 + 同轮 get_user_profile 缓存
                         user_phone = None
                         if tool_name and "Didi-Ride-" in tool_name:
-                            user_phone = self._resolve_ride_user_phone(
+                            user_phone = resolve_ride_card_user_phone(
+                                self.chat_manager,
                                 session_id=session_id,
                                 calendar_user_id=user_id,
                                 agent_user_id=agent_user_id,
@@ -799,8 +829,8 @@ class GeneralChatWebSocketService:
                                         _pushed_ride_confirm_cards_this_turn = True
                                 except Exception as e:
                                     logger.warning(f"⚠️ 打车卡片创建失败: {e}")
-                            # 已推送车型卡片：解除 TTS 抑制，并播报一句「请确认起点终点并选择车型」
-                            if _pushed_ride_confirm_cards_this_turn and enable_tts:
+                            # 已推送车型卡片：解除抑制；无论是否 TTS，均下发一句极简引导（价格在卡片上，勿重复流式复述）
+                            if _pushed_ride_confirm_cards_this_turn:
                                 _ride_hailing_suppress_tts_until_cards = False
                                 ride_confirm_tts = None
                                 if _scenario:
@@ -814,20 +844,20 @@ class GeneralChatWebSocketService:
                                     if action and action.tts_after_card:
                                         ride_confirm_tts = action.tts_after_card
                                 if ride_confirm_tts is None:
-                                    ride_confirm_tts = self._get_ride_confirm_tts_text(
-                                        "车型。", _last_ride_origin, _last_ride_destination
-                                    ) or "已为您查询到几种车型与预估价格，请确认起终点无误后选择一种车型。"
+                                    ride_confirm_tts = "您想选择哪种车型？"
                                 await self._emit_message_delta_for_sentence(websocket, ride_confirm_tts)
-                                await self._send_json(websocket, {
-                                    "type": "sentence_complete",
-                                    "sentence": ride_confirm_tts,
-                                    "timestamp": datetime.now().isoformat(),
-                                })
-                                await self._generate_and_send_audio(
-                                    websocket=websocket,
-                                    text=ride_confirm_tts,
-                                    tts_config=tts_cfg,
-                                )
+                                full_response += "\n\n" + ride_confirm_tts.strip()
+                                if enable_tts:
+                                    await self._send_json(websocket, {
+                                        "type": "sentence_complete",
+                                        "sentence": ride_confirm_tts,
+                                        "timestamp": datetime.now().isoformat(),
+                                    })
+                                    await self._generate_and_send_audio(
+                                        websocket=websocket,
+                                        text=ride_confirm_tts,
+                                        tts_config=tts_cfg,
+                                    )
                                 _ride_confirm_tts_sent_this_turn = True
                                 _last_ride_confirm_tts_sent = ride_confirm_tts
                             # 若为本轮推送的订单成功卡片，立即启动后台轮询（去重保护）
@@ -1004,18 +1034,62 @@ class GeneralChatWebSocketService:
                             tts_config=tts_cfg
                         )
             
+            # ========== 3.9 OpenClaw 执行结果检测（兜底）==========
+            # 对本地执行结果做三路检测：超时/异常/LLM无能力表述
+            # 命中则自动提交 OpenClaw，让用户异步收到结果
+            if ty_settings.OPENCLAW_ENABLED:
+                _agent_elapsed_ms = (time.monotonic() - _agent_start_time) * 1000
+                try:
+                    _timeout_ms = float(ty_settings.OPENCLAW_LOCAL_EXEC_TIMEOUT_MS)
+                except Exception:
+                    _timeout_ms = 120_000.0
+                _inspection = inspect_execution_result(
+                    local_result=full_response.strip() or None,
+                    error=None,
+                    elapsed_ms=_agent_elapsed_ms,
+                    timeout_ms=_timeout_ms,
+                )
+                if _inspection.should_fallback:
+                    logger.info(
+                        f"[OpenClaw] 本地执行结果触发兜底: reason={_inspection.fallback_reason}, "
+                        f"elapsed_ms={_agent_elapsed_ms:.0f}"
+                    )
+                    # inability_response 时 LLM 已将拒绝文本流式发给用户，无需再发 done
+                    # 直接提交 OpenClaw 并通过 WebSocket 告知用户
+                    await self._submit_and_notify_openclaw(
+                        websocket=websocket,
+                        user_id=user_id,
+                        session_id=session_id,
+                        message_id=user_msg.message_id,
+                        user_message=user_message,
+                        inspection=_inspection,
+                        suppress_done=(not full_response.strip()),
+                    )
+                    return
+
             # ========== 4. 保存AI回复 ==========
             if full_response.strip():
                 # 若本轮已推送车型选择卡片，用一句完整提示作为最终展示（避免“请提供电话”或残句“车型。”）
                 final_content = full_response.strip()
                 if _pushed_ride_confirm_cards_this_turn:
+                    # 卡片已展示价目与流程信息；入库文本保留画像引导等已流式内容，仅截到短引导句，去掉其后误发的冗长复述
+                    short = (_last_ride_confirm_tts_sent or "").strip() or "您想选择哪种车型？"
+                    if final_content.endswith(short):
+                        pass
+                    elif short in final_content:
+                        idx = final_content.rfind(short)
+                        final_content = final_content[: idx + len(short)].strip()
+                    else:
+                        final_content = (
+                            f"{final_content}\n\n{short}".strip() if final_content else short
+                        )
                     fallback = self._get_ride_confirm_tts_text(
                         final_content, _last_ride_origin, _last_ride_destination
                     )
                     if fallback:
                         final_content = fallback
                     elif "请提供您的电话号码" in final_content or final_content.endswith("以便为您叫车。"):
-                        final_content = "已为您查询到几种车型与预估价格，请确认起终点无误后选择一种车型。"
+                        final_content = "您想选择哪种车型？"
                 
                 # 只将本轮新生成的富媒体卡片绑定到本条助手消息
                 rich_cards = new_cards_this_turn or []
@@ -1418,66 +1492,36 @@ class GeneralChatWebSocketService:
 
         return True
 
-    def _resolve_ride_user_phone(
+    def _history_for_agent_with_skill_prefixes(
         self,
-        session_id: Optional[str],
-        calendar_user_id: int,
-        agent_user_id: str,
-        cached_from_profile_tool: Optional[str],
-    ) -> Optional[str]:
+        history_messages: List[Dict[str, Any]],
+        scenario: Optional[Any],
+    ) -> List[Dict[str, Any]]:
         """
-        打车卡片展示用电话：同轮 get_user_profile 工具结果 → 画像库（多 user_id 主键兜底）
-        → 本会话近期消息（用户与助手正文中的 11 位手机号）。
+        由当前匹配到的 Skill 在队首插入额外消息（如 system 业务规则），保持服务层与具体业务解耦。
         """
-        import re
-
-        if cached_from_profile_tool:
-            s = str(cached_from_profile_tool).strip()
-            if s:
-                return s
+        out = list(history_messages)
+        if scenario is None:
+            return out
         try:
-            from ty_mem_agent.memory.user_memory import get_integrated_memory
-
-            um = get_integrated_memory().user_manager
-            seen = set()
-            candidate_ids = [
-                agent_user_id,
-                f"user_cal_{calendar_user_id}",
-                str(calendar_user_id),
-            ]
-            for cid in candidate_ids:
-                if not cid or cid in seen:
-                    continue
-                seen.add(str(cid))
-                try:
-                    profile = um.get_user_profile(str(cid))
-                except Exception:
-                    continue
-                if not profile:
-                    continue
-                ph = getattr(profile, "phone", None)
-                if ph is not None:
-                    raw = str(ph).strip()
-                    if raw:
-                        return raw
+            prefixes = scenario.get_agent_message_prefixes()
         except Exception as e:
-            logger.debug(f"从画像解析打车电话失败: {e}")
-
-        if session_id:
-            pat = re.compile(r"\b1[3-9]\d{9}\b")
-            try:
-                recent = self.chat_manager.get_session_messages(session_id, limit=50)
-                for msg in reversed(recent or []):
-                    role = getattr(msg, "role", None)
-                    if role not in ("user", "assistant"):
-                        continue
-                    content = (getattr(msg, "content", None) or "") or ""
-                    m = pat.search(content)
-                    if m:
-                        return m.group(0)
-            except Exception as e:
-                logger.debug(f"从会话消息解析打车电话失败: {e}")
-        return None
+            logger.warning(
+                f"技能 get_agent_message_prefixes 失败 "
+                f"skill_id={getattr(scenario, 'skill_id', '?')}: {e}"
+            )
+            return out
+        for p in reversed(prefixes or []):
+            if not isinstance(p, dict):
+                continue
+            content = (p.get("content") or "").strip()
+            if not content:
+                continue
+            role = (p.get("role") or "system").strip().lower()
+            if role != "system":
+                role = "system"
+            out.insert(0, {"role": role, "content": content})
+        return out
 
     async def _emit_message_delta_for_sentence(self, websocket: WebSocket, sentence: str) -> None:
         """
@@ -1524,6 +1568,9 @@ class GeneralChatWebSocketService:
         if not fragment or not fragment.strip():
             return None
         s = fragment.strip()
+        # 车型卡片后的标准短问句，勿当作残句扩写
+        if "哪种车型" in s:
+            return None
         # 残句特征：很短且含「车型」，或整段以「车型。」/「选择一种车型。」结尾
         is_ride_fragment = (
             (len(s) <= 12 and "车型" in s)
@@ -2329,6 +2376,23 @@ class GeneralChatWebSocketService:
           其失败不影响 WebSocket 推送，仅记录 warning 日志。
         - detail 字段与 WebSocket rich_card 消息字段完全一致，客户端用同一套代码解析。
         """
+        old_exp = card.get("expires_at")
+        ensure_card_expires_at_field(card)
+        new_exp = card.get("expires_at")
+
+        # ensure_card_expires_at_field 可能新填了 expires_at（原来为 None 时），
+        # 同步更新 RichCardManager 落盘记录，保持 /cards API 与推送一致。
+        if old_exp is None and new_exp is not None:
+            card_id = card.get("card_id")
+            if card_id:
+                try:
+                    from ty_mem_agent.server.rich_card_manager import get_rich_card_manager
+                    _rm = get_rich_card_manager()
+                    if _rm.get_card(card_id) is not None:
+                        _rm.update_card(card_id, expires_at=new_exp)
+                except Exception as _exc:
+                    logger.debug(f"同步 RichCardManager expires_at 失败（非阻断）: {_exc}")
+
         # 1) WebSocket 推送
         if websocket is not None:
             await self._send_json(websocket, {
@@ -2349,19 +2413,193 @@ class GeneralChatWebSocketService:
         # 2) 卡片岛推送（fire-and-forget）
         card_type = card.get("card_type") or "unknown"
         detail = json.dumps(card, ensure_ascii=False)
+        exp_at = resolve_island_expire_at_unix(card)
+        island_event: Dict[str, Any] = {"type": card_type, "detail": detail}
+        if exp_at is not None:
+            island_event["expireAt"] = exp_at
 
         async def _publish_to_island():
             try:
                 await asyncio.to_thread(
                     get_card_island_client().publish,
                     user_id,
-                    [{"type": card_type, "detail": detail}],
+                    [island_event],
                 )
                 logger.debug(f"🏝️ 卡片岛推送成功: user_id={user_id}, type={card_type}")
             except Exception as exc:
                 logger.warning(f"⚠️ 卡片岛推送失败（不影响主流程）: {exc}")
 
         asyncio.create_task(_publish_to_island())
+
+    # ------------------------------------------------------------------
+    # OpenClaw 集成：任务提交 + 用户通知
+    # ------------------------------------------------------------------
+
+    async def _submit_and_notify_openclaw(
+        self,
+        websocket: WebSocket,
+        user_id: int,
+        session_id: str,
+        message_id: str,
+        user_message: str,
+        inspection: Any,
+        suppress_done: bool = True,
+    ):
+        """
+        将任务提交给 OpenClaw，并通过 WebSocket 告知用户正在处理。
+
+        Args:
+            websocket: 用户 WebSocket 连接
+            user_id: 用户 ID（calendar_user_id）
+            session_id: 当前会话 ID
+            message_id: 触发任务的用户消息 ID
+            user_message: 用户原始消息文本
+            inspection: InspectionResult（快速预判或执行后检测结果）
+            suppress_done: 是否发送 done 事件（仅当本地无任何输出时才需要发）
+        """
+        if not ty_settings.OPENCLAW_ENABLED:
+            logger.debug("[OpenClaw] OPENCLAW_ENABLED=false，跳过 _submit_and_notify_openclaw")
+            return
+
+        from .local_execution_inspector import InspectionResult
+
+        task_type = getattr(inspection, "openclaw_task_type", "one_time") or "one_time"
+        fallback_reason = getattr(inspection, "fallback_reason", "unknown") or "unknown"
+        schedule = getattr(inspection, "suggested_schedule", None)
+        periodic_desc = getattr(inspection, "periodic_description", None)
+
+        # 生成任务描述（面向 OpenClaw）
+        task_description = self._build_openclaw_task_description(
+            user_message, task_type, schedule, periodic_desc
+        )
+
+        # 1. 持久化任务记录
+        task_manager = get_async_task_manager()
+        task = task_manager.create_task(
+            user_id=user_id,
+            session_id=session_id,
+            message_id=message_id,
+            task_description=task_description,
+            original_message=user_message,
+            task_type=task_type,
+            fallback_reason=fallback_reason,
+            schedule=schedule,
+        )
+
+        # 2. 生成面向用户的确认文本
+        confirm_text = self._build_openclaw_confirm_text(
+            task_type, schedule, periodic_desc, fallback_reason
+        )
+
+        # 3. 通过 WebSocket 告知用户（先发 message_delta，再发 done）
+        await self._send_json(websocket, {
+            "type": "message_delta",
+            "content": confirm_text,
+            "timestamp": datetime.now().isoformat(),
+        })
+
+        # 4. 保存助手回复到会话
+        self.chat_manager.add_message(
+            session_id=session_id,
+            role="assistant",
+            content=confirm_text,
+        )
+
+        # 5. 发送 done 事件（让客户端知道本轮生成结束）
+        await self._send_json(websocket, {
+            "type": "done",
+            "message_id": message_id,
+            "full_content": confirm_text,
+            "total_audio_duration_ms": 0,
+            "timestamp": datetime.now().isoformat(),
+            "openclaw_task_id": task.task_id,
+        })
+
+        # 6. 异步提交 OpenClaw（不阻塞 WebSocket 响应）
+        asyncio.create_task(
+            self._do_submit_openclaw(task.task_id, user_id, task_description, user_message,
+                                     task_type, schedule, fallback_reason, session_id)
+        )
+
+    async def _do_submit_openclaw(
+        self,
+        task_id: str,
+        user_id: int,
+        task_description: str,
+        original_message: str,
+        task_type: str,
+        schedule: Optional[str],
+        fallback_reason: str,
+        session_id: str,
+    ):
+        """后台异步提交任务到 OpenClaw，并更新本地任务状态。"""
+        client = get_openclaw_client()
+        task_manager = get_async_task_manager()
+        result = await client.submit_task(
+            task_id=task_id,
+            user_id=user_id,
+            task_description=task_description,
+            original_message=original_message,
+            task_type=task_type,
+            schedule=schedule,
+            fallback_reason=fallback_reason,
+            session_id=session_id,
+        )
+        if result.get("success"):
+            openclaw_task_id = result.get("openclaw_task_id") or task_id
+            task_manager.update_openclaw_id(task_id, openclaw_task_id)
+            logger.info(f"[OpenClaw] 任务提交成功: task_id={task_id}, openclaw_task_id={openclaw_task_id}")
+        else:
+            task_manager.update_status(task_id, "failed")
+            logger.warning(f"[OpenClaw] 任务提交失败: task_id={task_id}, msg={result.get('message')}")
+
+    def _build_openclaw_task_description(
+        self,
+        user_message: str,
+        task_type: str,
+        schedule: Optional[str],
+        periodic_desc: Optional[str],
+    ) -> str:
+        """为 OpenClaw 生成标准化任务描述。"""
+        parts = [f"用户需求：{user_message}"]
+        if task_type == "periodic":
+            parts.append(f"执行方式：定期执行（{periodic_desc or '按用户要求'}）")
+            if schedule:
+                parts.append(f"调度规则（cron）：{schedule}")
+        elif task_type == "research":
+            parts.append("执行方式：深度调研分析（一次性）")
+        else:
+            parts.append("执行方式：一次性执行")
+        return "\n".join(parts)
+
+    def _build_openclaw_confirm_text(
+        self,
+        task_type: str,
+        schedule: Optional[str],
+        periodic_desc: Optional[str],
+        fallback_reason: str,
+    ) -> str:
+        """构建向用户展示的任务提交确认文本。"""
+        if task_type == "periodic":
+            freq = periodic_desc or "定期"
+            return (
+                f"好的，我已为您创建了一个{freq}执行的任务。"
+                f"任务将按计划自动执行，完成后会通过消息推送将结果发送给您。"
+            )
+        elif fallback_reason == "inability_response":
+            return (
+                "这个任务对我来说有些复杂，我已将它转交给更强大的 AI 助手处理。"
+                "任务完成后会通过消息推送将结果发送给您，请稍候。"
+            )
+        elif fallback_reason == "timeout":
+            return (
+                "这个任务处理时间较长，我已将它转交后台异步处理。"
+                "完成后会通过消息推送将结果发送给您，请稍候。"
+            )
+        else:
+            return (
+                "我已将这个任务提交后台处理，完成后会通过消息推送将结果发送给您，请稍候。"
+            )
 
     async def _send_json(self, websocket: WebSocket, data: Dict):
         """

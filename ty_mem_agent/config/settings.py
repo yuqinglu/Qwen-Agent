@@ -81,6 +81,25 @@ class Settings(BaseSettings):
     
     # === 日历MCP服务配置 ===
     CALENDAR_MCP_SERVER_URL: Optional[str] = Field(default=None, env="CALENDAR_MCP_SERVER_URL")
+
+    # === OpenClaw 通用AI能力集成 ===
+    # 总开关：False 时不走 OpenClaw（无快速预判直通、无本地兜底提交、HTTP 回调 ignored；列表为空、取消仅本地）
+    OPENCLAW_ENABLED: bool = Field(default=True, env="OPENCLAW_ENABLED")
+    # OpenClaw「适配层」REST 根地址（须含 /openclaw-adapter/v1），如 https://openclaw-adapter.example.com/openclaw-adapter/v1
+    # 勿填 OpenClaw Gateway 直连地址；适配层负责对接 Gateway Cron/Webhook，见 doc/OPENCLAW_ADAPTOR_SERVICE.md
+    OPENCLAW_API_BASE: Optional[str] = Field(default=None, env="OPENCLAW_API_BASE")
+    # 调用适配层任务的 API Key（由适配层颁发，非 OpenClaw Gateway 密钥）
+    OPENCLAW_API_KEY: Optional[str] = Field(default=None, env="OPENCLAW_API_KEY")
+    # 验证「适配层 → ty-mem-agent」回调的 HMAC 密钥（与 OpenClaw cron.webhookToken 分离，勿混用）
+    OPENCLAW_CALLBACK_SECRET: Optional[str] = Field(default=None, env="OPENCLAW_CALLBACK_SECRET")
+    # 本服务（ty-mem-agent）对外公网基础 URL；适配层将 POST .../openclaw/callback 到此主机
+    OPENCLAW_CALLBACK_BASE_URL: Optional[str] = Field(default=None, env="OPENCLAW_CALLBACK_BASE_URL")
+    # 本地 Agent 执行超时阈值（毫秒），超出后触发 OpenClaw 兜底，默认 120s
+    OPENCLAW_LOCAL_EXEC_TIMEOUT_MS: int = Field(default=120000, env="OPENCLAW_LOCAL_EXEC_TIMEOUT_MS")
+    # 周期性意图：用 LLM 解析多语言消息并生成 cron（关闭则永不走 OpenClaw 快速直通，仅本地 Agent）
+    OPENCLAW_PERIODIC_INTENT_LLM_ENABLED: bool = Field(default=True, env="OPENCLAW_PERIODIC_INTENT_LLM_ENABLED")
+    OPENCLAW_PERIODIC_INTENT_LLM_TIMEOUT_SEC: float = Field(default=15.0, env="OPENCLAW_PERIODIC_INTENT_LLM_TIMEOUT_SEC")
+    # 周期意图 LLM 与主聊天共用 get_llm_config()（DashScope 下为 DEFAULT_LLM_MODEL）
     
     # === ASR语音识别配置 ===
     # 阿里云百炼 Fun-ASR WebSocket API 地址
@@ -196,6 +215,13 @@ class Settings(BaseSettings):
         "mcp_selection_strategy": "auto",  # MCP选择策略: auto/manual/router
     }
     
+    # === 通用聊天卡片 TTL（card_display_ttl.yaml）===
+    CARD_TTL_CONFIG_PATH: Optional[str] = Field(
+        default=None,
+        env="CARD_TTL_CONFIG_PATH",
+        description="卡片展示/卡片岛 TTL 配置文件路径；空则使用 ty_mem_agent/config/card_display_ttl.yaml",
+    )
+
     # === 聊天配置 ===
     CHAT_CONFIG: Dict = {
         "max_message_length": 2000,

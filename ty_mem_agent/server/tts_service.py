@@ -158,7 +158,7 @@ class TTSService:
         except TTSError:
             raise
         except Exception as e:
-            logger.error(f"❌ TTS合成失败: {e}", exc_info=True)
+            logger.exception("❌ TTS合成失败: {!r}", e)
             raise TTSError(1004, f"TTS合成失败: {str(e)}")
     
     async def synthesize_sync(
