@@ -6,7 +6,7 @@
 island_ttl_seconds:
   default: 86400
   by_card_type:
-    ride_hailing: 172800
+    ride_hailing: 5400
     weather: 86400      # 天气预报当天内有效；如需更短可改为 3600
     async_task_result: 604800
     todo: 2592000
